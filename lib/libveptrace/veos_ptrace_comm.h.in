@@ -1,0 +1,4 @@
+#ifndef FILES_H
+#define FILES_H
+#define VEOS_SOC_PATH "@localstatedir@"
+#endif

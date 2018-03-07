@@ -1,0 +1,3 @@
+#The interval between invocation of the timer handler of the scheduler, in milliseconds.
+#The period of time for which a thred of a process is allowed to run, in milliseconds.
+#ve-os-launcher@*=--timer-interval=100 --time-slice=1000

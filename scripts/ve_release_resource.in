@@ -1,0 +1,62 @@
+#!/usr/bin/python
+
+# Copyright (C) 2017-2018 NEC Corporation
+# This file is part of VE system initialization
+#
+# VE system initialization is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# VE system initialization is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public
+# License along with VE system initialization; if not, see
+# <http://www.gnu.org/licenses/>
+
+import sys, getopt, traceback
+
+sys.path.append('@pythondir@')
+from ve_release_remote_resource import *
+from ve_delete_process import *
+
+IVED_SOCK_PATH="/var/opt/nec/ve/veos/ived.sock"
+TIMEOUT=20
+
+class Timeout(Exception):
+    pass
+
+def handler(signum, frame):
+    raise Timeout
+
+def release_resource(devfile):
+    signal.signal(signal.SIGALRM, handler)
+    if (os.path.exists(IVED_SOCK_PATH)):
+        print("Releasing remote resource...")
+        try:
+            signal.alarm(TIMEOUT)
+            release_remote_resource(devfile, IVED_SOCK_PATH)
+            signal.alarm(0)
+            print("done")
+        except Exception as e:
+            traceback.print_exc()
+
+    print("Deleting process...")
+    try:
+        signal.alarm(TIMEOUT)
+        delete_process(devfile)
+        signal.alarm(0)
+        print("done")
+    except Exception as e:
+        traceback.print_exc()
+
+if __name__ == '__main__':
+    if (len(sys.argv) != 2):
+        print('Usage: %s devfile' % sys.argv[0])
+        sys.exit(1)
+
+    devfile=sys.argv[1]
+    release_resource(devfile)

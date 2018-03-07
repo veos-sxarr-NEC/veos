@@ -1,0 +1,83 @@
+#!/usr/bin/python
+
+# Copyright (C) 2017-2018 NEC Corporation
+# This file is part of VE system initialization
+#
+# VE system initialization is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# VE system initialization is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public
+# License along with VE system initialization; if not, see
+# <http://www.gnu.org/licenses/>
+
+import sys, os, socket, struct
+
+sys.path.append('@pythondir@')
+import veosproto.ived_pb2 as ived_pb2
+
+IVED_COMMON = 0x0
+IVED_OS_REG = 0x20
+IVED_OS_STOP = 0x21
+
+def send_data(sock, data):
+    sock.sendall(struct.pack('i', len(data)))
+    sock.sendall(data)
+
+def recv_data(sock):
+    header = sock.recv(4)
+    while (len(header)) < 4:
+        header += sock.recv(4 - len(header))
+    datalen = struct.unpack('i', header)[0]
+    data = sock.recv(datalen)
+    while (len(data) < datalen):
+        data += sock.recv(datalen - len(data))
+    return data
+
+def os_register(sock, driverfile, subcmd):
+    cmd = ived_pb2.rpc_command()
+    cmd.cmd = IVED_COMMON
+    ived_arg = cmd.ived
+    ived_arg.subcmd = subcmd
+    os_reg = ived_arg.register_os_arg
+    os_reg.socket_name = driverfile
+    os_reg.pid = os.getpid()
+    os_reg.bar01_addr = 0xffffffffffffffff # dummy
+    os_reg.bar3_addr = 0xffffffffffffffff # dummy
+    os_reg.pciatb_pgsize = 0 # dummy
+    os_reg.mode_flag = 0 # dummy
+    data = cmd.SerializeToString()
+    send_data(sock, data)
+    data = recv_data(sock)
+    res = ived_pb2.ived_return()
+    res.ParseFromString(data)
+    if (res.retval != 0):
+        print "IVED returned failure: %s" % os.strerror(-res.error)
+    return res.retval
+
+def release_remote_resource(driverfile, ivedsock):
+    sock1 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock1.connect(ivedsock)
+    if os_register(sock1, driverfile, IVED_OS_REG) == 0:
+        sock2 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock2.connect(ivedsock)
+        os_register(sock2, driverfile, IVED_OS_STOP)
+        sock2.shutdown(socket.SHUT_WR)
+        sock2.close()
+    sock1.shutdown(socket.SHUT_WR)
+    sock1.close()
+
+if __name__ == '__main__':
+    if (len(sys.argv) != 3):
+        print('Usage: %s driverfile ivedsock' % sys.argv[0])
+        sys.exit(1)
+
+    driverfile=sys.argv[1]
+    ivedsock=sys.argv[2]
+    release_remote_resource(driverfile, ivedsock)

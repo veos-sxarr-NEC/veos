@@ -1,0 +1,167 @@
+#!/bin/bash
+# Copyright (c) 2016 NEC Corporation.
+# All rights reserved.
+#
+# Description:
+# wrapper scipt to execute VE program, it is also responsible to converts the
+# ve node number to special file path and socket file path, and executes the
+# actual ve_exec binary without creating a child process.
+# Below are the command line options for wrapper script.
+
+# 1. "-N node" and "--node=<node>" optional argument with default value is "0"
+# 2. "-c core" and "--core=<core>" optional argument with value of core on which
+#    VE task is to be executed.
+#    Note:
+#    If “-c” option is not specified, or "-1" is provided by user then VEOS chooses
+#    the appropriate core to run the VE task and by default all CPU’s of that node
+#    is allowed for that VE process.
+# 3. "-V" and "--version" optional argument to display binary version info.
+# 4. "-h" and "--help" optional argument to display the help information of
+#	wrapper.
+# 5. "--traceme" for internal use only
+
+
+#update PATH_VE_EXEC with the path of ve_exec of your system.
+
+PATH_VE_EXEC="@ve_libexecdir@/ve_exec"
+
+export VE_EXEC_PATH=$PATH_VE_EXEC
+
+flag_traceme=0
+
+VE_NODE=0
+VE_CORE=-1
+node_given=0
+
+if [ ! -x "$PATH_VE_EXEC" ] ; then
+	echo "ERROR: acutal ve_exec is not found in path: ${PATH_VE_EXEC}"
+	exit 1
+fi
+
+#to display wrapper script usage
+usage() {
+echo "Usage: ${0} [options] binary [arguments]
+Options:
+  -V, --version			output version information and exit
+  -h, --help			display this help and exit
+  -N node, --node=<node>	where node is the VE Node number
+				on which VE program belongs
+  -c core, --core=<core>	where core is the VE core number on
+				which VE program to be executed
+  --				End of options (Requires if binary name
+				starts with ‘-’)
+ENVIRONMENT VARIABLE
+  VE_NODE_NUMBER		provides the VE node number
+  If -N option is specified, this environment variable is ignored."
+}
+
+if [ "$#" -lt 1 ]; then
+	echo "ERROR: VE binary is not provided"
+	usage;
+	exit 1
+fi
+
+#read the options
+TEMP=`getopt -o "+VhN:c:" --long version,help,traceme,node:,core: -- "$@"`
+retval=$?
+if [ $retval -ne 0 ]; then
+	usage;
+	exit 1;
+fi
+
+eval set -- "$TEMP"
+unset TEMP
+# extract options and their arguments into variables
+while true ; do
+	case "$1" in
+		-V|--version)
+			echo "ve_exec (veos) @VERSION@";
+			exit;;
+		-h|--help)
+			usage;
+			exit;;
+		-N|--node)
+			case "$2" in
+				"") shift 2 ;;
+				*) VE_NODE=$2 ;
+				node_given=1;
+				shift 2 ;
+			esac ;;
+		-c|--core)
+			case "$2" in
+				"") shift 2 ;;
+				*) VE_CORE=$2;
+				shift 2 ;
+			esac ;;
+		--traceme)
+			flag_traceme=1;
+			shift;;
+		--)
+			shift ;
+			break ;;
+		-*)
+			shift ;
+			usage;
+			exit 1
+			break ;;
+		*)
+			usage;
+			exit 1 ;;
+	esac
+done
+
+re='^[0-9]+$'
+if ! [[ ${VE_NODE} =~ $re ]] ; then
+	echo "ERROR: '$VE_NODE' is not a valid node number"
+	exit 1;
+fi
+
+if  [[ ${VE_CORE} == -1 ]] ; then
+        :
+elif ! [[ ${VE_CORE} =~ $re ]] ; then
+        echo "ERROR: '$VE_CORE' is not a valid core number"
+        exit 1;
+
+fi
+
+ve_arg=( $@ )
+if ! [ -e "$ve_arg" ]; then
+        echo "ERROR: '$ve_arg' No such file exists"
+        exit 1;
+fi
+
+if ! [ -x "$ve_arg" ]; then
+	echo "ERROR: '$ve_arg' is not a valid executable"
+	exit 1;
+fi
+
+if [[ ${node_given} -eq 0 && -n ${VE_NODE_NUMBER} ]]; then
+	VE_NODE=${VE_NODE_NUMBER};
+fi
+
+export VE_NODE_NUMBER=$VE_NODE
+
+#converting ve node number to special file path and socket file path
+sock_driver=$(printf '/dev/veslot%s' "$VE_NODE" );
+sock_veos=$(printf '@localstatedir@/veos%s.sock' "$VE_NODE" );
+
+#embedding option if traceme option is provided by user
+if [ ${flag_traceme} -eq 1 ]; then
+	PATH_VE_EXEC=$(printf '%s --traceme' "${PATH_VE_EXEC}");
+fi
+
+if ! [ -L $sock_driver ]; then
+	echo "Node '$VE_NODE' is Offline"
+	exit 1;
+fi
+
+if ! [ -e $sock_veos ]; then
+	echo "VEOS corresponding to Node '$VE_NODE' is Offline"
+	exit 1;
+fi
+
+PATH_VE_EXEC="${PATH_VE_EXEC} -d ${sock_driver} -s ${sock_veos} -c ${VE_CORE}";
+
+#executes the actual ve_exec binary
+	exec $PATH_VE_EXEC -- "${@}"
+exit 0

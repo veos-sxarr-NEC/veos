@@ -1,0 +1,204 @@
+/* common */
+message rpc_command {
+	required fixed32 cmd		= 1;
+	optional rpc_ived_arg ived	= 2;
+	optional rpc_veshm_arg veshm	= 3;
+	optional rpc_cr_arg cr		= 4;
+}
+
+/* It is used for IVED, VESHM and CR reply in common. */
+message ived_return {
+	required int64 retval 			= 1;
+	required int32 error 			= 2;
+
+	optional rpc_veshm_return  veshm_ret	= 3;
+}
+
+
+/*
+ * IVED messages
+ */
+
+/* Main request */
+message rpc_ived_arg{
+	required fixed32 subcmd 			= 1;
+	optional rpc_os_register register_os_arg	= 2;
+	optional rpc_proc_list	proc_arg		= 4;
+}
+
+/* Sub message: OS registration and OS erasing */
+message rpc_os_register{
+	required string socket_name 	= 1;
+	required uint32 pid 		= 2;
+	required uint64 bar01_addr	= 4;
+	required uint64 bar3_addr	= 5;
+	required uint64 pciatb_pgsize 	= 6;
+	required uint64 mode_flag	= 8;
+}
+
+message rpc_proc_list{
+	/* for register and erase */
+	required uint32 uid 	= 1;
+	required uint32 pid 	= 2;
+	required bytes  uuid_proc	= 9;
+	required uint64 mode_flag	= 4;
+}
+
+
+/*
+ * VESHM messages
+ */
+
+/* Main request */
+message rpc_veshm_arg {
+	required fixed32 subcmd 			= 1;
+
+	optional rpc_veshm_sub_open	open_arg	= 2;
+	optional rpc_veshm_sub_attach	attach_arg	= 3;
+	optional rpc_veshm_sub_detach	detach_arg	= 4;
+	optional rpc_veshm_sub_close	close_arg	= 5;
+	optional rpc_veshm_pgsize	pgsize_arg	= 6;
+	/* Query of partial map doesn't use specific structure */
+}
+
+/* Sub messages */
+message rpc_veshm_sub_open {
+	required uint32 uid 		= 1;
+	required uint32 pid_of_owner 	= 2;
+	required uint64 vemva  		= 3;
+	required uint64 size   		= 4;
+	required uint32 syncnum		= 5;
+	required uint64 mode_flag	= 8;
+	repeated uint64	pci_address	= 16;
+	optional bytes  uuid_proc	= 9;
+	optional bytes  uuid_veshm	= 10;
+}
+
+message rpc_veshm_sub_attach {
+	required uint32 user_uid 	= 1;
+	required uint32 user_pid 	= 2;
+	required uint64 user_vemva      = 14;
+	required uint32 owner_pid	= 3;
+	required uint64 vemva  		= 4;
+	required uint64 size   		= 5;
+	required uint32 syncnum		= 6;
+	required uint64 mode_flag	= 7;
+	optional bytes  uuid_proc	= 9;
+	optional bytes  uuid_veshm	= 10;
+}
+
+message rpc_veshm_sub_detach{
+	required uint32 user_uid 	= 1;
+	required uint32 user_pid 	= 2;
+	required uint64 address         = 3;
+	required uint64 mode_flag	= 4;
+	repeated uint64	pci_address	= 16;
+	optional bytes  uuid_proc	= 9;
+	optional bytes  uuid_veshm	= 10;
+}
+
+message rpc_veshm_sub_close{
+	/* Pseudo - VEOS */
+	required uint32 owner_uid 	= 1;
+	required uint32 owner_pid 	= 2;
+	required uint64 vemva  		= 3;
+	required uint64 size   		= 4;
+	required uint32 syncnum		= 5;
+	required uint64 mode_flag	= 6;
+
+	/* + VEOS - IVED */
+	optional bytes  uuid_proc	= 9;
+	optional bytes  uuid_veshm	= 10;
+}
+
+
+/* Query of page size */
+/* Note: This system call is provided by VEOS, but VESHM prototype supports
+ * it on AMM's behalf. For IVED, pid and address are "required".
+ */
+message rpc_veshm_pgsize{
+	required uint32 pid		= 1;
+}
+
+/* Change PCIATB sync bit */
+message rpc_veshm_pcisync{
+	required uint32 owner_uid 	= 1;
+	required uint32 owner_pid 	= 2;
+	required uint64 mode_flag	= 3;  /* for control */
+	required uint64 vemva  		= 4;
+	optional uint32 pair_num	= 5;
+	optional uint32 sync		= 6;
+}
+
+
+/* VESHM reply (used for sub messages) */
+message rpc_veshm_return {
+	optional uint32	counts		= 4;
+	optional uint64	address		= 8;
+	optional uint64	pagesize	= 9;
+	optional uint64 size   		= 15;
+	optional uint64	flag 		= 10;
+	repeated uint64	pci_address	= 16;
+	optional bytes  uuid_veshm	= 12;
+	optional bytes  uuid_proc	= 13;
+}
+
+
+/*
+ * CR message
+ */
+/* Arguments */
+message rpc_cr_arg {
+	required fixed32 subcmd					= 1;
+	optional rpc_cr_sub_alloc		alloc		= 2;
+	optional rpc_cr_sub_attach		attach		= 3;
+	optional rpc_cr_sub_attached		attached	= 4;
+	optional rpc_cr_sub_cancel_attach	cancel		= 5;
+	optional rpc_cr_sub_release_local	release_local	= 6;
+	optional rpc_cr_sub_release_remote	release_remote	= 7;
+	optional rpc_cr_sub_not_referenced	not_referenced	= 8;
+}
+
+/* Request specific arguments */
+message rpc_cr_sub_alloc {
+	required uint64 mode_flag	= 1;
+	required uint32 my_pid		= 2;
+	required uint32 my_uid		= 3;
+	required uint64 my_crd_number	= 4;
+	required uint64 cr_page		= 5;
+}
+
+message rpc_cr_sub_attach {
+	required uint32 my_pid		= 1;
+	required uint32 my_uid		= 2;
+	required uint32 pid		= 3;
+	required uint64 crd_number	= 4;
+}
+
+message rpc_cr_sub_attached {
+	required uint32 my_pid		= 1;
+	optional uint64 my_crd_number	= 2;
+	optional uint64 my_vehva	= 3;
+	required uint32 pid		= 4;
+	required uint64 crd_number	= 5;
+}
+
+message rpc_cr_sub_cancel_attach {
+	required uint32 my_pid		= 1;
+	required uint32 pid		= 2;
+	required uint64 crd_number	= 3;
+}
+
+message rpc_cr_sub_release_local {
+	required uint32 my_pid		= 1;
+	required uint64 my_crd_number	= 2;
+}
+
+message rpc_cr_sub_release_remote {
+	required uint32 my_pid		= 1;
+	required uint64 my_vehva	= 2;
+}
+
+message rpc_cr_sub_not_referenced {
+	required uint64 cr_page		= 1;
+}

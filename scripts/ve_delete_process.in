@@ -1,0 +1,62 @@
+#!/usr/bin/python
+
+# Copyright (C) 2017-2018 NEC Corporation
+# This file is part of VE system initialization
+#
+# VE system initialization is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# VE system initialization is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public
+# License along with VE system initialization; if not, see
+# <http://www.gnu.org/licenses/>
+
+import fcntl, os, sys, subprocess, signal, errno
+from time import sleep
+
+VEDRV_CMD_DELETE_ALL_TASK = (0xf500 + 17)
+
+def delete_all_task(devfile):
+    fd = os.open(devfile, os.O_RDWR)
+    fcntl.ioctl(fd, VEDRV_CMD_DELETE_ALL_TASK)
+
+def do_kill_process(line):
+    num = 0
+    for pid in line.split():
+        num = num + 1
+        print('Killing %d' % int(pid))
+        try:
+            os.kill(int(pid), signal.SIGKILL)
+        except OSError as e:
+            if e.errno != errno.ESRCH:
+                raise e
+    return num
+
+def kill_process(devfile):
+    output = subprocess.check_output(['/usr/bin/udevadm', 'info', '-q', 'path', devfile])
+    path = '/sys' + output.rstrip('\n') + '/task_id_all'
+    while True:
+        found = 0
+        for line in open(path, 'r'):
+            found += do_kill_process(line)
+        if found == 0:
+            break
+        sleep(1)
+
+def delete_process(devfile):
+    delete_all_task(devfile)
+    kill_process(devfile)
+
+if __name__ == '__main__':
+    if (len(sys.argv) != 2):
+        print('Usage: %s devfile' % sys.argv[0])
+        sys.exit(1)
+
+    devfile=sys.argv[1]
+    delete_process(devfile)
