@@ -47,6 +47,7 @@
 #include "handle.h"
 #include "mm_transfer.h"
 #include "velayout.h"
+#include "sys_mm.h"
 
 static struct auxv_info auxv;
 extern uint64_t default_page_size;
@@ -850,7 +851,7 @@ int init_stack(veos_handle *handle, int argc,
 	ve_info.stack_pointer_aligned = mmap_addr;
 
 	/* set registers for stack */
-	*sz = (unsigned long long)mmap_addr;
+	*sz = (unsigned long long)mmap_addr + STACK_AREA_FOR_SIGNAL;
 	*sp = (unsigned long long)ve_stack_addr;
 
 	PSEUDO_DEBUG("LOADING FINISH");
@@ -967,7 +968,6 @@ char * open_bin_file (char *filename, int *pfd)
 	struct statvfs st = {0};
         struct stat sb = {0};
 
-
 	filename = realpath(filename, NULL);
         if (NULL == filename) {
                 retval = -errno;
@@ -1068,6 +1068,8 @@ char * open_bin_file (char *filename, int *pfd)
 		goto end;
 	}
 end:
+	if(filename != NULL)
+		free(filename);
 	*pfd = fd;
 	errno = -retval;
 	return buf;

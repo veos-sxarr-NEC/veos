@@ -167,21 +167,35 @@ int pseudo_proc_veos_handler(veos_thread_arg_t *pti)
 		goto hndl_error;
 	}
 
-	VEOS_DEBUG(":%ld:%d:VEOS received request %s for pseudo_pid: %d",
+	VEOS_DEBUG("PID[%ld] VEOS received request %s for pseudo pid: %d",
 			syscall(SYS_gettid),
-			pseudo_msg->pseudo_veos_cmd_id,
 			pseudo_veos_cmd[pseudo_msg->pseudo_veos_cmd_id].cmdname,
 			pseudo_msg->pseudo_pid);
 
 	pti->pseudo_proc_msg = pseudo_msg;
-	VEOS_DEBUG("Message received Successfully %p", pti->pseudo_proc_msg);
 
+	/* Get ipc read lock */
+	ret = pthread_rwlock_rdlock(&(VE_NODE(0)->ve_relocate_lock));
+	if (0 > ret) {
+		VEOS_ERROR("Failed to acquire relocate lock, retval %d", ret);
+		veos_abort("Failed to acquire relocate lock");
+	}
 	ret = pseudo_veos_cmd[pseudo_msg->pseudo_veos_cmd_id].handler(pti);
 	if (0 > ret) {
 		VEOS_ERROR("Failed to handle system call request from "
 				"pseudo process");
+		pthread_rwlock_unlock(&(VE_NODE(0)->ve_relocate_lock));
 		goto hndl_return;
 	}
+
+	ret = pthread_rwlock_unlock(&(VE_NODE(0)->ve_relocate_lock));
+	if (0 > ret) {
+		VEOS_ERROR("Failed to release relocate lock, retval %d", ret);
+		veos_abort("Failed to release relocate lock");
+	}
+
+	VEOS_DEBUG("%s Request Handled",
+			pseudo_veos_cmd[pseudo_msg->pseudo_veos_cmd_id].cmdname);
 	ret = 0;
 	goto hndl_return;
 
@@ -237,8 +251,6 @@ static void *veos_worker_thread(void *arg)
 					"pseudo process");
 			goto thread_end;
 		}
-
-		VEOS_DEBUG("Request Handled");
 	}
 
 	VEOS_DEBUG("Termination flag SET VEOS worker thread exiting");

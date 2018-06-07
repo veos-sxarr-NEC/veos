@@ -568,11 +568,14 @@ hndl_return2:
 				}
 
 			}
-			free(vh_iov[i].iov_base);
 		}
 	}
 	free(ve_buff_addr);
 hndl_return1:
+	for (i = 0; i < cnt; i++) {
+		if (vh_iov[i].iov_base != NULL)
+			free(vh_iov[i].iov_base);
+	}
 	free(vh_iov);
 hndl_return:
 	/* write return value */
@@ -701,7 +704,7 @@ ret_t ve_hndl_read_pread64(int syscall_num, char *syscall_name,
 		retval = ve_is_valid_address(handle, args[1]);
 		if (retval < 0) {
 			retval = -EFAULT;
-			goto hndl_return;
+			goto hndl_return1;
 		}
 	}
 
@@ -3582,6 +3585,8 @@ hndl_return:
 	}
 	if (ve_iov != NULL)
 		free(ve_iov);
+	if (dummy_buf != NULL)
+		free(dummy_buf);
 	/* write return value */
 	PSEUDO_TRACE("Exiting");
 	return retval;

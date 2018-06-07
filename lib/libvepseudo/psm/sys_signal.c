@@ -230,6 +230,7 @@ ret_t ve_rt_sigprocmask(int syscall_num, char *syscall_name
 	ret_t retval = -1;
 	uint64_t args[4];
 	struct ve_signal_mask ve_mask;
+	sigset_t signal_mask  = { {0} };
 
 	PSEUDO_TRACE("Entering");
 	PSEUDO_DEBUG("%s is called", syscall_name);
@@ -303,6 +304,13 @@ ret_t ve_rt_sigprocmask(int syscall_num, char *syscall_name
 	PSEUDO_DEBUG("Updated signal mask : %lx",
 				ve_proc_sigmask.__val[0]);
 
+	/* unblock all signals except the one actualy blocked by VE process */
+	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+	sigfillset(&signal_mask);
+	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+
+	/* Post-processing of syscall started, blocking signals */
+	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 	/* send the old signal mask */
 	if (NULL != (void *)args[2]) {
 		if (0 >  ve_send_data(handle, args[2],
@@ -344,6 +352,7 @@ ret_t ve_rt_sigreturn(int syscall_num, char *syscall_name, veos_handle *handle)
 {
 	int retval = -1;
 	sigset_t ve_curr_mask;
+	sigset_t signal_mask  = { {0} };
 
 	PSEUDO_TRACE("Entering");
 
@@ -374,29 +383,19 @@ ret_t ve_rt_sigreturn(int syscall_num, char *syscall_name, veos_handle *handle)
 	}
 	/* Copy VE process current mask */
 	memcpy(&ve_proc_sigmask, &ve_curr_mask, sizeof(sigset_t));
-	PSEUDO_DEBUG("Pseudo process mask will be: %lx",
+	PSEUDO_DEBUG("signal mask will be: %lx",
 			ve_proc_sigmask.__val[0]);
+	/* unblock all signals except the one actualy blocked by VE process */
+	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+	sigfillset(&signal_mask);
+	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+
+	/* Post-processing of syscall started, blocking signals */
+	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+
 hndl_return:
 	PSEUDO_TRACE("Exiting");
 	return retval;
-}
-
-/**
- * @brief Handles kill system call for VE.
- *
- * int kill(pid_t pid, int sig);
- *
- *	This function handles the kill request done by VE process to send
- *	signal. It calls ve_generic_offload() to provide kill system call
- *	functionality to VE process.
- *
- * @param[in] syscall_num System call number
- * @param[in] syscall_name System call name
- * @param[in] handle Handle for VE driver interface
- */
-ret_t ve_kill(int syscall_num, char *syscall_name, veos_handle *handle)
-{
-	return ve_generic_offload(syscall_num, syscall_name, handle);
 }
 
 /**
@@ -646,6 +645,7 @@ ret_t ve_rt_sigqueueinfo(int syscall_num, char *syscall_name
 	ret_t retval = -1;
 	uint64_t args[3];
 	siginfo_t uinfo = {0};
+	sigset_t signal_mask;
 
 	PSEUDO_TRACE("Entering");
 
@@ -673,9 +673,17 @@ ret_t ve_rt_sigqueueinfo(int syscall_num, char *syscall_name
 			goto hndl_return;
 		}
 	}
+	/* unblock all signals except the one actualy blocked by VE process */
+	sigfillset(&signal_mask);
+	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+
 	/* call VH system call */
 	retval = syscall(syscall_num, args[0], args[1]
 			, args[2] ? &uinfo : NULL);
+	/* Post-processing of syscall started, blocking signals */
+	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+
 	if (-1 == retval) {
 		retval = -errno;
 		PSEUDO_ERROR("rt_sigqueueinfo(): failed %ld",
@@ -980,6 +988,7 @@ ret_t ve_tkill(int syscall_num, char *syscall_name, veos_handle *handle)
 	uint64_t args[2];
 	ret_t retval = -1;
 	siginfo_t siginfo = {0};
+	sigset_t signal_mask = { {0} };
 
 	PSEUDO_TRACE("Entering");
 
@@ -989,8 +998,8 @@ ret_t ve_tkill(int syscall_num, char *syscall_name, veos_handle *handle)
 	retval = vedl_get_syscall_args(handle->ve_handle, args, 2);
 	if (retval < 0) {
 		PSEUDO_ERROR("Failed to fetch arguments for system call");
-		PSEUDO_DEBUG("%s failure: fetching arguments for syscall returned %d",
-				syscall_name, (int)retval);
+		PSEUDO_DEBUG("%s failure: fetching arguments for syscall"
+				"returned %d", syscall_name, (int)retval);
 		PSEUDO_DEBUG("Mapping retval %d to errno %d",
 				(int) retval, -EFAULT);
 		retval = -EFAULT;
@@ -1016,15 +1025,91 @@ ret_t ve_tkill(int syscall_num, char *syscall_name, veos_handle *handle)
 			goto hndl_return;
 		}
 	}
+	/*
+	 * unblock all signals except the one actualy blocked by VE process.
+	 */
+	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+	sigfillset(&signal_mask);
+	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	/* call VH system call */
 	retval = syscall(syscall_num,
 			args[0],
 			args[1]);
+
+	/* Post-processing of syscall started, blocking signals */
+	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+
 	/* write return value */
 	if (-1 == retval) {
 		retval = -errno;
 		PSEUDO_ERROR("tkill(): failed %d",
+				(int)retval);
+	} else {
+		PSEUDO_DEBUG("syscall %s returned %d",
+				syscall_name, (int)retval);
+	}
+hndl_return:
+	/* write return value */
+	PSEUDO_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * ve_kill : Handles the kill() functionality for ve.
+ *
+ * int kill(int tid, int sig);
+ *
+ *	This function receives the data and arguments from VEMVA/VEHVA and
+ *	offloads the functionality to VH OS kill() system call.
+ *
+ * @param syscall_num : System call number
+ * @param syscall_name : System call name
+ * @param handle : VEOS handle
+ *
+ * @return 0 on success, -1 on failure.
+ */
+ret_t ve_kill(int syscall_num, char *syscall_name, veos_handle *handle)
+{
+	uint64_t args[2];
+	ret_t retval = -1;
+	sigset_t signal_mask = { {0} };
+
+	PSEUDO_TRACE("Entering");
+
+	PSEUDO_DEBUG("%s is called", syscall_name);
+
+	/* get arguments */
+	retval = vedl_get_syscall_args(handle->ve_handle, args, 2);
+	if (retval < 0) {
+		PSEUDO_ERROR("Failed to fetch arguments for system call");
+		PSEUDO_DEBUG("%s failure: fetching arguments for syscall"
+				"returned %d", syscall_name, (int)retval);
+		PSEUDO_DEBUG("Mapping retval %d to errno %d",
+				(int) retval, -EFAULT);
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+
+	/*
+	 * unblock all signals except the one actualy blocked by VE process.
+	 */
+	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+	sigfillset(&signal_mask);
+	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+
+	/* call VH system call */
+	retval = syscall(syscall_num,
+			args[0],
+			args[1]);
+
+	/* Post-processing of syscall started, blocking signals */
+	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+
+	/* write return value */
+	if (-1 == retval) {
+		retval = -errno;
+		PSEUDO_ERROR("kill(): failed %d",
 				(int)retval);
 	} else {
 		PSEUDO_DEBUG("syscall %s returned %d",
@@ -1057,6 +1142,7 @@ ret_t ve_tgkill(int syscall_num, char *syscall_name, veos_handle *handle)
 	uint64_t args[3];
 	ret_t retval = -1;
 	siginfo_t siginfo = {0};
+	sigset_t signal_mask = { {0} };
 
 	PSEUDO_TRACE("Entering");
 
@@ -1066,8 +1152,8 @@ ret_t ve_tgkill(int syscall_num, char *syscall_name, veos_handle *handle)
 	retval = vedl_get_syscall_args(handle->ve_handle, args, 3);
 	if (retval < 0) {
 		PSEUDO_ERROR("Failed to fetch arguments for system call");
-		PSEUDO_DEBUG("%s failure: fetching arguments for syscall returned %d",
-				syscall_name, (int)retval);
+		PSEUDO_DEBUG("%s failure: fetching arguments for syscall"
+				"returned %d", syscall_name, (int)retval);
 		PSEUDO_DEBUG("Mapping retval %d to errno %d",
 				(int) retval, -EFAULT);
 		retval = -EFAULT;
@@ -1093,12 +1179,20 @@ ret_t ve_tgkill(int syscall_num, char *syscall_name, veos_handle *handle)
 			goto hndl_return;
 		}
 	}
+	/* unblock all signals except the one actualy blocked by VE process */
+	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+	sigfillset(&signal_mask);
+	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	/* call VH system call */
 	retval = syscall(syscall_num,
 			args[0],
 			args[1],
 			args[2]);
+
+	/* Post-processing of syscall started, blocking signals */
+	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+
 	if (-1 == retval) {
 		retval = -errno;
 		PSEUDO_ERROR("tgkill(): %s failed %d",
@@ -1250,6 +1344,7 @@ ret_t ve_rt_tgsigqueueinfo(int syscall_num, char *syscall_name,
 	ret_t retval = -1;
 	uint64_t args[4];
 	siginfo_t uinfo = {0};
+	sigset_t signal_mask = { {0} };
 
 	PSEUDO_TRACE("Entering");
 
@@ -1277,9 +1372,16 @@ ret_t ve_rt_tgsigqueueinfo(int syscall_num, char *syscall_name,
 			goto hndl_return;
 		}
 	}
+	/* unblock all signals except the one actualy blocked by VE process */
+	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+	sigfillset(&signal_mask);
+	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 	/* call VH system call */
 	retval = syscall(syscall_num, args[0], args[1], args[2]
 			, args[3] ? &uinfo : NULL);
+
+	/* Post-processing of syscall started, blocking signals */
+	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 	if (-1 == retval) {
 		retval = -errno;
 		PSEUDO_ERROR("rt_tgsigqueueinfo(): failed %d",

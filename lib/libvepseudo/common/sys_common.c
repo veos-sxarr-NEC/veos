@@ -39,6 +39,7 @@
 #include "sysve_os.h"
 #include "pseudo_cr.h"
 #include "pseudo_veshm.h"
+#include "pseudo_vhshm.h"
 
 /**
  * @brief This function will be invoked to handle the MONC interrupt
@@ -1431,6 +1432,9 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 		retval = ve_sys_get_ve_info(handle, (char *)args[1],
 						(char *)args[2], args[3]);
 		break;
+	case VE_SYSVE_VHSHM_CTL:
+		retval = sys_vhshm(handle, &args[1]);
+		break;
 	default:
 		/* write return value */
 		retval = -EINVAL;
@@ -1515,6 +1519,10 @@ veos_handle *veos_handle_create(char *device, char *os_socket,
 	return veos_hndl;
 
 err_hndl:
+	if (veos_hndl->device_name != NULL)
+		free(veos_hndl->device_name);
+	if (veos_hndl->veos_sock_name != NULL)
+		free(veos_hndl->veos_sock_name);
 	free(veos_hndl);
 return_hndl:
 	PSEUDO_TRACE("Exiting");

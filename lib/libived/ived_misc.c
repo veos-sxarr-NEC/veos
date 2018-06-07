@@ -62,7 +62,7 @@ ived_check_mutex_locked(pthread_mutex_t *mutex)
 
 	if (ret == 0){
 		pthread_mutex_unlock(mutex);
-		IVED_ERROR(log4cat_lib, "Need to aqcuire a target lock.");
+		IVED_ERROR(log4cat_lib, "Need to acquire a target lock.");
 		return (-1);
 	}
 	if (ret == EDEADLK){

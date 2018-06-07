@@ -51,6 +51,7 @@ struct shm *amm_get_shm_segment(key_t key, int shmid, size_t size,
 		int flag, bool create)
 {
 	struct shm *shm_ent;
+	bool remv_segment = false;
 	int ret = 0;
 	struct ve_node_struct *vnode = VE_NODE(0);
 
@@ -64,11 +65,9 @@ struct shm *amm_get_shm_segment(key_t key, int shmid, size_t size,
 			"Failed to acquire node shm lock");
 	list_for_each_entry(shm_ent, &vnode->shm_head, shm_list) {
 		if (shm_ent->shmid == shmid) {
-			pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,
-					"Failed to release node shm lock");
-			VEOS_DEBUG("Shared memory segment with shmid %d found", shmid);
-			VEOS_TRACE("returning with shm_ent:%p", shm_ent);
-			return shm_ent;
+			VEOS_DEBUG("shm segment with shmid %d found", shmid);
+			remv_segment = true;
+			goto noerr_exit;
 		}
 	}
 
@@ -77,15 +76,13 @@ struct shm *amm_get_shm_segment(key_t key, int shmid, size_t size,
 		goto err_exit;
 	}
 	/*create new shm_segment and add to list*/
-	VEOS_DEBUG("Creating obj for shared memory segment for key(%d):id(%d)", key, shmid);
 	shm_ent = (struct shm *)calloc(1, sizeof(struct shm));
 	if (NULL == shm_ent) {
-		ret = -errno;
+		ret = errno;
 		VEOS_CRIT("calloc error (%s) when allocating memory to shm object",
 				strerror(-ret));
 		goto err_exit;
 	}
-
 
 	shm_ent->key = key;
 	shm_ent->shmid = shmid;
@@ -96,10 +93,27 @@ struct shm *amm_get_shm_segment(key_t key, int shmid, size_t size,
 	shm_ent->flag |= SHM_AVL;
 
 	pthread_mutex_init(&shm_ent->shm_lock, NULL);
-	/* Adding newly created shared memory segment to the list.
-	*/
+	/* Adding newly created shared memory segment to the list*/
+	VEOS_DEBUG("Added shm segment with key(%d) to global list", key);
 	list_add_tail(&(shm_ent->shm_list), &vnode->shm_head);
+
+noerr_exit:
+	 /*Keeping shared memory segment statistics*/
+	ret = shmctl(shmid, IPC_STAT, &shm_ent->ipc_stat);
+	if (ret < 0) {
+		ret = errno;
+		VEOS_DEBUG("error(%s) while getting shm segment(%d) stat",
+				strerror(errno), shmid);
+		if (!remv_segment) {
+			/*Removing segment*/
+			list_del(&(shm_ent->shm_list));
+			free(shm_ent);
+		}
+		goto err_exit;
+	}
+
 	VEOS_TRACE("returned shared memory object(%p)", shm_ent);
+
 	pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,
 			"Failed to release node shm lock");
 	return shm_ent;
@@ -436,56 +450,45 @@ int amm_release_shm_segment(struct shm *shm_ent)
 * @brief This is core shmctl handler which destroy the shared memory segment.
 *
 * @param[in] shmid shared memory unique ID.
-* @param[in] tsk reference to the process task struct.
 *
 * @return on success return 0 and negative of errno on failure.
 */
-int amm_do_shmctl(int shmid, struct ve_task_struct *tsk)
+int amm_do_shmctl(int shmid)
 {
-	int ret = -1;
-	int found = 0;
+	int ret = 0;
 	struct shm *shm_ent = NULL;
 	struct ve_node_struct *vnode = VE_NODE(0);
 
-	VEOS_TRACE("invoked by tsk(%p):pid(%d) for shmid(%d)",
-			tsk, tsk->pid, shmid);
+	VEOS_TRACE("Entering");
 
-	/* Traverse the SHM list and find the shared memory
-	 * segment.
-	 */
+	/* Traverse the SHM list and find the shared memory segment*/
 	pthread_mutex_lock_unlock(&vnode->shm_node_lock, LOCK,
 			"Failed to acquire node shm lock");
 	list_for_each_entry(shm_ent, &vnode->shm_head, shm_list) {
 		if (shm_ent->shmid == shmid) {
-			VEOS_DEBUG("Shared memory segment(%p) for shmid(%d) found",
+			VEOS_DEBUG("shm segment(%p) for shmid(%d) found",
 					shm_ent, shmid);
-			found = 1;
-			break;
+			shm_ent->flag |= SHM_DEL;
+			/* If nattch of this segment is zero the remove the segment
+			 * and release the physical pages.
+			 */
+			if (shm_ent->nattch == 0)
+				amm_release_shm_segment(shm_ent);
+			else {
+				ret = shmctl(shmid, IPC_STAT, &shm_ent->ipc_stat);
+				if (ret < 0) {
+					ret = -errno;
+					VEOS_DEBUG("error(%s) while updating shm stats",
+						strerror(-ret));
+				}
+			}
+			goto func_return;
 		}
 	}
-
-	/* Mark the segment status as destroy */
-	if (found)
-		shm_ent->flag |= SHM_DEL;
-	else {
-		ret = -EINVAL;
-		goto exit1;
-	}
-	/* If nattch of this segment is zero the remove the segment
-	 * and release the physical pages.
-	 */
-
-
-	if (shm_ent->nattch == 0)
-		amm_release_shm_segment(shm_ent);
-
-	ret = 0;
+	VEOS_DEBUG("shm segment with shmid(%d) not found", shmid);
+	ret = -EINVAL;
+func_return:
 	VEOS_TRACE("returned");
-	pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,
-			"Failed to release node shm lock");
-	return ret;
-exit1:
-	VEOS_TRACE("returned with error");
 	pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,
 			"Failed to release node shm lock");
 	return ret;
@@ -505,15 +508,14 @@ exit1:
 int amm_do_shmdt(vemva_t shmaddr, struct ve_task_struct *tsk,
 		struct shm_seginfo *shm_info)
 {
-	int i = 0;
-	int ret = -1, shmrm = 0;
+	int ret = 0, shmrm = 0, i = 0, found = 0;
 	int ent = 0, count = 0, pgmod = 0;
 	atb_reg_t tmp_atb = { { { {0} } } };
 	uint64_t pgno = -1, pgsz = 0;
 	vemaa_t pgaddr = 0;
 	dir_t dir_num = 0;
 	dir_t dirs[ATB_DIR_NUM] = {0}, prv_dir = -1;
-	struct shm *shm_segment = NULL;
+	struct shm *shm_segment = NULL, *shm_ent = NULL;
 	struct ve_node_struct *vnode = VE_NODE(0);
 	struct ve_mm_struct *mm = tsk->p_ve_mm;
 
@@ -588,7 +590,8 @@ int amm_do_shmdt(vemva_t shmaddr, struct ve_task_struct *tsk,
 detach_directly:
 		dir_num = invalidate_vemva(shmaddr, (void *)&tmp_atb);
 		if (0 > dir_num) {
-			VEOS_DEBUG("Not able to unset ATB of vemva:%lx\n",
+			ret = dir_num;
+			VEOS_DEBUG("Not able to unset ATB of vemva:%lx",
 					shmaddr);
 			goto shmdt_ret;
 		}
@@ -613,12 +616,8 @@ detach_directly:
 	 */
 	memcpy(&(mm->atb), &tmp_atb, sizeof(atb_reg_t));
 	i = 0;
-	while (0 <= dirs[i]) {
-		psm_sync_hw_regs(tsk, ATB,
-				(void *)&(mm->atb),
-				true, dirs[i++], 1);
-	}
-
+	while (0 <= dirs[i])
+		psm_sync_hw_regs(tsk, ATB, (void *)&(mm->atb), true, dirs[i++], 1);
 
 	VEOS_DEBUG("Shared memory segment with id %d and current attach value %ld",
 			shm_segment->shmid, shm_segment->nattch);
@@ -626,24 +625,31 @@ detach_directly:
 	/* Release the segment if flag is set as destroy.
 	*/
 
-	if ((shm_segment->flag & SHM_DEL) &&
-			(shm_segment->nattch == 0)) {
-		if (shmrm) {
-			pthread_mutex_lock_unlock(&vnode->shm_node_lock, LOCK,
-					"Failed to acquire node shm lock");
-			VEOS_DEBUG("Shared memory segment with id %d delete flag is set",
-					shm_segment->shmid);
-			amm_release_shm_segment(shm_segment);
-			pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,
-					"Failed to release node shm lock");
+	if (shmrm) {
+		pthread_mutex_lock_unlock(&vnode->shm_node_lock, LOCK,
+				"Failed to acquire node shm lock");
+		VEOS_DEBUG("Shared memory segment with id %d delete flag is set",
+				shm_segment->shmid);
+		list_for_each_entry(shm_ent, &vnode->shm_head, shm_list) {
+			if (shm_ent == shm_segment) {
+				VEOS_DEBUG("Shared memory segment(%p) for shmid(%d) found",
+						shm_ent, shm_ent->shmid);
+				found = 1;
+				break;
+			}
 		}
+
+		if (found) {
+			if ((shm_segment->flag & SHM_DEL) &&
+					(shm_segment->nattch == 0))
+				amm_release_shm_segment(shm_segment);
+			else
+				shm_segment->ipc_stat.shm_dtime = time(NULL);
+		}
+		pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,
+				"Failed to release node shm lock");
 	}
 
-	ret = 0;
-	VEOS_TRACE("returned");
-	pthread_mutex_lock_unlock(&mm->thread_group_mm_lock, UNLOCK,
-			"Failed to release thread-group-mm-lock");
-	return ret;
 shmdt_ret:
 	pthread_mutex_lock_unlock(&mm->thread_group_mm_lock, UNLOCK,
 			"Failed to release thread-group-mm-lock");
@@ -749,4 +755,449 @@ done:
 	VEOS_TRACE("returned with shm segment %p for shmaddr 0x%lx",
 			shm_segment, shmaddr);
 	return shm_segment;
+}
+
+/**
+* @brief This function is will compair the cuid and uid to insure
+*	capability.
+*
+* @param[in] proc_info process information.
+* @param[in] s_shm shm segment information
+*
+* @return if success it returns true else false.
+*/
+bool __is_capable(proc_t *proc_info, struct shmid_ds *s_shm)
+{
+	VEOS_TRACE("Entering");
+	if ((s_shm->shm_perm.uid == proc_info->euid) ||
+		(s_shm->shm_perm.cuid == proc_info->euid) ||
+		(check_ve_proc_capability(proc_info->tid, CAP_SYS_ADMIN))) {
+		VEOS_TRACE("returned");
+		return true;
+	}
+	VEOS_TRACE("returned");
+	return false;
+}
+
+/**
+* @brief This function will check whether requestor is capable of
+*        deleting shm segment or not.
+*
+* @param[in] pid process identifier of requestor.
+* @param[in/out] key_id shmkey or shmid of segment to be deleted.
+*	In case of shmid it is 'in' parameter only, but
+*	in case of shmkey it is 'in/out' parameter.
+* @param[in] is_key if true key_id contain shmkey else shmid.
+*
+* @return return 0 on success else negative of errno.
+*/
+int is_capable(pid_t pid, int *key_id, bool is_key)
+{
+	struct ve_node_struct *vnode = VE_NODE(0);
+	proc_t proc_info = {0};
+	struct shm *s_shm = NULL;
+	int ret = 0;
+	VEOS_TRACE("Entering");
+	/*Get proc info for given pid*/
+	if (0 > psm_get_ve_proc_info(pid, &proc_info)) {
+		VEOS_DEBUG("pid(%d) error unable to get proc info", pid);
+		return -EFAULT;
+	}
+
+	pthread_mutex_lock_unlock(&vnode->shm_node_lock, LOCK,
+			"Failed to acquire node shm lock");
+
+	list_for_each_entry(s_shm, &vnode->shm_head, shm_list) {
+		if (is_key ? (s_shm->key == *key_id) : (s_shm->shmid == *key_id)) {
+			VEOS_DEBUG("shm segment with %s %d found",
+					is_key ? "shmkey" : "shmid", *key_id);
+			/*check the capability*/
+			if (__is_capable(&proc_info, &s_shm->ipc_stat)) {
+				if (is_key)
+					*key_id = s_shm->shmid;
+				goto f_return;
+			} else {
+				VEOS_DEBUG("does not have required capability to delete the segment");
+				if (is_key)
+					*key_id = s_shm->shmid;
+				ret = -EPERM;
+				goto f_return;
+			}
+		}
+	}
+
+	VEOS_DEBUG("shm segment with shmid %d is not found", *key_id);
+	ret = -EINVAL;
+f_return:
+	pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,
+			"Failed to release node shm lock");
+	VEOS_TRACE("returned");
+	return ret;
+}
+
+/**
+* @brief Copy information from src to dest.
+*
+* @param[in] dest destination pointer.
+* @param[in] src source pointer.
+* @param[in] shm_cnt shm segment number.
+*/
+void copy_shm_info(void *dest, void *src, int shm_cnt)
+{
+	VEOS_TRACE("Entering");
+	VEOS_DEBUG("Copying Info for shmid(%d) count(%d)",
+			((struct shm *)src)->shmid, shm_cnt);
+	((sdata_t *)dest + shm_cnt)->id =
+		((struct shm *)src)->shmid;
+	((sdata_t *)dest + shm_cnt)->key =
+		((struct shm *)src)->key;
+	((sdata_t *)dest + shm_cnt)->uid =
+		((struct shm *)src)->ipc_stat.shm_perm.uid;
+	((sdata_t *)dest + shm_cnt)->gid =
+		((struct shm *)src)->ipc_stat.shm_perm.gid;
+	((sdata_t *)dest + shm_cnt)->cuid =
+		((struct shm *)src)->ipc_stat.shm_perm.cuid;
+	((sdata_t *)dest + shm_cnt)->cgid =
+		((struct shm *)src)->ipc_stat.shm_perm.cgid;
+	((sdata_t *)dest + shm_cnt)->mode =
+		((struct shm *)src)->ipc_stat.shm_perm.mode;
+	((sdata_t *)dest + shm_cnt)->shm_nattch =
+		((struct shm *)src)->ipc_stat.shm_nattch;
+	((sdata_t *)dest + shm_cnt)->shm_segsz =
+		((struct shm *)src)->ipc_stat.shm_segsz;
+	((sdata_t *)dest + shm_cnt)->shm_atim =
+		((struct shm *)src)->ipc_stat.shm_atime;
+	((sdata_t *)dest + shm_cnt)->shm_dtim =
+		((struct shm *)src)->ipc_stat.shm_dtime;
+	((sdata_t *)dest + shm_cnt)->shm_ctim =
+		((struct shm *)src)->ipc_stat.shm_ctime;
+	((sdata_t *)dest + shm_cnt)->shm_cprid =
+		((struct shm *)src)->ipc_stat.shm_cpid;
+	((sdata_t *)dest + shm_cnt)->shm_lprid =
+		((struct shm *)src)->ipc_stat.shm_lpid;
+	((sdata_t *)dest + shm_cnt)->shm_rss =
+		((struct shm *)src)->size;
+	((sdata_t *)dest + shm_cnt)->shm_swp = 0;
+
+	VEOS_TRACE("Returned");
+}
+/**
+* @brief This function will delete the all segment present on veos or list
+*        the segment.
+* @param[in] pid process identifier of requestor.
+* @param[in] is_ipcs if true then this function will list segment else
+*         it will delete the segment.
+* @param[out] header this will contain shmid and length of shared memory.
+*
+* @return if success returns o, else negative on errno.
+*/
+int rm_or_ls_segment(pid_t pid, bool is_ipcs, struct ve_mapheader *header)
+{
+	proc_t proc_info = {0};
+	int shm_cnt = 0;
+	int ret = 0;
+	void *shm_data = NULL;
+	struct ve_node_struct *vnode = VE_NODE(0);
+	struct shm *shm_trav = NULL, *shm_tmp = NULL;
+	struct shm_summary summary = {0};
+	size_t info_sz = 0;
+
+	VEOS_TRACE("Entering");
+
+	/*Get proc info for given pid*/
+	if (0 > psm_get_ve_proc_info(pid, &proc_info)) {
+		VEOS_DEBUG("pid(%d) error unable to get proc info", pid);
+		ret = -EFAULT;
+		goto f_return;
+	}
+
+	/*Get node specific shm memory information*/
+	ve_shm_summary(&summary);
+
+	VEOS_DEBUG("Total Number of shm segment on VE[%d]\n",
+			summary.used_ids);
+
+	if (!summary.used_ids) {
+		VEOS_DEBUG("Total Number of shm segment on VE[%d]\n",
+				summary.used_ids);
+		header->shmid = 0;
+		goto f_return;
+	}
+
+	info_sz = (!is_ipcs) ? sizeof(sinfo_t) : sizeof(sdata_t);
+
+	/*create shared memory to provide info to requesting process*/
+	ret = shmget(IPC_PRIVATE, (info_sz * summary.used_ids), IPC_CREAT|0660);
+	if (ret < 0) {
+		ret = -errno;
+		VEOS_DEBUG("error(%s) while creating shared memory",
+				strerror(errno));
+		goto f_return;
+	}
+
+	shm_data = shmat(ret, NULL, 0);
+	if ((void *) -1 == shm_data) {
+		ret = -errno;
+		shmctl(ret, IPC_RMID, NULL);
+		VEOS_DEBUG("error(%s) while attaching shared memory",
+				strerror(errno));
+		goto f_return;
+	}
+
+	header->shmid = ret;
+	header->length = summary.used_ids;
+
+	VEOS_DEBUG("HEADER INFO header->shmid(%d) header->length(%u)",
+			header->shmid, header->length);
+
+	/* Traversing through the global shm list and deleting
+	 * segment in case of ipcrm or listing the segment in case of ipcs*/
+	pthread_mutex_lock_unlock(&vnode->shm_node_lock, LOCK,
+			"Failed to acquire node shm lock");
+	list_for_each_entry_safe(shm_trav, shm_tmp, &vnode->shm_head, shm_list) {
+		/* As requestor process does not have required
+		 * capability to delete the segment, returning
+		 * segment id without deleting it*/
+		if (__is_capable(&proc_info, &shm_trav->ipc_stat) && !is_ipcs) {
+			/* Mark the segment status as destroy */
+			((sinfo_t *)shm_data + shm_cnt)->shmid = shm_trav->shmid;
+			((sinfo_t *)shm_data + shm_cnt)->shm_errno = 0;
+
+			shm_trav->flag |= SHM_DEL;
+
+			/* If none of the process attach to segment, destroying it
+			 * else updating the shm segment stats*/
+			if (shm_trav->nattch == 0) {
+				shmctl(shm_trav->shmid, IPC_RMID, NULL);
+				VEOS_DEBUG("deleted shm segment with shmid(%d)",
+						shm_trav->shmid);
+				amm_release_shm_segment(shm_trav);
+			} else {
+				shmctl(shm_trav->shmid, IPC_STAT, &shm_trav->ipc_stat);
+
+				/* Here we are ignoring the error,
+				 * because it might be possible that,
+				 * segment is present on VE but not on VH*/
+				shmctl(shm_trav->shmid, IPC_RMID, NULL);
+			}
+		} else if (!__is_capable(&proc_info, &shm_trav->ipc_stat) && !is_ipcs) {
+			VEOS_DEBUG("can't delete shm segment with shmid (%d)",
+					shm_trav->shmid);
+			((sinfo_t *)shm_data + shm_cnt)->shmid = shm_trav->shmid;
+			((sinfo_t *)shm_data + shm_cnt)->shm_errno = EPERM;
+		} else {
+			VEOS_DEBUG("found shm segment with shmid(%d) total found(%d)",
+					shm_trav->shmid, shm_cnt);
+			shmctl(shm_trav->shmid, IPC_STAT, (struct shmid_ds *)&shm_trav->ipc_stat);
+			copy_shm_info(shm_data, shm_trav, shm_cnt);
+		}
+		++shm_cnt;
+	}
+	ret = shmdt(shm_data);
+	if (ret < 0)  {
+		ret = -errno;
+		header->shmid = 0;
+		shmctl(header->shmid, IPC_RMID, NULL);
+		VEOS_DEBUG("can't detach shm segment shmid(%d)",
+				header->shmid);
+	}
+
+	pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,
+			"Failed to release node shm lock");
+f_return:
+	VEOS_TRACE("Returned");
+	return ret;
+}
+
+/**
+* @brief This function will give shm infomation for individual shm
+*	segment.
+*
+* @param[in] shmid of shm segment whose information required.
+* @param[out] header shm segment information to trasfer the info.
+*
+* @return if success returns 0 else negative of errno.
+*/
+int get_shm_info(int shmid, struct ve_mapheader *header)
+{
+	int ret = 0;
+	struct shm *shm_trav = NULL;
+	sdata_t *shm_data = NULL;
+	struct ve_node_struct *vnode = VE_NODE(0);
+	VEOS_TRACE("Entering");
+	pthread_mutex_lock_unlock(&vnode->shm_node_lock, LOCK,
+			"Failed to acquire node shm lock");
+
+	list_for_each_entry(shm_trav, &vnode->shm_head, shm_list) {
+		if (shm_trav->shmid == shmid) {
+			ret = shmget(IPC_PRIVATE, sizeof(struct shm), IPC_CREAT|0660);
+			if (0 > ret) {
+				ret = -errno;
+				VEOS_DEBUG("error(%s) while creating shm segment",
+						strerror(errno));
+				goto s_exit;
+			}
+			shm_data = shmat(ret, NULL, 0);
+			if ((void *)shm_data == (void *)-1) {
+				ret = -errno;
+				shmctl(ret, IPC_RMID, NULL);
+				VEOS_DEBUG("error(%s) while attaching shm segment",
+						strerror(errno));
+				goto s_exit;
+			}
+			header->shmid = ret;
+			header->length = 1;
+			VEOS_DEBUG("Copying Information for shm segment shmid(%d)",
+					shm_trav->shmid);
+			/*Copy information*/
+			shmctl(shm_trav->shmid, IPC_STAT,
+					(struct shmid_ds *)&shm_trav->ipc_stat);
+			copy_shm_info(shm_data, shm_trav, 0);
+
+			ret = shmdt(shm_data);
+			if (0 > ret) {
+				ret = -errno;
+				shmctl(ret, IPC_RMID, NULL);
+				VEOS_DEBUG("error(%s) while detaching shm segment",
+						strerror(errno));
+				goto s_exit;
+			}
+			goto s_exit;
+		}
+	}
+	ret = -EINVAL;
+	VEOS_DEBUG("error(%s) shmid not found(%d)", strerror(-ret), shmid);
+s_exit:
+	VEOS_TRACE("Returning");
+	pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,
+			"Failed to release node shm lock");
+	return ret;
+}
+/**
+* @brief This function will give VEOS shm summary.
+*
+* @param[out] s_summary shared memory summary used on VEOS.
+*/
+void ve_shm_summary(struct shm_summary *s_summary)
+{
+	struct shm *shm_trav = NULL;
+	struct ve_node_struct *vnode = VE_NODE(0);
+	VEOS_TRACE("Entering");
+	pthread_mutex_lock_unlock(&vnode->shm_node_lock, LOCK,
+			"Failed to acquire node shm lock");
+	list_for_each_entry(shm_trav, &vnode->shm_head, shm_list) {
+		/*Total Number of shared memory segment used*/
+		s_summary->used_ids += 1;
+
+		/*Total Number pages used for shared memory*/
+		s_summary->shm_tot += shm_trav->size >> LARGE_PSHFT;
+
+		/*Total Number of resident shared memory pages*/
+		if (shm_trav->vemaa)
+			s_summary->shm_rss += shm_trav->size >> LARGE_PSHFT;
+
+	}
+	pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,
+			"Failed to release node shm lock");
+	VEOS_TRACE("Returned");
+}
+
+
+/**
+* @brief This function will check whether given shmid is valid or not.
+*
+* @param[in] shmid whose validity to be checked.
+* @param[out] shmid_valid is true if shmid is valid else false.
+* @param[in] is_key will decide whether query is for shmid or shmkey.
+*/
+void veos_key_id_query(int key_id, bool *shmid_valid, bool is_key)
+{
+	struct shm *shm_trav = NULL;
+	struct ve_node_struct *vnode = VE_NODE(0);
+	VEOS_TRACE("Entering");
+	pthread_mutex_lock_unlock(&vnode->shm_node_lock, LOCK,
+			"Failed to acquire node shm lock");
+	list_for_each_entry(shm_trav, &vnode->shm_head, shm_list) {
+		if (is_key ? shm_trav->key == key_id : shm_trav->shmid == key_id) {
+			VEOS_DEBUG("shm segment with %s [%d] is valid",
+					is_key ? "shmkey" : "shmid", key_id);
+			*shmid_valid = true;
+			goto query_done;
+		}
+	}
+	*shmid_valid = false;
+query_done:
+	pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,
+			"Failed to release  node shm lock");
+	VEOS_TRACE("Returned");
+}
+
+/**
+* @brief This function will decide how to remove shm segment or it will list
+*        all segment currently present on veos.
+*
+* @param[in] pid process identifier of requestor.
+* @param[in] shm_info infomation of segment to be deleted.
+* @param[out] header will contain information of shared memory
+*             segment created to convey information with requestor.
+* @param[out] s_summary will contain shared memory segment summary of VEOS.
+*
+* @return if success return 0, else negative of errno.
+*/
+int veos_ipc_op(pid_t pid,
+		struct ve_shm_info *shm_info,
+		struct ve_mapheader *header,
+		struct shm_summary *s_summary)
+{
+	int ret = 0;
+	bool if_yes = false;
+	VEOS_DEBUG("Entering");
+	switch (shm_info->mode) {
+	case SHMKEY:
+		if_yes = true;
+	case SHMID:
+		VEOS_DEBUG("PID[%d] Request for IPCRM -m/IPCRM -M SHMID[%d]",
+				pid, shm_info->key_id);
+		ret = is_capable(pid, &shm_info->key_id, if_yes);
+		if (ret < 0)
+			return ret;
+
+		/* Deleting segment from VE*/
+		ret = amm_do_shmctl(shm_info->key_id);
+		if (ret < 0)
+			return ret;
+		/* Here we are ignoring the error,
+		 * because it might be possible that,
+		 * segment is present on VE but not on VH*/
+		shmctl(shm_info->key_id, IPC_RMID, NULL);
+		break;
+	case SHM_LS:
+		if_yes =  true;
+	case SHM_ALL:
+		/*Delete all shm segment or list shm*/
+		VEOS_DEBUG("PID[%d] Request for IPCRM -a/IPCS", pid);
+		ret = rm_or_ls_segment(pid, if_yes, header);
+		if (ret < 0)
+			VEOS_DEBUG("pid(%d) error(%s) %s", pid, strerror(-ret),
+					if_yes ? "ipcs" : "ipcrm -a");
+		break;
+	case SHMID_INFO:
+		VEOS_DEBUG("PID[%d] Request for IPCS -i SHMID[%d]",
+				shm_info->key_id, pid);
+		ret = get_shm_info(shm_info->key_id, header);
+		if (ret < 0)
+			VEOS_DEBUG("error(%s) while getting info for shmid(%d)",
+					strerror(-ret), shm_info->key_id);
+		break;
+	case SHM_SUMMARY:
+		VEOS_DEBUG("PID[%d] Request for IPCS -u", pid);
+		/*Give summary of all shared memory segment use by veos*/
+		ve_shm_summary(s_summary);
+		break;
+	default:
+		ret = -EINVAL;
+		VEOS_DEBUG("No Such Option for IPCS/IPCRM\n");
+	}
+
+	return ret;
 }

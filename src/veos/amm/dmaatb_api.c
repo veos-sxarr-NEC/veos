@@ -249,7 +249,7 @@ int64_t veos_alloc_dmaatb_entry_for_vemva(pid_t requester, pid_t owner,
 	amm_dump_dmaatb(req_tsk, 1);
 
 #if DEBUG
-	VEOS_DEBUG("Dumping DMAATB from *_for_vemva\n");
+	VEOS_DEBUG("Dumping DMAATB from *_for_vemva");
 	amm_dump_dmaatb(tsk, 1);
 #endif
 	ret = vehva;
@@ -366,7 +366,7 @@ int64_t veos_alloc_dmaatb_entry_for_aa_tsk(struct ve_task_struct *tsk,
 	VEOS_DEBUG("Start Dump Array of ABS addresses");
 
 	for (i = 0; addr[i]; i++)
-		VEOS_DEBUG("addr[%ld]:%lx\n", i, addr[i]);
+		VEOS_DEBUG("addr[%ld]:%lx", i, addr[i]);
 
 	VEOS_DEBUG("End Dump Array of ABS addresses");
 
@@ -532,7 +532,7 @@ int veos_schedulein_dmaatb(struct ve_task_struct *tsk)
 				tsk->pid, 1, 0, 0);
 		if (0 > ret) {
 			VEOS_DEBUG("VHVA->VHSAA conversion failed for "
-					"vaddr = %p for task :%d\n",
+					"vaddr = %p for task :%d",
 					(void *)vehva, tsk->pid);
 			return ret;
 		}
@@ -695,7 +695,6 @@ int64_t veos_free_dmaatb_entry_tsk(struct ve_task_struct *req_tsk,
 
 	while (0 <= dirs[i]) {
 		if ((dirs[i] >= noc) || (req_tsk->p_ve_mm->is_sched == true)) {
-			VEOS_DEBUG("free_dmaatb_entry updating");
 			psm_sync_hw_regs(req_tsk, _DMAATB, &(vnode->dmaatb),
 					true, dirs[i++], 1);
 		} else
@@ -755,7 +754,7 @@ void veos_free_dmaatb(dmaatb_reg_t *dmaatb)
 				if (pg_isvalid(&(dmaatb->entry[i][entry]))) {
 					pg_type = pg_gettype(&(dmaatb->entry[i][entry]));
 					if (pg_type == VE_ADDR_VEMAA) {
-						VEOS_DEBUG("Dec pages ref count");
+						VEOS_TRACE("Dec pages ref count");
 						pb = pg_getpb(&(dmaatb->entry[i][entry]), pgmod);
 						vemaa = pbaddr(pb, pgmod);
 						VEOS_DEBUG("vemaa = 0x%lx", vemaa);
@@ -774,7 +773,7 @@ void veos_free_dmaatb(dmaatb_reg_t *dmaatb)
 			}
 			hw_dma_map[i].count = 0;
 		} else  {
-			VEOS_DEBUG("DIR: %d is invalid.", i);
+			VEOS_TRACE("DIR: %d is invalid.", i);
 			continue;
 		}
 		ret = vedl_update_dmaatb_dir(handle, cnt_regs_addr,
@@ -999,7 +998,7 @@ int veos_release_dmaatb_entry(struct ve_task_struct *tsk)
 			tsk->jid, false);
 	if (0 > dir_num) {
 		VEOS_DEBUG("DMAATB Directory not available"
-				"for vehva \n");
+				"for vehva");
 		return -EFAULT;
 	}
 

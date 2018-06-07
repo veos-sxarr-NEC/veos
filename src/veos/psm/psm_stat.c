@@ -546,10 +546,10 @@ int psm_rpm_handle_pidstatus(int pid, struct velib_pidstatus *pidstatus)
 	pidstatus->caught = caught.__val[0];
 	pidstatus->ignored = ignored.__val[0];
 
-	VEOS_DEBUG("CAUGHT: %lx, IGNORED: %lx, PENDING: %lx, BLOCKED: %lx",
+	VEOS_DEBUG("CAUGHT: %lx, IGNORED: %lx, PENDING: %lx, BLOCKED: %lx\n"
+	           "CAUGHT: %llu, IGNORED: %llu, PENDING: %llu, BLOCKED: %llu",
 			caught.__val[0], ignored.__val[0],
-			tsk->pending.signal.__val[0], tsk->blocked.__val[0]);
-	VEOS_DEBUG("CAUGHT: %llu, IGNORED: %llu, PENDING: %llu, BLOCKED: %llu",
+			tsk->pending.signal.__val[0], tsk->blocked.__val[0],
 			pidstatus->caught, pidstatus->ignored,
 			pidstatus->pending, pidstatus->blocked);
 

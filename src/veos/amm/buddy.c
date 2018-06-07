@@ -106,7 +106,7 @@ size_t get_size_to_be_free(size_t extra_sz, int order, int count)
 	size_t act_sz = (count * (1UL << order));
 	size_t soford = 1LU << order;
 
-	VEOS_DEBUG("extra_sz : 0x%lx order : %d  count :%d act_sz :0x%lx\n",
+	VEOS_DEBUG("extra_sz : 0x%lx order : %d  count :%d act_sz :0x%lx",
 			extra_sz, order, count, act_sz);
 	if (extra_sz <= act_sz)
 		fr_sz = ALIGN_RD(extra_sz, soford);
@@ -177,7 +177,7 @@ bool is_alloc_compac(struct buddy_mempool *mp, int order,
 	VEOS_TRACE("iteration starts from order %d to order %d", ord, order);
 	for (; ord < order; ord++) {
 		if (mp->frb->fr_cnt[ord]) {
-			VEOS_DEBUG("%d blocks are free for order %d",
+			VEOS_TRACE("%d blocks are free for order %d",
 					mp->frb->fr_cnt[ord], ord);
 			act_size = act_size +
 				(mp->frb->fr_cnt[ord] * (1UL << ord));
@@ -199,7 +199,7 @@ bool is_alloc_compac(struct buddy_mempool *mp, int order,
 		VEOS_DEBUG("%ld size is extra allocated", ext_size);
 		VEOS_DEBUG("iteration starts to free %ld extra rsvd size", ext_size);
 		while (ext_size) {
-			VEOS_DEBUG("index(%d): order(%d): extra size(%ld): actual size(%ld): free size(%ld)",
+			VEOS_TRACE("index(%d): order(%d): extra size(%ld): actual size(%ld): free size(%ld)",
 					idx, alloc_pattern[idx].ord, ext_size, act_size, free_size);
 			if ((1UL << alloc_pattern[idx].ord) > ext_size) {
 				--idx;
@@ -207,11 +207,11 @@ bool is_alloc_compac(struct buddy_mempool *mp, int order,
 			}
 			free_size = get_size_to_be_free(ext_size, alloc_pattern[idx].ord,
 					alloc_pattern[idx].blk_cnt);
-			VEOS_DEBUG("size to be free(0x%lx)", free_size);
+			VEOS_TRACE("size to be free(0x%lx)", free_size);
 			alloc_pattern[idx].blk_cnt -= free_size/(1UL << alloc_pattern[idx].ord);
 			ext_size -= free_size;
 			act_size -= free_size;
-			VEOS_DEBUG("blk count(%ld): free size(%ld): actual size(%ld)",
+			VEOS_TRACE("blk count(%ld): free size(%ld): actual size(%ld)",
 					alloc_pattern[idx].blk_cnt, free_size, act_size);
 			--idx;
 		}
@@ -227,7 +227,7 @@ bool is_alloc_compac(struct buddy_mempool *mp, int order,
 	idx = 0;
 	VEOS_DEBUG("iteration starts for dumping compact pattern");
 	for (; alloc_pattern[idx].ord != 0; idx++) {
-		VEOS_DEBUG("free block count(%ld) for order(%d)",
+		VEOS_TRACE("free block count(%ld) for order(%d)",
 				alloc_pattern[idx].blk_cnt,
 				alloc_pattern[idx].ord);
 	}
@@ -323,16 +323,16 @@ int __veos_init_small_page_entry(struct buddy_mempool *mp,
 	VEOS_DEBUG("iterate for page start %ld to end %ld", s_pg, t_pg);
 
 	for (idx = 0; idx < t_pg; idx++) {
-		VEOS_DEBUG("start page %ld and current page %ld", s_pg, (s_pg + idx));
+		VEOS_TRACE("start page %ld and current page %ld", s_pg, (s_pg + idx));
 		ret = __page_entry(mp, (s_pg + idx), PG_2M, block->order);
 		if (0 > ret) {
 			VEOS_DEBUG("failed to update node page entry");
 			return ret;
 		}
-		VEOS_DEBUG("page map address(%p)", &map[idx]);
+		VEOS_TRACE("page map address(%p)", &map[idx]);
 		map[idx] = (s_pg + idx);
 		++mp->small_page_used;
-		VEOS_DEBUG("In node %ld %s in use",
+		VEOS_TRACE("In node %ld %s in use",
 			mp->small_page_used, pgmod_to_pgstr(PG_2M));
 	}
 	VEOS_DEBUG("page entry update itertation ends");
@@ -371,24 +371,24 @@ int __veos_init_huge_page_entry(struct buddy_mempool *mp,
 	VEOS_DEBUG("iterate for page start %ld to end %ld",
 			s_pg, t_pg);
 	for (idx = 0; idx < (t_pg * HUGE_PAGE_IDX); idx++) {
-		VEOS_DEBUG("start page %ld and current page %ld",
+		VEOS_TRACE("start page %ld and current page %ld",
 					s_pg, (s_pg + idx));
 
 		if (!(idx % HUGE_PAGE_IDX)) {
-			VEOS_DEBUG("updating actual huge page entry");
+			VEOS_TRACE("updating actual huge page entry");
 			ret = __page_entry(mp, (s_pg + idx), PG_HP,
 						block->order);
 			if (0 > ret) {
 				VEOS_DEBUG("failed to update node page entry");
 				return ret;
 			}
-			VEOS_DEBUG("page map address(%p)", &map[(idx/HUGE_PAGE_IDX)]);
+			VEOS_TRACE("page map address(%p)", &map[(idx/HUGE_PAGE_IDX)]);
 			map[(idx/HUGE_PAGE_IDX)] = (s_pg + idx);
 			++mp->huge_page_used;
-			VEOS_DEBUG("In node %ld %s in use",
+			VEOS_TRACE("In node %ld %s in use",
 				mp->huge_page_used, pgmod_to_pgstr(PG_HP));
 		} else {
-			VEOS_DEBUG("updating page entry for huge index");
+			VEOS_TRACE("updating page entry for huge index");
 			vnode_info->ve_pages[(s_pg + idx)] = (struct ve_page *)-1;
 		}
 	}
@@ -422,7 +422,7 @@ int veos_page_entry(struct buddy_mempool *mp,
 			tmp_blk, mp->alloc_req_list, link) {
 
 		if (pgmod == PG_2M) {
-			VEOS_DEBUG("map:%p, idx:%ld :: (map +idx):%p",
+			VEOS_TRACE("map:%p, idx:%ld :: (map +idx):%p",
 					map, idx, (map + idx));
 
 			ret =  __veos_init_small_page_entry(mp, curr_blk, (map + idx));
@@ -434,7 +434,7 @@ int veos_page_entry(struct buddy_mempool *mp,
 			idx += ((1UL << curr_blk->order) >> PSSHFT);
 			VEOS_DEBUG("udpated idx(%ld)", idx);
 		} else {
-			VEOS_DEBUG("map:%p, idx:%ld :: (map +idx):%p", map, idx, (map+idx));
+			VEOS_TRACE("map:%p, idx:%ld :: (map +idx):%p", map, idx, (map+idx));
 			ret = __veos_init_huge_page_entry(mp, curr_blk, (map + idx));
 			if (0 > ret) {
 				VEOS_DEBUG("fail to update %s entry", pgmod_to_pgstr(pgmod));
@@ -488,7 +488,7 @@ void *buddy_compac_alloc(struct buddy_mempool *mp,
 		VEOS_DEBUG("allocating mem blk rq_cnt(%d) of order %d from mempool(%p)",
 			rq_cnt, alloc_pattern[rq_cnt].ord, mp);
 		for (; t_req < alloc_pattern[rq_cnt].blk_cnt; t_req++) {
-			VEOS_DEBUG("allocating %ld mem blk of order %d from mempool(%p)",
+			VEOS_TRACE("allocating %ld mem blk of order %d from mempool(%p)",
 				alloc_pattern[rq_cnt].blk_cnt,
 				alloc_pattern[rq_cnt].ord, mp);
 			vemaa = buddy_alloc(mp, alloc_pattern[rq_cnt].ord);
@@ -505,7 +505,7 @@ void *buddy_compac_alloc(struct buddy_mempool *mp,
 				}
 				alloc_block->order = alloc_pattern[rq_cnt].ord;
 				alloc_block->start = (uint64_t)vemaa;
-				VEOS_DEBUG("block allocated start %lx and order %ld",
+				VEOS_TRACE("block allocated start %lx and order %ld",
 					alloc_block->start, alloc_block->order);
 				list_add_tail(&alloc_block->link, mp->alloc_req_list);
 			}
@@ -734,13 +734,12 @@ bool is_free(struct list_head *free_list, struct block *block)
 
 	VEOS_DEBUG("traversing free list(%p) starts", free_list);
 	list_for_each_entry(free_blk, free_list, link) {
-		VEOS_DEBUG("free blk(%p) with start %lx",
+		VEOS_TRACE("free blk(%p) with start %lx",
 				free_blk, free_blk->start);
 		if (free_blk->start == block->start)
 			return true;
 	}
 
-	VEOS_DEBUG("traversing ends");
 	VEOS_TRACE("returned");
 	return false;
 }
@@ -792,7 +791,7 @@ struct block *get_buddy(struct buddy_mempool *mp,
 	VEOS_DEBUG("traversing free list(%p) of order %d",
 			&mp->frb->free[order], order);
 	list_for_each_entry(free_buddy, &mp->frb->free[order], link) {
-		VEOS_DEBUG("free_buddy(%p) and start %lx",
+		VEOS_TRACE("free_buddy(%p) and start %lx",
 			free_buddy, free_buddy->start);
 		if (free_buddy->start == _buddy)
 			return free_buddy;
@@ -816,8 +815,6 @@ void buddy_free(struct buddy_mempool *mp, struct block *block)
 
 	order = block->order;
 	VEOS_DEBUG("freeing buddy block(%p) to mempool(%p)", block, mp);
-	VEOS_DEBUG("freeing mem blk with start %lx and order %lu",
-					block->start, block->order);
 
 	if (order < mp->min_order)
 		order = mp->min_order;
@@ -829,17 +826,17 @@ void buddy_free(struct buddy_mempool *mp, struct block *block)
 	/* Coalesce as much as possible with adjacent free buddy blocks */
 	VEOS_DEBUG("iterate from order %d to pool order %ld", order, mp->pool_order);
 	while (order < mp->pool_order) {
-		VEOS_DEBUG("block %p of order %d from mempool(%p)", block, order, mp);
+		VEOS_TRACE("block %p of order %d from mempool(%p)", block, order, mp);
 
 		struct block *buddy = get_buddy(mp, block, order);
 		if (buddy == BUDDY_FAILED)
 			break;
 
 		list_del(&buddy->link);
-		VEOS_DEBUG("blk start %lx and buddy start %lx", block->start, buddy->start);
+		VEOS_TRACE("blk start %lx and buddy start %lx", block->start, buddy->start);
 		if (buddy->start < block->start)
 			block->start = buddy->start;
-		VEOS_DEBUG("before decrementing free blk cnt %d for order %d",
+		VEOS_TRACE("before decrementing free blk cnt %d for order %d",
 						mp->frb->fr_cnt[order], order);
 		if (mp->frb->fr_cnt[order] != 0)
 			--mp->frb->fr_cnt[order];
@@ -847,7 +844,7 @@ void buddy_free(struct buddy_mempool *mp, struct block *block)
 		++order;
 		free(buddy);
 		block->order = order;
-		VEOS_DEBUG("updated blk start %lx and order %ld",
+		VEOS_TRACE("updated blk start %lx and order %ld",
 				block->start, block->order);
 	}
 
@@ -919,7 +916,7 @@ struct buddy_mempool *veos_buddy_init(uint64_t start_addr, size_t mem_size, size
 	while (r_size > 0) {
 		new_blk = calloc(1, sizeof(struct block));
 		if (new_blk == NULL) {
-			VEOS_DEBUG("Error (%s) while allocating memory for new_blk",
+			VEOS_CRIT("Error (%s) while allocating memory for new_blk",
 					strerror(errno));
 			buddy_deinit(mempool);
 			return NULL;
@@ -933,7 +930,7 @@ struct buddy_mempool *veos_buddy_init(uint64_t start_addr, size_t mem_size, size
 
 		r_size = (size_t)(r_size - roundown_pow_of_two(r_size));
 		new_blk->start = start_addr + r_size;
-		VEOS_DEBUG("remaining size : 0x%lx", r_size);
+		VEOS_TRACE("remaining size : 0x%lx", r_size);
 	}
 	mempool->base_addr = start_addr;
 	mempool->total_pages = nr_pages;
@@ -995,7 +992,7 @@ buddy_init(
 	VEOS_DEBUG("Allocating free list object of size %lu", sizeof(struct free_list));
 	mp->frb = calloc(1, sizeof(struct free_list));
 	if (NULL == mp->frb) {
-		VEOS_DEBUG("Malloc error while allocating mempool free list object");
+		VEOS_CRIT("Calloc error while allocating mempool free list object");
 		free(mp);
 		return NULL;
 	}
@@ -1195,11 +1192,11 @@ buddy_alloc(struct buddy_mempool *mp, unsigned long order)
 			buddy_block->order = j;
 			list_add(&buddy_block->link, &mp->frb->free[j]);
 			++mp->frb->fr_cnt[j];
-			VEOS_DEBUG("free blk start %lx and order %lu",
+			VEOS_TRACE("free blk start %lx and order %lu",
 				buddy_block->start, buddy_block->order);
-			VEOS_DEBUG("pool free blk list %p and blk link %p",
+			VEOS_TRACE("pool free blk list %p and blk link %p",
 					&buddy_block->link, &mp->frb->free[j]);
-			VEOS_DEBUG("mempool free blk count %d for order %ld",
+			VEOS_TRACE("mempool free blk count %d for order %ld",
 				mp->frb->fr_cnt[j], j);
 		}
 
@@ -1225,12 +1222,12 @@ buddy_dump_mempool(struct buddy_mempool *mp)
 	unsigned long i = 0;
 	struct block *free_block = NULL;
 
-	VEOS_DEBUG("---------------------------------------------------");
-	VEOS_DEBUG("ORDER       BUDDY_START       BUDDY_END        SIZE");
+	VEOS_TRACE("---------------------------------------------------");
+	VEOS_TRACE("ORDER       BUDDY_START       BUDDY_END        SIZE");
 	for (i = mp->min_order; i <= mp->pool_order; i++) {
 		/* Count the number of memory blocks in the list */
 		list_for_each_entry(free_block, &mp->frb->free[i], link) {
-			VEOS_DEBUG("%5ld %15lx %15lx %13lx",
+			VEOS_TRACE("%5ld %15lx %15lx %13lx",
 				free_block->order, free_block->start,
 			(free_block->start + ((1UL << free_block->order) - 1)),
 				(1UL << free_block->order));
@@ -1239,7 +1236,7 @@ buddy_dump_mempool(struct buddy_mempool *mp)
 	VEOS_DEBUG("TOTAL PAGES :%ld", mp->total_pages);
 	VEOS_DEBUG("TOTAL SMALL PAGE USED :%ld", mp->small_page_used);
 	VEOS_DEBUG("TOTAL HUGE PAGE USED :%ld", mp->huge_page_used);
-	VEOS_DEBUG("-------------------------------------------------");
+	VEOS_TRACE("-------------------------------------------------");
 }
 
 

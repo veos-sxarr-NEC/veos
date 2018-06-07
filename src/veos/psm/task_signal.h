@@ -41,9 +41,10 @@
 
 /* Macro to decide if signal is synchronous */
 #define SYNCHRONOUS_SIGNAL	1
+/* to be used to avoid task list lock when core lock is already acquired*/
+#define FORCE_SEGV		2
 
 #define FSIGCONTINUE		0
-#define FSIGSTOPPING		1
 #define FSIGMASKING		2
 #define FSTOPPROC		3
 #define FCLEANTHREAD		4
@@ -242,7 +243,7 @@ void ve_collect_signal(siginfo_t *, struct ve_sigpending *, int, int *,
 int psm_dequeue_ve_signal(siginfo_t *, struct ve_sigpending *,  sigset_t *,
 			int *, struct ve_task_struct *);
 int on_sig_stack(struct ve_task_struct *);
-vemaa_t ve_getframe(struct ve_task_struct *, int, vemaa_t *, int *);
+int ve_getframe(struct ve_task_struct *, int, vemaa_t *, vemaa_t *, uint64_t *, int *);
 void ve_force_sigsegv(int, struct ve_task_struct *);
 int ve_format_core_filename(struct ve_corename *, struct ve_task_struct *);
 int ve_get_signal(struct ve_task_struct *, int *, siginfo_t *);

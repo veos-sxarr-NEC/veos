@@ -447,7 +447,6 @@ struct ve_task_struct {
 	enum assign_task assign_task_flag; /*!< VE task assign status for driver */
 	bool wake_up_parent;    /*!< Flag to indicate whether vforked child should waken its parent */
 	bool thread_execed;	/*!< VE thread apart from main thread invoked execve() syscall */
-	bool affinity_ongoing;	/*!< Flag to check if set_schedaffinity request is ongoing for a task */
 };
 
 /**

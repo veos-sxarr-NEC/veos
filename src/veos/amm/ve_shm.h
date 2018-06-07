@@ -30,9 +30,14 @@
 #include "ve_list.h"
 #include "ve_mem.h"
 #include <sys/mman.h>
+#include <sys/shm.h>
+#include "ptrace_req.h"
+#include "psm_stat.h"
 #include "ve_memory.h"
 #include "task_mgmt.h"
 #include "task_signal.h"
+#include "rpm_comm.h"
+#include <sys/capability.h>
 
 #define	PG_SHM		(0x200000000)	/*!< Flag represent Shared memory page*/
 /* Flag represent VE Anonymous page */
@@ -59,6 +64,7 @@ struct shm {
 			  * memory segment*/
 	uint64_t flag;	/*!< flag for shared memory segment*/
 	int pgmod;	/*!< Page mode for shared memory segment*/
+	struct shmid_ds ipc_stat; /*!<shared memory statistics*/
 	pthread_mutex_t shm_lock;  /*!< lock fot shared memory segment*/
 	struct list_head shm_list; /*!< global list for shared memory segment*/
 };
@@ -77,7 +83,7 @@ struct shm_map {
 /* Shared memory related API's in veos */
 int amm_do_shmat(key_t, int, vemva_t, size_t,
 		int64_t, struct ve_task_struct *);
-int amm_do_shmctl(int, struct ve_task_struct *);
+int amm_do_shmctl(int);
 int amm_do_shmdt(vemva_t, struct ve_task_struct *,
 			struct shm_seginfo *);
 int amm_shm_detach(struct shm*, int);
@@ -86,4 +92,10 @@ int amm_release_shm_segment(struct shm *);
 struct shm *del_shm_map_entry(vemva_t, struct ve_mm_struct *);
 int insert_shm_map_entry(vemva_t, struct shm *, struct ve_mm_struct *);
 struct shm *amm_get_shm_segment(key_t, int, size_t, int, bool);
+
+/*shared memory rpm command related API's*/
+int veos_ipc_op(pid_t, struct ve_shm_info *, struct ve_mapheader *, struct shm_summary *);
+void ve_shm_summary(struct shm_summary *);
+int rm_or_ls_segment(pid_t, bool, struct ve_mapheader *);
+void veos_key_id_query(int shmid, bool *shmid_valid, bool is_key);
 #endif

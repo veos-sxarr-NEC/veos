@@ -3,12 +3,14 @@ libvedma_a_SOURCES = \
 	dma_api.c \
 	dma_hw.c \
 	dma_intr.c \
+	dma_deallocator.c \
 	dma_log.c \
 	dma_reqlist.c \
 	dma_reqlist_private.h \
 	dma.h \
 	dma_hw.h \
 	dma_intr.h \
+	dma_deallocator.h \
 	dma_private.h \
 	dma_reqlist.h \
 	dma_log.h \

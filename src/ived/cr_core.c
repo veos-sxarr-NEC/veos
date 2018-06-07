@@ -115,7 +115,7 @@ try_clear_cr_page_info(struct cr_page_info *cr_info)
 	if (ret != 0){
 		return(retval);
 	}
-	
+
 	if (cr_info->reference_cnt != 0){
 		retval = 1;
 		goto ret_success;
@@ -135,7 +135,7 @@ try_clear_cr_page_info(struct cr_page_info *cr_info)
 ret_success:
 	ret = pthread_mutex_unlock(&cr_info->cr_lock);
 	if (ret != 0){
-		IVED_WARN(log4cat_cr, "Unlock CR: %s", strerror(ret));
+		IVED_DEBUG(log4cat_cr, "Unlock CR: %s", strerror(ret));
 	}
 	IVED_DEBUG(log4cat_cr, "retval:%d", retval);
 	return (retval);
@@ -184,8 +184,8 @@ search_using_cr_info(struct process_info *proc_info,
 		if (entry->crd == crd && entry->vehva == vehva){
 			ret = pthread_mutex_lock(&entry->cr_info->cr_lock);
 			if (ret != 0){
-				IVED_WARN(log4cat_cr, "Acquire CR lock: %s",
-					  strerror(ret));
+				IVED_DEBUG(log4cat_cr, "Acquire CR lock: %s",
+					   strerror(ret));
 			}
 			retval = entry;
 			break;
@@ -209,7 +209,7 @@ err_ret:
  */
 struct cr_info_tracker *
 search_using_cr_info_halfway(struct process_info *proc_info, 
-		     struct cr_page_info *cr_info)
+			     struct cr_page_info *cr_info)
 {
 	int ret = 0;
 	struct cr_info_tracker *entry, *retval = NULL;
@@ -505,15 +505,15 @@ all_cr_release_remote(struct veos_info *os_info,
 
 		ret = pthread_mutex_lock(&cr_info->cr_lock);
 		if (ret != 0){
-			IVED_WARN(log4cat_cr, "Acquire CR lock: %s",
-				  strerror(ret));
+			IVED_DEBUG(log4cat_cr, "Acquire CR lock: %s",
+				   strerror(ret));
 		}
 
 		cr_user_info = search_cr_user_info(cr_info, proc_info->pid);
 
 		if (cr_user_info != NULL){
 			try_erase_cr_user_info(cr_info, cr_user_info, 
-					     IVED_PROC_EXIT);
+					       IVED_PROC_EXIT);
 		}
 
 		erase_using_cr_info(proc_info, cr_tracker);
@@ -574,7 +574,8 @@ all_cr_release_local(struct veos_info *os_info,
 		/* It acquires cr_info->cr_lock if succeed */
 		cr_tracker = search_using_cr_info(proc_info, i, UNUSED);
 		if (cr_tracker == NULL){
-			IVED_WARN(log4cat_cr,"Search the CR failed.");
+			IVED_WARN(log4cat_cr,
+				  "CR tracker is not found, so skip clearing");
 			pthread_mutex_lock(&cr_info->cr_lock);
 			dump_cr_page_info(cr_info);
 		} else  {
@@ -653,8 +654,8 @@ clear_all_intermediate_tracker(struct veos_info *os_info,
 
 		ret = pthread_mutex_lock(&cr_info->cr_lock);
 		if (ret != 0){
-			IVED_WARN(log4cat_cr, "Acquire CR lock: %s",
-				  strerror(ret));
+			IVED_DEBUG(log4cat_cr, "Acquire CR lock: %s",
+				   strerror(ret));
 			assert(0);
 		}
 
@@ -762,13 +763,13 @@ erase_cr_info_batch(struct list_head *erase_cr_list)
 
 		ret = pthread_mutex_lock(&os_info->os_lock);
 		if (ret != 0){
-			IVED_WARN(log4cat_main, "Acquire OS lock: %s",
-				  strerror(ret));
+			IVED_DEBUG(log4cat_main, "Acquire OS lock: %s",
+				   strerror(ret));
 		}
 		ret = pthread_mutex_lock(&cr_info->cr_lock);
 		if (ret != 0){
-			IVED_WARN(log4cat_main, "Acquire CR lock: %s",
-				  strerror(ret));
+			IVED_DEBUG(log4cat_main, "Acquire CR lock: %s",
+				   strerror(ret));
 		}
 
 		list_del(list_p);

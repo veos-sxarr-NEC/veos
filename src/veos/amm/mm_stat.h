@@ -38,7 +38,7 @@ int veos_meminfo(struct velib_meminfo *);
 int veos_getrusage(int who, struct ve_rusage *ve_r,
 		struct ve_task_struct *tsk);
 int veos_pmap(int pid, struct ve_mapheader *);
-
+int change_owner_shm(int, int);
 uint64_t get_vm_size(struct ve_mm_struct *);
 size_t get_map_attr(vemva_t, size_t, struct ve_mm_struct *, char *);
 void parse_vmflags(char *, char *);

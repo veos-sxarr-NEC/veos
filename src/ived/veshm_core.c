@@ -74,7 +74,7 @@ check_veshm_entry_list(struct veshm_memory_info *veshm_info,
 	added = 0;
 	list_for_each(list_chk, list_head){
 		veshm_info_chk = list_entry(list_chk, 
-					 struct veshm_memory_info, erase_list);
+					    struct veshm_memory_info, erase_list);
 		if (veshm_info == veshm_info_chk){
 			added = 1;
 			break;
@@ -554,15 +554,15 @@ search_veshm_info(struct process_info *proc_info, uint64_t vemva,
 					   size, syncnum, mode_flag,
 					   checking_mask);
 	if (veshm_track == NULL){
-		IVED_ERROR(log4cat_veshm, "%s (tracker)", strerror(ENOENT));
+		IVED_DEBUG(log4cat_veshm, "%s (tracker)", strerror(ENOENT));
 		errno = ENOENT;
 		goto err_ret;
 	}
 
 	ret = pthread_mutex_lock(&veshm_track->veshm_info->veshm_lock);
 	if (ret != 0){
-		IVED_WARN(log4cat_veshm, "Acquire VESHM lock: %s",
-			  strerror(ret));
+		IVED_DEBUG(log4cat_veshm, "Acquire VESHM lock: %s",
+			   strerror(ret));
 	}
 
 	veshm_info = veshm_track->veshm_info;
@@ -610,13 +610,13 @@ erase_veshm_info(struct veos_info *os_info,
 	ret = ived_check_mutex_locked(&os_info->os_lock);
 	assert(ret == 0);
 	if (ret != 0){
-		IVED_ERROR(log4cat_veshm, "Not locked (veshm_info)");
+		IVED_DEBUG(log4cat_veshm, "Not locked (veshm_info)");
 		return (-1);
 	}
 	ret = ived_check_mutex_locked(&veshm_info->veshm_lock);
 	assert(ret == 0);
 	if (ret != 0){
-		IVED_ERROR(log4cat_veshm, "Not locked (veshm_info)");
+		IVED_DEBUG(log4cat_veshm, "Not locked (veshm_info)");
 		return (-1);
 	}
 	if (veshm_info->reference_cnt != 0
@@ -773,8 +773,8 @@ ived_veshm_detach_all(struct veos_info *user_os_info,
 
 		ret = pthread_mutex_lock(&veshm_info->veshm_lock);
 		if (ret != 0){
-			IVED_WARN(log4cat_veshm, "Acquire VESHM lock: %s",
-				  strerror(ret));
+			IVED_DEBUG(log4cat_veshm, "Acquire VESHM lock: %s",
+				   strerror(ret));
 		}
 
 		veshm_info->reference_cnt--;

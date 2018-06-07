@@ -588,6 +588,9 @@ int main(int argc, char *argv[], char *envp[])
 	}
 	g_handle = handle; /* update global handle */
 
+	free(sock_name);
+	free(veos_sock_name);
+
 	/* Update global tid array for main thread with vefd */
 	global_tid_info[0].vefd = g_handle->ve_handle->vefd;
 	global_tid_info[0].veos_hndl = g_handle;

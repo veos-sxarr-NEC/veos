@@ -674,7 +674,7 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 
 	VEOS_TRACE("Entering");
 
-	if (VE_NODE(0)->num_ve_proc == MAX_TASKS_PER_NODE) {
+	if (VE_NODE(0)->num_ve_proc >= MAX_TASKS_PER_NODE) {
 		VEOS_ERROR("Reached maximum(%d) VEOS tasks limit",
 				MAX_TASKS_PER_NODE);
 		retval = -EAGAIN;
@@ -713,9 +713,10 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 
 	strncpy(exe_name, ve_proc.exe_name, sizeof(ve_proc.exe_name));
 
-	VEOS_DEBUG("VE Executable name: %s", exe_name);
-	VEOS_DEBUG("ve_exec path: %s", exe_path);
-	VEOS_DEBUG("PID of the new VE process : %d", pid);
+	VEOS_DEBUG("VE Executable name: %s,"
+			" ve_exec path: %s,"
+			" PID of the new VE process : %d",
+			exe_name, exe_path, pid);
 
 	/* Fetch the respective task_struct from the list */
 	tsk = find_ve_task_struct(pid);
@@ -733,9 +734,19 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 			tsk->rpm_create_task = false;
 		}
 
-		VEOS_DEBUG("Setting task's state and exit status");
-		tsk->ve_task_state = WAIT;
+		tsk->atb_dirty = 0;
+		tsk->crd_dirty = 0;
+		tsk->exit_code = 0;
 		tsk->exit_status = 0;
+		tsk->exit_code_set = 0;
+		tsk->block_status = BLOCK_RECVD;
+
+		pthread_rwlock_lock_unlock(&(tsk->p_ve_core->ve_core_lock), WRLOCK,
+				"Failed to acquire execve task's core write lock");
+		psm_set_task_state(tsk, WAIT);
+		pthread_rwlock_lock_unlock(&(tsk->p_ve_core->ve_core_lock), UNLOCK,
+				"Failed to release execve task's core write lock");
+
 		tsk->ptraced = ve_proc.traced_proc;
 		strncpy(tsk->ve_comm, exe_name, ACCT_COMM);
 		tsk->sighand->lshm_addr = (uint64_t)shmat(ve_proc.shmid, NULL, 0);
@@ -785,6 +796,8 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 			retval = -EFAULT;
                         goto hndl_return;
 		}
+		tsk->is_dlt_drv = false;
+		tsk->is_crt_drv = true;
 
 		retval = 0;
 		goto hndl_return;
@@ -1550,11 +1563,9 @@ int psm_pseudo_send_sigaction_ack(struct sigaction *old_act,
 	msg_len = pseudo_veos_message__pack(&
 				sigaction_ack, (uint8_t *)cmd_buff);
 	if (pseudo_msg_len != msg_len) {
+		VEOS_ERROR("internal message protocol buffer error");
 		VEOS_DEBUG("Expected length: %ld, Returned length: %ld",
 		                                pseudo_msg_len, msg_len);
-		VEOS_ERROR("internal message protocol buffer error");
-		VEOS_ERROR("internal message protocol buffer error, "
-			"message length : %ld", pseudo_msg_len);
 		retval = -EFAULT;
 		goto hndl_return1;
 	}
@@ -1609,7 +1620,7 @@ int psm_handle_signal_req(struct veos_thread_arg *pti)
 	/* Immediately send ack to pseudo */
 	retval = psm_pseudo_send_signal_ack(pti, 0);
 	if (0 > retval) {
-		VEOS_ERROR("failed to send SIGNAL ACK to pseudo");
+		VEOS_ERROR("failed to send signal acknowledgement");
 		goto signal_error;
 	}
 
@@ -1618,7 +1629,7 @@ int psm_handle_signal_req(struct veos_thread_arg *pti)
 	length = pseudo_req->pseudo_msg.len;
 	if (length == 0) {
 		retval = -1;
-		VEOS_ERROR("request message length is invalid");
+		VEOS_ERROR("%d request message length is invalid", caller_pid);
 		VEOS_DEBUG("Failed to received message"
 				" for command SIGNAL_REQ %zu", length);
 		goto signal_error;
@@ -1633,7 +1644,7 @@ int psm_handle_signal_req(struct veos_thread_arg *pti)
 
 	ve_task_curr = find_ve_task_struct(pid);
 	if (NULL != ve_task_curr) {
-		VEOS_INFO("Signal %d request from :%d",
+		VEOS_DEBUG("Signal %d task :%d",
 				signal_info.signum, pid);
 		if (pid != caller_pid) {
 			VEOS_DEBUG("Permission check for signal request"
@@ -1642,8 +1653,8 @@ int psm_handle_signal_req(struct veos_thread_arg *pti)
 			retval = check_kill_permission(caller_pid, ve_task_curr,
 					pti->cred.uid, signal_info.signum);
 			if (retval) {
-				VEOS_ERROR("PID %d is not permitted"
-						" to send signal to PID %d",
+				VEOS_ERROR("%d is not permitted"
+						" to send signal to %d",
 						caller_pid, pid);
 				goto signal_error;
 			}
@@ -1655,7 +1666,7 @@ int psm_handle_signal_req(struct veos_thread_arg *pti)
 				&(signal_info.ve_siginfo),
 				signal_info.signum, 0);
 	} else {
-		VEOS_ERROR("Task with PID %d not found", pid);
+		VEOS_ERROR("Task %d not found", pid);
 		retval = -ESRCH;
 	}
 
@@ -1940,7 +1951,7 @@ int psm_handle_sigaction_req(struct veos_thread_arg *pti)
 	length = (((PseudoVeosMessage *)(pti->pseudo_proc_msg))->
 			pseudo_msg).len;
 	if (length == 0) {
-		VEOS_ERROR("request message length is invalid");
+		VEOS_ERROR("%d request message length is invalid", pid);
 		VEOS_DEBUG("Failed to received message for"
 				" command SIGACTION_REQ %zu", length);
 		retval = -EFAULT;
@@ -2080,7 +2091,7 @@ int psm_handle_sigsuspend_req(struct veos_thread_arg *pti)
 
 	tsk = find_ve_task_struct(pid);
 	if (NULL == tsk) {
-		VEOS_ERROR("VEOS didn't find any task with pid: %d", pid);
+		VEOS_ERROR("Task[%d] not found", pid);
 		retval = -ESRCH;
 		goto send_ack;
 	}
@@ -2203,7 +2214,7 @@ int psm_handle_setnew_sas_req(struct veos_thread_arg *pti)
 	length = (((PseudoVeosMessage *)(pti->pseudo_proc_msg))->
 			pseudo_msg).len;
 	if (length == 0) {
-		VEOS_ERROR("request message length is invalid");
+		VEOS_ERROR("[%d] request message length is invalid", pid);
 		VEOS_DEBUG("Failed to received message for"
 				" command SET_NEW_SAS %zu", length);
 		retval = -EFAULT;
@@ -2219,12 +2230,10 @@ int psm_handle_setnew_sas_req(struct veos_thread_arg *pti)
 
 	if (NULL != ve_task_curr) {
 		if (sigalt_req.old_sas_flag) {
-			VEOS_DEBUG("getting old sas");
 			psm_getold_sas(ve_task_curr, &(sigalt_ack.old_sas));
 		}
 
 		if (sigalt_req.new_sas_flag) {
-			VEOS_DEBUG("Setting new sas");
 			sigalt_ack.retval = psm_setnew_sas(ve_task_curr,
 					&(sigalt_req.new_sas));
 		}
@@ -2232,7 +2241,7 @@ int psm_handle_setnew_sas_req(struct veos_thread_arg *pti)
 		put_ve_task_struct(ve_task_curr);
 		retval = psm_setnew_sas_ack(pti, &sigalt_ack);
 	} else {
-		VEOS_DEBUG("VEOS didn't find any task with pid: %d", pid);
+		VEOS_DEBUG("Task %d not found", pid);
 		sigalt_ack.retval = -ESRCH;
 		retval = psm_setnew_sas_ack(pti, &sigalt_ack);
 	}
@@ -2352,7 +2361,7 @@ int psm_handle_sigprocmask_req(struct veos_thread_arg *pti)
 	length = (((PseudoVeosMessage *)(pti->pseudo_proc_msg))->
 			pseudo_msg).len;
 	if (length == 0) {
-		VEOS_ERROR("request message length is invalid");
+		VEOS_ERROR("[%d] request message length is invalid", pid);
 		VEOS_DEBUG("Failed to received message for"
 				" command SIGPROCMASK_REQ %zu", length);
 		retval = -EFAULT;
@@ -2426,7 +2435,7 @@ int psm_handle_exception_req(struct veos_thread_arg *pti)
 	/* Immediately send ack to pseudo */
 	retval = psm_pseudo_send_signal_ack(pti, 0);
 	if (0 > retval) {
-		VEOS_DEBUG("Fail to send SIGNAL ACK to pseudo");
+		VEOS_DEBUG("Fail to send signal acknowledgment");
 		goto ret;
 	}
 
@@ -2438,7 +2447,7 @@ int psm_handle_exception_req(struct veos_thread_arg *pti)
 		retval = -1;
 		VEOS_DEBUG("Failed to received message"
 				" for command HW_EXP_REQ %zu", length);
-		VEOS_ERROR("request message length is invalid");
+		VEOS_ERROR("[%d] request message length is invalid", pid);
 		goto ret;
 	}
 	VEOS_DEBUG("Received handle exception request from "
@@ -2453,8 +2462,8 @@ int psm_handle_exception_req(struct veos_thread_arg *pti)
 				((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 				pseudo_msg.len);
 
-		VEOS_DEBUG("Handle exception mapped to signal %d",
-				ve_siginfo.si_signo);
+		VEOS_DEBUG("signal %d due to exception, task %d",
+				ve_siginfo.si_signo, pid);
 
 		psm_handle_hw_exception(ve_task_curr,
 				&ve_siginfo,
@@ -2576,7 +2585,7 @@ int psm_handle_sigpending_req(struct veos_thread_arg *pti)
 
 	pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
 
-	VEOS_DEBUG("Recevied sigpending request from "
+	VEOS_DEBUG("Received sigpending request from "
 			"Pseudo with pid :%d", pid);
 
 	ve_task_curr = find_ve_task_struct(pid);
@@ -2752,7 +2761,7 @@ int psm_handle_getcpu_req(struct veos_thread_arg *pti)
 	}
 
 	pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
-	VEOS_DEBUG("Recevied getcpu request from "
+	VEOS_DEBUG("Received getcpu request from "
 			"Pseudo with pid :%d", pid);
 
 	ve_task_curr = find_ve_task_struct(pid);
@@ -3210,6 +3219,12 @@ int psm_handle_setaffinity_req(struct veos_thread_arg *pti)
 	memcpy(&ve_req, setaffinity_req->pseudo_msg.data,
 			setaffinity_req->pseudo_msg.len);
 
+	/* Releasing ipc read lock and acquiring write lock */
+	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock), UNLOCK,
+			"Failed to release ve_relocate_lock release lock");
+	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock), WRLOCK,
+			"Failed to acquire ve_relocate_lock write lock");
+
 	retval = psm_handle_setaffinity_request(caller_pid,
 			ve_req.pid, ve_req.mask);
 hndl_return:
@@ -3350,11 +3365,11 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 		else
 			max_rss = group_leader->p_ve_mm->rss_max;
 
-		VEOS_DEBUG("max_rss %ld\n", max_rss);
+		VEOS_DEBUG("max_rss %ld", max_rss);
 
 		if (group_leader->parent->p_ve_mm->crss_max < max_rss) {
 			group_leader->parent->p_ve_mm->crss_max = max_rss;
-			VEOS_DEBUG("Pid: %d crss_max: %ld\n",
+			VEOS_DEBUG("Pid: %d crss_max: %ld",
 					group_leader->parent->pid, max_rss);
 		}
 
@@ -3661,7 +3676,7 @@ int psm_handle_acct_req(struct veos_thread_arg *pti)
 	acct_req = (PseudoVeosMessage *)pti->pseudo_proc_msg;
 	pid = acct_req->pseudo_pid;
 
-	VEOS_DEBUG("Recevied acct request from Pseudo with pid :%d",
+	VEOS_DEBUG("Received acct request from Pseudo with pid :%d",
 			pid);
 	/*
 	 * Checking does the VE process having a permit

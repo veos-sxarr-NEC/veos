@@ -285,11 +285,11 @@ int init_ve_node_struct(struct ve_node_struct *p_ve_node, int node_id,
 		goto hndl_dstry_attr;
 	}
 
-	/* Initialize affinity lock for sched_setaffinity request */
-	p_ret = pthread_rwlock_init(&(VE_NODE(0)->ve_affinity_lock), &attr);
+	/* Initialize relocate lock */
+	p_ret = pthread_rwlock_init(&(VE_NODE(0)->ve_relocate_lock), &attr);
 	if (p_ret != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-				"Read/write affinity lock init failed %s",
+				"Read/write relocate lock init failed %s",
 				strerror(p_ret));
 		goto hndl_dstry_attr;
 	}

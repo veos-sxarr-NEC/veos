@@ -126,9 +126,6 @@ do {\
 #define GET_SYNC_BF(p) (p->bf.sync)
 #define GET_PCISY_PAIR_BF(p) (p->bf.num)
 
-#define SMALL_PSHFT	12      /*<!Shift for small page*/
-#define LARGE_PSHFT	21	/*<!Shift for large page*/
-#define HUGE_PSHFT	26	/*<!Shift for huge page*/
 
 #define PCIATB_PAGE_BASE_MASK   0x0000FFFFFFE00000LL    /* PCIATB: Page base */
 #define INVALID_ENTRY ((uint64_t)-1 & PCIATB_PAGE_BASE_MASK) /*Invalid entry*/

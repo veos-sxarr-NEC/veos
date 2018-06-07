@@ -14,7 +14,9 @@ libveived_a_SOURCES = \
 	veos_veshm_ipc.h \
 	veos_veshm_ipc.c \
 	veos_cr.c \
-	veos_cr.h
+	veos_cr.h \
+	veos_vhshm.c \
+	veos_vhshm.h
 
 libveived_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 \

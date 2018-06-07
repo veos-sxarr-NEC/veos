@@ -55,6 +55,8 @@
 	<category name="veos.command.lscpu" priority="INFO" appender="veos_command_appender" />
 	<category name="veos.command.prlimit" priority="INFO" appender="veos_command_appender" />
 	<category name="veos.command.lslocks" priority="INFO" appender="veos_command_appender" />
+	<category name="veos.command.ipcs" priority="INFO" appender="veos_command_appender" />
+	<category name="veos.command.ipcrm" priority="INFO" appender="veos_command_appender" />
 	<appender name="veos_command_appender" layout="ve" type="rollingfile" rollingpolicy="veos_command_rp" logdir="." prefix="veos_command.log"/>
 	<rollingpolicy name="veos_command_rp" type="sizewin" maxsize="4194304" maxnum="10" />
 

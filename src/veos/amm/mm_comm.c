@@ -682,18 +682,8 @@ int amm_handle_shmctl(veos_thread_arg_t *pti)
 		goto send_ack;
 	}
 
-	if ((buf.shm_perm.uid == ve_proc_info.euid &&
-				buf.shm_perm.uid == ve_proc_info.suid &&
-				buf.shm_perm.uid == ve_proc_info.ruid &&
-				buf.shm_perm.gid == ve_proc_info.egid &&
-				buf.shm_perm.gid == ve_proc_info.sgid &&
-				buf.shm_perm.gid == ve_proc_info.rgid) ||
-			(buf.shm_perm.cuid == ve_proc_info.euid &&
-			 buf.shm_perm.cuid == ve_proc_info.suid &&
-			 buf.shm_perm.cuid == ve_proc_info.ruid &&
-			 buf.shm_perm.cgid == ve_proc_info.egid &&
-			 buf.shm_perm.cgid == ve_proc_info.sgid &&
-			 buf.shm_perm.cgid == ve_proc_info.rgid)) {
+	if ((buf.shm_perm.uid == ve_proc_info.euid) ||
+			(buf.shm_perm.cuid == ve_proc_info.euid)) {
 		VEOS_DEBUG("%d belongs to same user",
 				tsk->pid);
 		goto ok;
@@ -705,7 +695,8 @@ int amm_handle_shmctl(veos_thread_arg_t *pti)
 		goto send_ack;
 	}
 ok:
-	ret = amm_do_shmctl(req.shmid, tsk);
+	VEOS_DEBUG("pid(%d) calling shmclt for shmid(%ld)", tsk->pid, req.shmid);
+	ret = amm_do_shmctl(req.shmid);
 	if (0 > ret)
 		VEOS_DEBUG("error while control operation on shm segment (pid:%d)", pid);
 	else
@@ -870,7 +861,7 @@ int amm_handle_mmap(veos_thread_arg_t *pti)
 	if (!(req.flags & MAP_ANON)) {
 		VEOS_DEBUG("Request need to fetch more data to get file stat");
 		VEOS_DEBUG("MMAP request for file_inode %ld and range offset_start %ld "
-				" ------ offset_end %ld\n",
+				" ------ offset_end %ld",
 				(req.f_stat).stat.st_ino,
 				(req.f_stat).offset_start,
 				(req.f_stat).offset_end);
@@ -1171,7 +1162,7 @@ int amm_handle_dma_req(veos_thread_arg_t *pti)
 			"DMA.DSTTYPE : %d"
 			"DMA.SRCADDR : %lx"
 			"DMA.DSTADDR : %lx"
-			"DMA.LEN : %ld\n",
+			"DMA.LEN : %ld",
 			dma_param.srctype,
 			dma_param.dsttype,
 			dma_param.srcaddr,

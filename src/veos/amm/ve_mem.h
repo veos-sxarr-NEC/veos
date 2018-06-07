@@ -71,6 +71,10 @@
 
 #define CHUNK_512MB	0x20000000
 
+#define SMALL_PSHFT	12      /*<!Shift for small page*/
+#define LARGE_PSHFT	21	/*<!Shift for large page*/
+#define HUGE_PSHFT	26	/*<!Shift for huge page*/
+
 /* Mapping control flags */
 #define MAP_2MB			((uint64_t)1<<22)
 #define MAP_ADDR_SPACE          ((uint64_t)1<<34)

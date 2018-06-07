@@ -71,7 +71,7 @@ put_cr_reference(struct veos_info *owner_os_info, int page_num)
 	assert(owner_os_info != NULL);
 
 	if (owner_os_info == NULL){
-		IVED_ERROR(log4cat_cr, "%s", strerror(ECANCELED));
+		IVED_CRIT(log4cat_cr, "Argument is NULL");
 		return(retval);
 	}
 
@@ -92,7 +92,7 @@ put_cr_reference(struct veos_info *owner_os_info, int page_num)
 	ret = ived_exchange_cr_msg(owner_os_info->veos_sock,
 				   &request, &reply);
 	if (ret != 0 || reply == NULL){
-		IVED_WARN(log4cat_cr, "Abort.");
+		IVED_ERROR(log4cat_cr, "IPC of releasing CR failed");
 		goto err_ret;
 	}
 	if (reply->retval == IVED_REQ_NG){
@@ -136,7 +136,7 @@ ived_cr_kill_remote_process(struct veos_info *os_info)
 	IVED_TRACE(log4cat_cr, "PASS");
 
 	if (os_info == NULL){
-		IVED_ERROR(log4cat_cr, "Argument is null.");
+		IVED_CRIT(log4cat_cr, "Argument is null.");
 		assert(os_info == 0);
 		return (-1);
 	}
@@ -196,7 +196,7 @@ ived_cr_alloc(ived_thread_arg_t *pti, RpcCrSubAlloc *request)
 
 	if ((pti == NULL) || (request == NULL)){
 		rpc_reterr = -ECANCELED;
-		IVED_ERROR(log4cat_cr, "%s",strerror(ECANCELED)); 
+		IVED_CRIT(log4cat_cr, "Argument is null.");
 		goto err_ret_nolock;
 	}
 
@@ -214,18 +214,18 @@ ived_cr_alloc(ived_thread_arg_t *pti, RpcCrSubAlloc *request)
 	if ( (! isset_flag(req_mode_flag, VE_CR_MPI))
 	     || (isset_flag(req_mode_flag, VE_CR_THREAD)) ){
 		/* VE_CR_MPI is not set or VE_CR_THREAD is set */
-		IVED_ERROR(log4cat_cr, "Invalid flags");
+		IVED_CRIT(log4cat_cr, "Invalid flags");
 		rpc_reterr = -EINVAL;
 		goto err_ret_nolock;
 	}
 	if (req_cr_page >= NODE_CR_PAGE_NUM){
-		IVED_ERROR(log4cat_cr, "Invalid CR page number: %d.", 
+		IVED_DEBUG(log4cat_cr, "Invalid CR page number: %d.", 
 			   (int)req_cr_page);
 		rpc_reterr = -EINVAL;
 		goto err_ret_nolock;
 	}
 	if(my_crd_number >= CRD_ENTRY){
-		IVED_ERROR(log4cat_cr, "Invalid CR directory number"); 
+		IVED_DEBUG(log4cat_cr, "Invalid CR directory number"); 
 		IVED_DEBUG(log4cat_cr, "CRD: %d.", (int)my_crd_number);
 		rpc_reterr = -EINVAL;
 		goto err_ret_nolock;
@@ -240,11 +240,11 @@ ived_cr_alloc(ived_thread_arg_t *pti, RpcCrSubAlloc *request)
 	cr_info = &os_info->cr_page_info[(int)req_cr_page];
 	ret = pthread_mutex_lock(&cr_info->cr_lock);
 	if (ret != 0){
-		IVED_WARN(log4cat_cr, "Acquire CR: %s", strerror(ret));
+		IVED_DEBUG(log4cat_cr, "Acquire CR: %s", strerror(ret));
 	}
 	if (cr_info->uid != UNUSED 
 	    || isset_flag(cr_info->mode_flag, CR_MODE_CLEAR)){
-		IVED_ERROR(log4cat_cr, "Invalid arguments");
+		IVED_DEBUG(log4cat_cr, "Invalid arguments");
 		rpc_reterr = -EINVAL;
 		goto err_ret;
 	}
@@ -277,10 +277,7 @@ ived_cr_alloc(ived_thread_arg_t *pti, RpcCrSubAlloc *request)
 	pthread_mutex_unlock(&proc_info->proc_lock);
 	pthread_mutex_unlock(&os_info->os_lock);
 
-	ret = ived_send_int64(pti->socket_descriptor, IVED_REQ_OK, 0);
-	if (ret != 0){
-		IVED_WARN(log4cat_cr, "Sending a reply failed");
-	}
+	ived_send_int64(pti->socket_descriptor, IVED_REQ_OK, 0);
 
 	dump_proc_info(proc_info);
 	dump_cr_page_info(cr_info);
@@ -304,7 +301,7 @@ err_ret_nolock:
 	if (pti != NULL)
 		ived_send_int64(pti->socket_descriptor, IVED_REQ_NG, 
 				rpc_reterr);
-	IVED_ERROR(log4cat_cr, "CR allocation failed. error:%d.", rpc_reterr);
+	IVED_DEBUG(log4cat_cr, "CR allocation failed. error:%d.", rpc_reterr);
 	return (retval);
 }
 
@@ -348,7 +345,7 @@ ived_cr_attach(ived_thread_arg_t *pti, RpcCrSubAttach *request)
 
 	if ((pti == NULL) || (request == NULL)){
 		rpc_reterr = -ECANCELED;
-		IVED_ERROR(log4cat_cr, "%s",strerror(ECANCELED)); 
+		IVED_CRIT(log4cat_cr, "Argument is null.");
 		goto err_ret_nolock;
 	}
 
@@ -362,7 +359,7 @@ ived_cr_attach(ived_thread_arg_t *pti, RpcCrSubAttach *request)
 		   my_pid, t_pid, (int)t_crd_number);
 
 	if (t_crd_number >= CRD_ENTRY){
-		IVED_ERROR(log4cat_cr, "Invalid CR directory number"); 
+		IVED_DEBUG(log4cat_cr, "Invalid CR directory number"); 
 		IVED_DEBUG(log4cat_cr, "CRD: %d.", (int)t_crd_number);
 		rpc_reterr = -EINVAL;
 		goto err_ret_nolock;
@@ -387,7 +384,7 @@ ived_cr_attach(ived_thread_arg_t *pti, RpcCrSubAttach *request)
 
 	cr_info = t_proc_info->local_crd[t_crd_number];
 	if (cr_info == NULL){
-		IVED_ERROR(log4cat_cr, "Invalid CR directory number"); 
+		IVED_DEBUG(log4cat_cr, "Invalid CR directory number"); 
 		IVED_DEBUG(log4cat_cr, "CRD: %d.", (int)t_crd_number);
 		rpc_reterr = -EINVAL;
 		goto err_ret_t_lock;
@@ -395,7 +392,7 @@ ived_cr_attach(ived_thread_arg_t *pti, RpcCrSubAttach *request)
 
 	ret = pthread_mutex_lock(&cr_info->cr_lock);
 	if (ret != 0){
-		IVED_WARN(log4cat_cr, "Acquire CR: %s", strerror(ret));
+		IVED_DEBUG(log4cat_cr, "Acquire CR: %s", strerror(ret));
 	}
 
 	pthread_mutex_unlock(&t_os_info->os_lock);
@@ -404,14 +401,14 @@ ived_cr_attach(ived_thread_arg_t *pti, RpcCrSubAttach *request)
 	t_proc_info = NULL;
 
 	if (isset_flag(cr_info->mode_flag, CR_MODE_CLEAR)){
-		IVED_ERROR(log4cat_cr, "CR page [%d] is released",
+		IVED_DEBUG(log4cat_cr, "CR page [%d] is released",
 			   cr_info->cr_page_num);
 		rpc_reterr = -EINVAL;
 		goto err_ret_cr_lock;
 	}
 
 	if (cr_info->uid != my_uid){
-		IVED_ERROR(log4cat_cr, "%s", strerror(EACCES));
+		IVED_DEBUG(log4cat_cr, "%s", strerror(EACCES));
 		rpc_reterr = -EACCES;
 		goto err_ret_cr_lock;
 	}
@@ -477,7 +474,7 @@ err_ret_decrement:
 	dump_cr_page_info(cr_info);
 	dump_cr_info_tracker(using_cr_info);
 	ived_send_int64(pti->socket_descriptor, IVED_REQ_NG, rpc_reterr);
-	IVED_ERROR(log4cat_cr, "CR query failed. error:%d.", rpc_reterr);
+	IVED_DEBUG(log4cat_cr, "CR query failed. error:%d.", rpc_reterr);
 	return (-1);
 
 err_ret_cr_lock:
@@ -494,7 +491,7 @@ err_ret_nolock:
 	if (pti != NULL)
 		ived_send_int64(pti->socket_descriptor, IVED_REQ_NG, 
 				rpc_reterr);
-	IVED_ERROR(log4cat_cr, "CR query failed. error:%d.", rpc_reterr);
+	IVED_DEBUG(log4cat_cr, "CR query failed. error:%d.", rpc_reterr);
 	return (-1);
 }
 
@@ -537,7 +534,7 @@ ived_cr_attached(ived_thread_arg_t *pti, RpcCrSubAttached *request)
 
 	if ((pti == NULL) || (request == NULL)){
 		rpc_reterr = -ECANCELED;
-		IVED_ERROR(log4cat_cr, "%s",strerror(ECANCELED)); 
+		IVED_CRIT(log4cat_cr, "Argument is null.");
 		goto err_ret_nolock;
 	}
 
@@ -552,28 +549,28 @@ ived_cr_attached(ived_thread_arg_t *pti, RpcCrSubAttached *request)
 		   my_pid, t_pid, (int)t_crd_number);
 
 	if (request->has_my_crd_number == request->has_my_vehva){
-		IVED_ERROR(log4cat_cr, "Invalid arguments");
+		IVED_DEBUG(log4cat_cr, "CRD and VEHVA in IPC are specified");
 		rpc_reterr = -EINVAL;
 		goto err_ret_nolock;
 	}
 
 	if (request->has_my_crd_number){
 		if ((my_crd_number < 0) || (my_crd_number >= CRD_ENTRY)){
-			IVED_ERROR(log4cat_cr, "Invalid CR directory number"); 
+			IVED_DEBUG(log4cat_cr, "Invalid CR directory number"); 
 			IVED_DEBUG(log4cat_cr, "CRD: %d.", (int)my_crd_number);
 			rpc_reterr = -EINVAL;
 			goto err_ret_nolock;
 		}
 	} else {
 		if (my_vehva < 0){
-			IVED_ERROR(log4cat_cr, "Invalid VEHVA"); 
+			IVED_DEBUG(log4cat_cr, "Invalid VEHVA"); 
 			rpc_reterr = -EINVAL;
 			goto err_ret_nolock;
 		}
 	}
 
 	if (t_crd_number >= CRD_ENTRY){
-		IVED_ERROR(log4cat_cr, "Invalid CR directory number"); 
+		IVED_DEBUG(log4cat_cr, "Invalid CR directory number"); 
 		IVED_DEBUG(log4cat_cr, "CRD: %d.", (int)t_crd_number);
 		rpc_reterr = -EINVAL;
 		goto err_ret_nolock;
@@ -597,7 +594,7 @@ ived_cr_attached(ived_thread_arg_t *pti, RpcCrSubAttached *request)
 
 	cr_info = t_proc_info->local_crd[t_crd_number];
 	if (cr_info == NULL){
-		IVED_ERROR(log4cat_cr, "Invalid CR directory number"); 
+		IVED_DEBUG(log4cat_cr, "Invalid CR directory number"); 
 		IVED_DEBUG(log4cat_cr, "CRD: %d.", (int)t_crd_number);
 		rpc_reterr = -EINVAL;
 		goto err_ret_t_lock;
@@ -619,20 +616,20 @@ ived_cr_attached(ived_thread_arg_t *pti, RpcCrSubAttached *request)
 	if ((cr_info->os_info == proc_info->os_info)
 	    && (request->has_my_vehva == 1)){
 		/* Target CR is a local CR but a request is for remote CR.*/
-		IVED_ERROR(log4cat_cr, "Can't attach a Local CR to VEHVA.");
+		IVED_DEBUG(log4cat_cr, "Can't attach a Local CR to VEHVA.");
 		rpc_reterr = -EINVAL;
 		goto err_ret_my_proc;
 	}
 
 	ret = pthread_mutex_lock(&cr_info->cr_lock);
 	if (ret != 0){
-		IVED_WARN(log4cat_cr, "Acquire CR: %s", strerror(ret));
+		IVED_DEBUG(log4cat_cr, "Acquire CR: %s", strerror(ret));
 	}
 
 	/* Get using CR info and update */
 	using_cr_info = search_using_cr_info_halfway(proc_info, cr_info); 
 	if (using_cr_info == NULL){
-		IVED_ERROR(log4cat_cr, "Invalid arguments");
+		IVED_ERROR(log4cat_cr, "CR intermediate data is not found");
 		rpc_reterr = -EINVAL;
 		goto err_ret_cr_lock;
 	}
@@ -740,7 +737,7 @@ ived_cr_cancel_attach(ived_thread_arg_t *pti, RpcCrSubCancelAttach *request)
 
 	if ((pti == NULL) || (request == NULL)){
 		rpc_reterr = -ECANCELED;
-		IVED_ERROR(log4cat_cr, "%s",strerror(ECANCELED)); 
+		IVED_CRIT(log4cat_cr, "Argument is null.");
 		goto err_ret_nolock;
 	}
 
@@ -753,7 +750,7 @@ ived_cr_cancel_attach(ived_thread_arg_t *pti, RpcCrSubCancelAttach *request)
 		   my_pid, t_pid, (int)t_crd_number);
 
 	if (t_crd_number >= CRD_ENTRY){
-		IVED_ERROR(log4cat_cr, "Invalid CR directory number"); 
+		IVED_DEBUG(log4cat_cr, "Invalid CR directory number"); 
 		rpc_reterr = -EINVAL;
 		goto err_ret_nolock;
 	}
@@ -771,7 +768,7 @@ ived_cr_cancel_attach(ived_thread_arg_t *pti, RpcCrSubCancelAttach *request)
 	pthread_mutex_unlock(&t_proc_info->proc_lock);
 
 	if (cr_info == NULL){
-		IVED_ERROR(log4cat_cr, "Invalid CR directory number"); 
+		IVED_DEBUG(log4cat_cr, "Invalid CR directory number"); 
 		IVED_DEBUG(log4cat_cr, "CRD: %d.", (int)t_crd_number);
 		rpc_reterr = -EINVAL;
 		goto err_ret_nolock;
@@ -787,7 +784,7 @@ ived_cr_cancel_attach(ived_thread_arg_t *pti, RpcCrSubCancelAttach *request)
 
 	ret = pthread_mutex_lock(&cr_info->cr_lock);
 	if (ret != 0){
-		IVED_WARN(log4cat_cr, "Acquire CR: %s", strerror(ret));
+		IVED_DEBUG(log4cat_cr, "Acquire CR: %s", strerror(ret));
 	}
 
 	/* Get using CR info and update */
@@ -818,7 +815,7 @@ err_ret_nolock:
 	if (pti != NULL)
 		ived_send_int64(pti->socket_descriptor, IVED_REQ_NG, 
 				rpc_reterr);
-	IVED_ERROR(log4cat_cr, "Cancellation of attaching CR failed. error:%d", 
+	IVED_DEBUG(log4cat_cr, "Cancellation of attaching CR failed. error:%d", 
 		   rpc_reterr);
 	return (-1);
 }
@@ -850,7 +847,7 @@ ived_cr_release_local(ived_thread_arg_t *pti, RpcCrSubReleaseLocal *request)
 	assert(request != NULL);
 	if ((pti == NULL) || (request == NULL)){
 		rpc_reterr = -ECANCELED;
-		IVED_ERROR(log4cat_cr, "%s",strerror(ECANCELED)); 
+		IVED_CRIT(log4cat_cr, "Argument is null.");
 		goto err_ret_nolock;
 	}
 
@@ -861,7 +858,7 @@ ived_cr_release_local(ived_thread_arg_t *pti, RpcCrSubReleaseLocal *request)
 		   "requester pid: %d", my_pid);
 
 	if (my_crd_number >= CRD_ENTRY){
-		IVED_ERROR(log4cat_cr, "Invalid CR directory number"); 
+		IVED_DEBUG(log4cat_cr, "Invalid CR directory number"); 
 		rpc_reterr = -EINVAL;
 		goto err_ret_nolock;
 	}
@@ -875,7 +872,7 @@ ived_cr_release_local(ived_thread_arg_t *pti, RpcCrSubReleaseLocal *request)
 	/* It acquires cr_info->cr_lock. */
 	using_cr_info = search_using_cr_info(proc_info, my_crd_number, UNUSED);
 	if (using_cr_info == NULL){
-		IVED_ERROR(log4cat_cr, "Invalid arguments");
+		IVED_DEBUG(log4cat_cr, "Invalid arguments");
 		rpc_reterr = -EINVAL;
 		goto err_ret_proc_unlock;
 	}
@@ -932,7 +929,7 @@ err_ret_nolock:
 	if (pti != NULL)
 		ived_send_int64(pti->socket_descriptor, IVED_REQ_NG, 
 				rpc_reterr);
-	IVED_ERROR(log4cat_cr, "Releasing local CR failed. error:%d.",
+	IVED_DEBUG(log4cat_cr, "Releasing local CR failed. error:%d.",
 		   rpc_reterr);
 	return (-1);
 }
@@ -965,7 +962,7 @@ ived_cr_release_remote(ived_thread_arg_t *pti, RpcCrSubReleaseRemote *request)
 
 	if ((pti == NULL) || (request == NULL)){
 		rpc_reterr = -ECANCELED;
-		IVED_ERROR(log4cat_cr, "%s",strerror(ECANCELED)); 
+		IVED_CRIT(log4cat_cr, "Argument is null.");
 		goto err_ret_nolock;
 	}
 
@@ -986,7 +983,7 @@ ived_cr_release_remote(ived_thread_arg_t *pti, RpcCrSubReleaseRemote *request)
 	/* It acquires cr_info->cr_lock. */
 	using_cr_info = search_using_cr_info(proc_info, UNUSED, my_vehva);
 	if (using_cr_info == NULL){
-		IVED_ERROR(log4cat_cr, "Invalid arguments");
+		IVED_DEBUG(log4cat_cr, "Invalid arguments");
 		rpc_reterr = -EINVAL;
 		goto err_ret_my_proc;
 	}
@@ -1010,7 +1007,7 @@ ived_cr_release_remote(ived_thread_arg_t *pti, RpcCrSubReleaseRemote *request)
 			cr_user = NULL;
 		}
 	} else {
-		IVED_WARN(log4cat_cr, "Requester is not found in users list.");
+		IVED_ERROR(log4cat_cr, "Requester is not found in users list.");
 	}
 	dump_resource_user_info(cr_user);
 
@@ -1042,7 +1039,7 @@ ived_cr_release_remote(ived_thread_arg_t *pti, RpcCrSubReleaseRemote *request)
 	}
 
 	ived_send_int64(pti->socket_descriptor, rpc_retval, rpc_reterr);
-	IVED_DEBUG(log4cat_cr, "Releasing remote CR finised");
+	IVED_DEBUG(log4cat_cr, "Releasing remote CR finished");
 	return (0);
 
 err_ret_my_proc:
@@ -1055,7 +1052,7 @@ err_ret_nolock:
 	if (pti != NULL)
 		ived_send_int64(pti->socket_descriptor, IVED_REQ_NG, 
 				rpc_reterr);
-	IVED_ERROR(log4cat_cr, "Releasing remote CR failed. error:%d.", 
+	IVED_DEBUG(log4cat_cr, "Releasing remote CR failed. error:%d.", 
 		   rpc_reterr);
 	return (-1);
 }
@@ -1082,7 +1079,7 @@ ived_handle_cr_request(ived_thread_arg_t *pti)
 
 	if (pti == NULL || pti->request == NULL){
 		rpc_reterr = -ECANCELED;
-		IVED_ERROR(log4cat_cr, "%s",strerror(ECANCELED)); 
+		IVED_CRIT(log4cat_cr, "Argument is null.");
 		goto err_ret;
 	}
 
@@ -1098,9 +1095,7 @@ ived_handle_cr_request(ived_thread_arg_t *pti)
 
 	request = pti->request->cr;
 	if (request == NULL){
-		IVED_ERROR(log4cat_cr, 
-			   "TID[%u] No cr argument.\n",
-			   (unsigned int)tid);
+		IVED_ERROR(log4cat_cr, "No CR argument");
 		rpc_reterr = -ECANCELED;
 		goto err_ret;
 	}
@@ -1128,9 +1123,7 @@ ived_handle_cr_request(ived_thread_arg_t *pti)
 		ived_cr_release_remote(pti, request->release_remote);
 		break;
 	default:
-		IVED_ERROR(log4cat_cr,
-			   "TID[%u] Invalid CR command",
-			   (unsigned int)tid);
+		IVED_ERROR(log4cat_cr, "Invalid CR command");
 		rpc_reterr = -EINVAL;
 		retval = -1;
 		goto err_ret;

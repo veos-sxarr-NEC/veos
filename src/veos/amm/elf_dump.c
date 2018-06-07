@@ -90,6 +90,10 @@ int create_phdr(struct dump_params *cprm,
 	uint64_t offset = 0;
 	ssize_t tlen = 0;
 	ssize_t tret = 0;
+	uint64_t memsize = 0;
+	uint64_t buffer_size = 0;
+	uint64_t default_dump_size = 0;
+	uint64_t start = 0;
 
 	if (!isnote) {
 		((Elf64_Phdr *)phdrImage)->p_type = PT_NOTE;
@@ -142,41 +146,76 @@ int create_phdr(struct dump_params *cprm,
 			ret = -1;
 			goto end;
 		}
-		sync();
-		VEOS_DEBUG("DUMPING %d Program header complete", idx);
-
-		buf = (char *)calloc(1, ((Elf64_Phdr *)phdrImage)->p_memsz);
-		if (NULL == buf) {
+		if (-1 == fsync(cprm->fd)) {
 			ret = -errno;
-			VEOS_CRIT("Failed to allocate buffer for creating"
-					" segment: %s",	strerror(-ret));
+			VEOS_ERROR("Failed to sync data into core file: %s",
+					strerror(-ret));
+			ret = -1;
 			goto end;
 		}
-		if ((NULL != (void *)ve_pmap->begin) && (ve_pmap->prmsn)) {
-			if (-1 == amm_dma_xfer(VE_DMA_VEMVA_WO_PROT_CHECK,
-					(uint64_t)ve_pmap->begin,
-					cprm->tsk->pid,
-					VE_DMA_VHVA,
-					(uint64_t)(buf),
-					(int)getpid(),
-					((Elf64_Phdr *)phdrImage)->p_memsz,
-					0)) {
-				VEOS_ERROR("ve_recv_data failed to "
-						"receive segment data");
+		VEOS_DEBUG("DUMPING %d Program header complete", idx);
+
+		memsize = ((Elf64_Phdr *)phdrImage)->p_memsz;
+		default_dump_size = DEFAULT_DUMP_SIZE;
+		start = (uint64_t)ve_pmap->begin;
+
+		do {
+			/* Segement size could be as big as memory
+			 * allocated to VE card. To avoid large memory
+			 * request to VH, always dump segment information
+			 * in size of less than or equal to 64MB.
+			 */
+			if (memsize >= default_dump_size)
+				buffer_size = default_dump_size;
+			else
+				buffer_size = memsize;
+
+			buf = (char *)calloc(1, buffer_size);
+			if (NULL == buf) {
+				ret = -errno;
+				VEOS_CRIT("Failed to allocate buffer for"
+					"creating segment: %s",
+					strerror(-ret));
+				goto end;
+			}
+			if ((void *)start && (ve_pmap->prmsn)) {
+				if (-1 == amm_dma_xfer(
+					VE_DMA_VEMVA_WO_PROT_CHECK,
+						(uint64_t)start,
+						cprm->tsk->pid,
+						VE_DMA_VHVA,
+						(uint64_t)(buf),
+						(int)getpid(),
+						buffer_size,
+						0)) {
+					VEOS_ERROR("failed to "
+							"get segment data");
+					ret = -1;
+					goto end1;
+				}
+			}
+			VEOS_DEBUG("GOING TO DUMP: pos: %p, begin: %p,"
+					" memsize: %p perm: %d\n",
+					(void *)cprm->f_post, (void *)start,
+					(void *)buffer_size,
+					(ve_pmap->prmsn));
+
+			if (!(dump_core_info(cprm, buf,
+						buffer_size, doalign))) {
+				VEOS_ERROR("Dumping LOAD segments fail");
 				ret = -1;
 				goto end1;
 			}
-		}
-		VEOS_DEBUG("GOING TO DUMP: pos: %p, begin: %p, memsize: %p perm: %d",
-				(void *)cprm->f_post, (void *)ve_pmap->begin,
-				(void *)(ve_pmap->end - ve_pmap->begin), (ve_pmap->prmsn));
-		if (!(dump_core_info(cprm, buf,
-						((Elf64_Phdr *)phdrImage)->p_memsz, doalign))) {
-			VEOS_ERROR("Dumping LOAD segments fail");
-			ret = -1;
-			goto end1;
-		}
-		doalign = 0;
+			doalign = 0;
+			start += buffer_size;
+			free(buf);
+			buf = NULL;
+
+			if (memsize >= default_dump_size)
+				memsize -= default_dump_size;
+			else
+				break;
+		} while (memsize > 0);
 	}
 end1:
 	if (buf)
@@ -315,7 +354,12 @@ int dump_core_info(struct dump_params *cprm,
 				free(loc_buf);
 				return 0;
 			}
-			sync();
+			if (-1 == fsync(fd)) {
+				VEOS_ERROR("Failed to sync data into core file,"
+						" %s", strerror(errno));
+				free(loc_buf);
+				return 0;
+			}
 			VEOS_DEBUG("Initialize with zero, bytes: %p, len: %p"
 					, (void *)offdiff, (void *)cprm->f_post);
 			cprm->f_post += offdiff;
@@ -332,7 +376,12 @@ int dump_core_info(struct dump_params *cprm,
 					"ret: %ld", n);
 			return 0;
 		}
-		sync();
+		if (-1 == fsync(fd)) {
+			VEOS_ERROR("Failed to sync data into core file,"
+					" %s", strerror(errno));
+			return 0;
+		}
+
 		VEOS_DEBUG("Writes no of bytes: %ld", n);
 		cprm->f_post += n;
 		cprm->pos += n;

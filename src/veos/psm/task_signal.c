@@ -81,7 +81,8 @@ int check_kill_permission(pid_t caller_pid,
 	VEOS_TRACE("Entering");
 
 	if ((sig != (SIGRTMIN - 1)) && (sig != (SIGRTMIN - 2))) {
-		VEOS_ERROR("Invalid signal request %d", sig);
+		VEOS_ERROR("[%d] Invalid signal request %d", sig,
+				caller_pid);
 		retval = -EPERM;
 		goto hndl_return;
 	}
@@ -105,7 +106,8 @@ int check_kill_permission(pid_t caller_pid,
 
 	caller = find_ve_task_struct(caller_pid);
 	if (caller == NULL) {
-		VEOS_ERROR("Failed to find caller task structure");
+		VEOS_ERROR("Failed to find caller[%d] task structure",
+				caller_pid);
 		retval = -ESRCH;
 		goto hndl_return;
 	}
@@ -132,7 +134,8 @@ int check_kill_permission(pid_t caller_pid,
 
 	/* Check if caller have CAP_KILL capability */
 	if (!check_ve_proc_capability(caller_pid, CAP_KILL)) {
-		VEOS_ERROR("VE process do not have resource capabiltiy");
+		VEOS_ERROR("%d do not have capabiltiy to send signal to %d",
+				caller_pid, callee->pid);
 		retval = -EPERM;
 		goto hndl_return;
 	}
@@ -161,8 +164,7 @@ static int recalc_sigpending(struct ve_task_struct *p_ve_task)
 
 	if ((p_ve_task->pending.signal.__val[0])
 		&~(p_ve_task->blocked.__val[0])) {
-		VEOS_DEBUG("Signal is pending, "
-				"Set the signal pending flag");
+		VEOS_DEBUG("Signal is pending flag is set");
 		p_ve_task->sigpending = SIGNAL_PENDING;
 		VEOS_TRACE("Exiting");
 		return 1;
@@ -187,7 +189,7 @@ static int recalc_sigpending(struct ve_task_struct *p_ve_task)
 */
 int psm_restore_ve_context(struct ve_task_struct *ve_task_curr)
 {
-	int64_t frame_addrs;
+	int64_t frame_v_addrs;
 	reg_t curr_sp;
 	struct sigframe p_ve_sigframe;
 	ve_dma_hdl *dh;
@@ -205,7 +207,6 @@ int psm_restore_ve_context(struct ve_task_struct *ve_task_curr)
 					SR11,
 					&curr_sp)) {
 
-			VEOS_FATAL("failed to get user registers");
 			veos_abort("failed to get user registers");
 		}
 	} else {
@@ -215,31 +216,24 @@ int psm_restore_ve_context(struct ve_task_struct *ve_task_curr)
 	VEOS_DEBUG("signal handler stack address : %lx",
 			curr_sp);
 
-	/* Find the physical address of stack where the process
+	/* Find the virtual address of stack where the process
 	 * context is stored
 	 * */
-	frame_addrs = __veos_virt_to_phy((curr_sp + HANDLER_STACK_FRAME),
-			&(ve_task_curr->p_ve_mm->atb), NULL, NULL);
-	if (0 > frame_addrs) {
-		VEOS_ERROR("failed to retrieve the physical address of stack"
-			" where the process context is stored");
-		retval = -EFAULT;
-		goto ret;
-	}
+	frame_v_addrs = curr_sp + HANDLER_STACK_FRAME;
 
-	VEOS_DEBUG("Frame address : %lx", frame_addrs);
+	VEOS_DEBUG("Frame Virtual address : %lx", frame_v_addrs);
 
 	vnode_info = VE_NODE(ve_task_curr->node_id);
 	dh = vnode_info->dh;
 	/* read the signal frame from VE process physical memory
 	 * */
-	st = ve_dma_xfer_p_va(dh, VE_DMA_VEMAA, ve_task_curr->pid,
-			(uint64_t)frame_addrs, VE_DMA_VHVA, getpid()
+	st = ve_dma_xfer_p_va(dh, VE_DMA_VEMVA, ve_task_curr->pid,
+			(uint64_t)frame_v_addrs, VE_DMA_VHVA, getpid()
 			, (uint64_t)&p_ve_sigframe
 			, (uint64_t)sizeof(struct sigframe));
 	if (st != 0) {
-		VEOS_ERROR("failed to read the signal frame from VE process"
-				" physical memory");
+		VEOS_ERROR("%d failed to read the signal frame from VE process"
+				" virtual memory", ve_task_curr->pid);
 		retval = -EFAULT;
 		goto ret;
 	}
@@ -277,16 +271,15 @@ int psm_restore_ve_context(struct ve_task_struct *ve_task_curr)
 
 	pthread_mutex_lock_unlock(&(ve_task_curr->ve_task_lock), UNLOCK,
 				"failed to release task lock");
-	if (p_ve_sigframe.flag) {
-		VEOS_INFO("Fatal flag set, terminating ve process: %d",
-				ve_task_curr->pid);
+	if (p_ve_sigframe.flag == SYNCHRONOUS_SIGNAL) {
+		VEOS_DEBUG("Signal: %d sent to %d", p_ve_sigframe.signum
+				, ve_task_curr->pid);
 		kill(ve_task_curr->pid, p_ve_sigframe.signum);
 		retval = -1;
 		return retval;
 	}
 
-	if (!recalc_sigpending(ve_task_curr))
-		VEOS_DEBUG("No signal pending for ve process");
+	recalc_sigpending(ve_task_curr);
 
 
 	VEOS_TRACE("Exiting");
@@ -461,7 +454,6 @@ void psm_stop_ve_process(struct ve_task_struct *p_ve_task, int flag, int *traver
 *	FSIGCONTINUE - If any signal whose action is to stop VE process
 *	is present in signal pending queue, it should be deleted and VE
 *	process state is set to RUNNING.
-*	FSIGSTOPPING - Set VE process state to STOP
 *	FSIGMASKING - Remove the signal number "sig" from signal pending
 *	queue.
 *
@@ -512,7 +504,6 @@ int ve_group_action(struct ve_task_struct *p_ve_task,
 		}
 		psm_start_ve_process(p_ve_task);
 		break;
-	case FSIGSTOPPING:
 	case FSTOPPROC:
 	case FCLEANTHREAD:
 		/* Set VE process state to STOP
@@ -543,7 +534,7 @@ int ve_group_action(struct ve_task_struct *p_ve_task,
 		}
 		break;
 	default:
-		VEOS_ERROR("Invalid flag provided");
+		VEOS_ERROR("%d Invalid action request", p_ve_task->pid);
 		retval = -1;
 		break;
 	}
@@ -578,7 +569,7 @@ bool is_actually_stopped(pid_t pid)
 		goto handle_error;
 	}
 	stop_status = true;
-	VEOS_DEBUG("Task state is stop: %d", pid);
+	VEOS_DEBUG("Task: %d state is stop", pid);
 
 handle_error:
 	VEOS_TRACE("Exiting");
@@ -666,19 +657,32 @@ int psm_send_ve_signal(struct ve_task_struct *ve_task_curr,
 	VEOS_TRACE("Entering");
 
 	VEOS_DEBUG("Acquiring tasklist_lock");
-	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
-			"Failed to acquire tasklist_lock lock");
+
+	/* When we fail to create signal handler frame while delivering signal,
+	 * We generate SIGSEGV forcefully. As we have already acquired core
+	 * lock while delivering signal so we should not take task list
+	 * lock as it will violate locking hierarchy */
+	if (flag != FORCE_SEGV) {
+		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock),
+			LOCK, "Failed to acquire tasklist_lock lock");
+		pthread_rwlock_lock_unlock(&(ve_task_curr->p_ve_core->
+			ve_core_lock), WRLOCK, "failed to acquire core lock");
+	}
 	pthread_mutex_lock_unlock(&(ve_task_curr->sighand->siglock), LOCK,
 			"failed to acquire signal lock");
 
 	/* Ignore all signals except SIGINT if coredump is in progress
 	 * */
 	if (VE_SIGNAL_GROUP_COREDUMP ==
-				ve_task_curr->sighand->signal_flag) {
+			ve_task_curr->sighand->signal_flag) {
 		if (SIGINT == signum) {
 			ve_task_curr->sighand->got_sigint = 1;
 		} else {
 			VEOS_DEBUG("Coredump in progress. Signal ignored");
+			if (flag != FORCE_SEGV)
+				pthread_rwlock_lock_unlock(&(ve_task_curr->p_ve_core
+							->ve_core_lock), UNLOCK,
+						"failed to release core lock");
 			goto ret;
 		}
 	} else if (SIGCONT == signum) {
@@ -696,6 +700,11 @@ int psm_send_ve_signal(struct ve_task_struct *ve_task_curr,
 			"queue if any");
 		ve_do_group_action(ve_task_curr, FSIGMASKING, SIGCONT);
 	}
+	if (flag != FORCE_SEGV)
+		pthread_rwlock_lock_unlock(&(ve_task_curr->p_ve_core
+				->ve_core_lock),
+				UNLOCK, "failed to release core lock");
+
 	pthread_mutex_lock_unlock(&(ve_task_curr->ve_task_lock), LOCK,
 			"failed to acquire task lock");
 	/* Support queuing for exactly one non-rt signal(of each type)
@@ -758,8 +767,9 @@ int psm_send_ve_signal(struct ve_task_struct *ve_task_curr,
 			"failed to release task lock");
 	pthread_mutex_lock_unlock(&(ve_task_curr->sighand->siglock), UNLOCK,
 			"failed to release signal lock");
-        pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
-	                                "Failed to release tasklist_lock lock");
+	if (flag != FORCE_SEGV)
+		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock),
+			UNLOCK,	"Failed to release tasklist_lock lock");
 
 	if (flag && (SEND_SIG_PRIV != ve_sig_info)) {
 		VEOS_DEBUG("Start VE process, fatal signal occurred");
@@ -814,8 +824,9 @@ ret1:
 ret:
 	pthread_mutex_lock_unlock(&(ve_task_curr->sighand->siglock), UNLOCK,
 			"failed to release signal lock lock");
-        pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
-	                                "Failed to release tasklist_lock lock");
+	if (flag != FORCE_SEGV)
+		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock),
+			UNLOCK,	"Failed to release tasklist_lock lock");
 	VEOS_TRACE("Exiting");
 	return retval;
 }
@@ -1007,17 +1018,21 @@ int on_sig_stack(struct ve_task_struct *current)
 * @param[in] p_ve_task Pointer to "ve_task_struct"
 * @param[in] signum Signal Number getting served
 * @param[out] vir_frame_addr Signal Frame virtual address
+* @param[out] phy_frame_addr Signal Frame physical address
+* @param[out] offset offset at which DMA to be done
+* @param[out] on_altstack Determines altstack is used or not
 *
-* @return physical address of stack when successful and -errno on failure.
+* @return 0 on success -1 on failure
 */
-vemaa_t ve_getframe(struct ve_task_struct *p_ve_task,
-		int signum,
-		vemaa_t *vir_frame_addr, int *on_altstack)
+int ve_getframe(struct ve_task_struct *p_ve_task,
+		int signum, vemaa_t *vir_frame_addr,
+		vemaa_t *phy_frame_addr, uint64_t *offset, int *on_altstack)
 {
 	int onsigstack = on_sig_stack(p_ve_task);
 	int flag = p_ve_task->sighand->action[signum - 1].sa_flags;
-	vemaa_t frame_phy_addrs;
-	vemva_t frame_vir_addrs;
+	vemaa_t frame_phy_addrs[3] = {0};
+	vemva_t frame_vir_addrs, aligned_addr;
+	int ret = -1, pgmod = -1;
 
 	VEOS_TRACE("Entering");
 
@@ -1052,17 +1067,32 @@ vemaa_t ve_getframe(struct ve_task_struct *p_ve_task,
 		frame_vir_addrs = p_ve_task->p_ve_thread->SR[11]
 			- sizeof(struct sigframe);
 	}
-	frame_phy_addrs = __veos_virt_to_phy(frame_vir_addrs,
-			&(p_ve_task->p_ve_mm->atb), NULL, NULL);
-	VEOS_DEBUG("Frame Virtual address : %p",
-			(void *)(frame_vir_addrs));
 
-	VEOS_DEBUG("Frame Physical address : %lx",
-			frame_phy_addrs);
+	frame_phy_addrs[0] = __veos_virt_to_phy(frame_vir_addrs,
+			&(p_ve_task->p_ve_mm->atb), NULL, &pgmod);
+	if (0 > frame_phy_addrs[0]) {
+		ret = -1;
+		goto error_return;
+	}
+
+	aligned_addr = ALIGN(frame_vir_addrs, pgmod_to_pgsz(pgmod));
+
+	if (aligned_addr - frame_vir_addrs < sizeof(struct sigframe)) {
+		frame_phy_addrs[1] = __veos_virt_to_phy(aligned_addr,
+				&(p_ve_task->p_ve_mm->atb), NULL, &pgmod);
+		if (0 > frame_phy_addrs[1]) {
+			ret = -1;
+			goto error_return;
+		}
+		*offset = aligned_addr - frame_vir_addrs;
+	}
+
 	memcpy(vir_frame_addr, &frame_vir_addrs, sizeof(uint64_t));
-
+	memcpy(phy_frame_addr, &frame_phy_addrs, sizeof(frame_phy_addrs));
+	ret = 0;
+error_return:
 	VEOS_TRACE("Exiting");
-	return frame_phy_addrs;
+	return ret;
 }
 
 /**
@@ -1108,8 +1138,9 @@ static int setup_ve_frame(int signum,
 	 *	     |		|
 	 *	low
 	 */
-	int ret = 0;
-	vemaa_t frame_addrs;
+	int ret = 0, i = 0;
+	uint64_t offset = 0, local_offset = 0, dma_size = 0;
+	vemaa_t frame_addrs[3] = {0};
 	vemaa_t frame_vir_addr = 0;
 	struct sigframe ve_sigframe;
 	ve_dma_hdl *dma_handle;
@@ -1127,10 +1158,11 @@ static int setup_ve_frame(int signum,
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK
 		, "failed to acquire task lock");
 
-	frame_addrs = ve_getframe(p_ve_task, signum, &frame_vir_addr,
-			&on_altstack);
-	if (0 > frame_addrs) {
-		VEOS_ERROR("Failed to fetch physical translation");
+	ret = ve_getframe(p_ve_task, signum, &frame_vir_addr,
+			frame_addrs, &offset, &on_altstack);
+	if (-1 == ret) {
+		VEOS_DEBUG("[%d] Failed to fetch physical translation",
+				p_ve_task->pid);
 		pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK
 				, "failed to release task lock");
 		return -EFAULT;
@@ -1139,7 +1171,8 @@ static int setup_ve_frame(int signum,
 	VEOS_DEBUG("Frame Virtual address : %p",
 			(void *)(frame_vir_addr));
 
-	VEOS_DEBUG("Frame Physical address : %lx", frame_addrs);
+	VEOS_DEBUG("Frame Physical address[0] : %lx", frame_addrs[0]);
+	VEOS_DEBUG("Frame Physical address[1] : %lx", frame_addrs[1]);
 
 	memcpy(&ve_sigframe.ve_siginfo, ve_siginfo, sizeof(siginfo_t));
 
@@ -1151,7 +1184,6 @@ static int setup_ve_frame(int signum,
 			p_ve_task->p_ve_thread,
 			sizeof(core_user_reg_t));
 
-	VEOS_DEBUG("Saving the current context");
 	if (p_ve_task->mask_saved == true) {
 		VEOS_DEBUG("Saving the \"saved_sigmask\"");
 		ve_sigframe.uc.uc_sigmask = p_ve_task->ve_saved_sigmask;
@@ -1175,16 +1207,30 @@ static int setup_ve_frame(int signum,
 	vnode_info = VE_NODE(p_ve_task->node_id);
 	dma_handle = vnode_info->dh;
 
-	/* Write the signal frame to VE process physical memory */
-	status = ve_dma_xfer_p_va(dma_handle, VE_DMA_VHVA, getpid()
-			, (uint64_t)&ve_sigframe, VE_DMA_VEMAA
-			, p_ve_task->pid, (uint64_t)frame_addrs
-			, (uint64_t)sizeof(struct sigframe));
-	if (status != 0) {
-		VEOS_ERROR("unable to write signal frame");
-		pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK
-				, "failed to release task lock");
-		return -EFAULT;
+	for (i = 0; frame_addrs[i]; i++) {
+		if (i == 0) {
+			local_offset = 0;
+			dma_size = offset ? offset : (uint64_t)sizeof(struct sigframe);
+		} else {
+			local_offset = offset;
+			dma_size = (uint64_t)sizeof(struct sigframe) - offset;
+		}
+
+		VEOS_DEBUG("DMA[%d] SRC: %lx DEST: %lx length: %lx", i,
+			((uint64_t)&ve_sigframe) + local_offset,
+			(uint64_t)frame_addrs[i],
+			dma_size);
+		/* Write the signal frame to VE process physical memory */
+		status = ve_dma_xfer_p_va(dma_handle, VE_DMA_VHVA, getpid()
+				, ((uint64_t)&ve_sigframe) + local_offset, VE_DMA_VEMAA
+				, p_ve_task->pid, (uint64_t)frame_addrs[i]
+				, dma_size);
+		if (status != 0) {
+			VEOS_ERROR("%d unable to write signal frame", p_ve_task->pid);
+			pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK
+					, "failed to release task lock");
+			return -EFAULT;
+		}
 	}
 
 	VEOS_DEBUG("Sigreturn Context PID : %d IC: %lx"
@@ -1294,7 +1340,7 @@ void ve_force_sigsegv(int signum, struct ve_task_struct *p_ve_task)
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK
 			, "failed to release task lock");
 	psm_send_ve_signal(p_ve_task, SEND_SIG_PRIV, signum,
-			!SYNCHRONOUS_SIGNAL);
+			FORCE_SEGV);
 
 	VEOS_TRACE("Exiting");
 }
@@ -1427,14 +1473,16 @@ int ve_format_core_filename(struct ve_corename *ve_corefname,
 	/* Open the core_pattern file */
 	fd = open(CORE_FILE, O_RDONLY);
 	if (-1 == fd) {
-		VEOS_CRIT("veos failed to open core pattern file");
+		VEOS_CRIT("[%d] failed to open core pattern file",
+				p_ve_task->pid);
 		retval = -1;
 		goto hndl_ret;
 	}
 
 	ve_corefname->core_pattern = (char *)malloc(PATH_MAX);
 	if (ve_corefname->core_pattern == NULL) {
-		VEOS_CRIT("Failed to allocated buffer to read core pattern");
+		VEOS_CRIT("[%d] failed to allocated buffer to read core"
+			" pattern", p_ve_task->pid);
 		retval = -1;
 		 goto hndl_err;
 	}
@@ -1445,8 +1493,8 @@ int ve_format_core_filename(struct ve_corename *ve_corefname,
 	/* Read the core pattern */
 	retval = read(fd, ve_corefname->core_pattern, PATH_MAX);
 	if (-1 == retval) {
-		VEOS_ERROR("failed to read from core_pattern file: %s",
-				strerror(errno));
+		VEOS_ERROR("[%d] failed to read core pattern: %s",
+				p_ve_task->pid, strerror(errno));
 		goto free_pattern;
 	}
 	retval = 0;
@@ -1458,7 +1506,8 @@ int ve_format_core_filename(struct ve_corename *ve_corefname,
 		retval = ve_vsnprintf(ve_corefname, "%s/%s",
 				p_ve_task->ve_exec_path, "core");
 		if (retval) {
-			VEOS_ERROR("Failed to create Core Pattern(pipe)\n");
+			VEOS_ERROR("[%d] failed to create Core Pattern(pipe)\n",
+					p_ve_task->pid);
 			goto free_pattern;
 		}
 		goto append_pid;
@@ -1512,8 +1561,8 @@ int ve_format_core_filename(struct ve_corename *ve_corefname,
 						*pat_ptr);
 				break;
 			default:
-				VEOS_ERROR("Pattern %c does not exist",
-						*pat_ptr);
+				VEOS_ERROR("[%d] Pattern %c does not exist",
+						p_ve_task->pid, *pat_ptr);
 				break;
 			}
 			++pat_ptr;
@@ -1555,7 +1604,7 @@ out:
 			goto free_pattern;
 	} else {
 		VEOS_DEBUG("ve_exec path is not appended, core file will"
-				" form according core_pattern format");
+				" form according core pattern format");
 	}
 
 append_pid:
@@ -1622,13 +1671,11 @@ int get_ve_corefile_fd(int sockfd)
 
 	/* Receive real plus ancillary data */
 	size = recvmsg(sockfd, &msgh, MSG_WAITALL);
-	if (size <= 0) {
-		VEOS_ERROR("Failed to receive VE core file fd");
+	if (size <= 0)
 		goto failure;
-	}
 
 	/* Get the received file descriptor (which is typically a different
-	 * file descriptor number than was used in the sending process) */
+	 * file descriptor number that was used in the sending process) */
 	cmsg = CMSG_FIRSTHDR(&msgh);
 	if ((NULL == cmsg) || (cmsg->cmsg_len != CMSG_LEN(sizeof(int)))) {
 		VEOS_ERROR("Bad cmsg header / message length");
@@ -1682,9 +1729,9 @@ void *do_ve_coredump(void *ve_dump_info)
 
 	VEOS_TRACE("Entering");
 
-	VEOS_DEBUG("Coredumper thread ID %ld", syscall(186));
-	VEOS_DEBUG("Initiating Coredump for PID %d, TGID: %d",
-			p_ve_task->pid, p_ve_task->tgid);
+	VEOS_DEBUG("Coredumper thread[%ld] Initiating Coredump for PID"
+			" %d, TGID: %d", syscall(186), p_ve_task->pid,
+			p_ve_task->tgid);
 
 	p_ve_task->sighand->coredumper_thid = pthread_self();
 
@@ -1715,15 +1762,16 @@ void *do_ve_coredump(void *ve_dump_info)
 	 * ve core data into file using the file descriptor.
 	 * */
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, socket_fd) != 0) {
-		VEOS_ERROR("Failed to create socket pair");
+		VEOS_ERROR("[%d] Failed to create communication channel"
+				" for coredump helper", p_ve_task->pid);
 		goto hndl_err;
 	}
 
 	memset(&ve_corefname, 0, sizeof(struct ve_corename));
 	ve_corefname.corename = (char *)malloc(PATH_MAX);
 	if (ve_corefname.corename == NULL) {
-		VEOS_CRIT("veos failed to allocate buffer for core file name"
-				": %s", strerror(errno));
+		VEOS_CRIT("[%d] failed to allocate buffer for core file name"
+				": %s", p_ve_task->pid, strerror(errno));
 		close(socket_fd[0]);
 		goto close_socket;
 	}
@@ -1733,7 +1781,6 @@ void *do_ve_coredump(void *ve_dump_info)
 	/* Core filename creation */
 	retval = ve_format_core_filename(&ve_corefname, p_ve_task);
 	if (0 > retval) {
-		VEOS_ERROR("Core filename creation failed");
 		close(socket_fd[0]);
 		goto free_corefname;
 	}
@@ -1741,7 +1788,8 @@ void *do_ve_coredump(void *ve_dump_info)
 	needed = snprintf(NULL, 0, "%d", socket_fd[0]);
 	sockfd = (char *)malloc(needed + 1);
 	if (NULL == sockfd) {
-		VEOS_CRIT("Failed to allocate buffer to store socket fd\n");
+		VEOS_CRIT("[%d] Failed to allocate buffer to store"
+				" socket fd", p_ve_task->pid );
 		retval = -1;
 		close(socket_fd[0]);
 		goto free_corefname;
@@ -1751,7 +1799,8 @@ void *do_ve_coredump(void *ve_dump_info)
 
 	helper_pid = fork();
 	if (-1 == helper_pid) {
-		VEOS_ERROR("Failed to create coredump helper process");
+		VEOS_ERROR("[%d] Failed to create coredump helper process",
+				p_ve_task->pid);
 		close(socket_fd[0]);
 		retval = -1;
 		goto free_sock;
@@ -1770,8 +1819,6 @@ void *do_ve_coredump(void *ve_dump_info)
 		execle(HELPER_PATH, "ve_coredump_helper",
 			ve_corefname.corename, sockfd, (char *)NULL,
 			(char *)NULL);
-		VEOS_ERROR("Failed to load ve coredump helper"
-				" %s", strerror(errno));
 		close(socket_fd[0]);
 		_exit(1);
 	}
@@ -1781,7 +1828,8 @@ void *do_ve_coredump(void *ve_dump_info)
 	ve_cprm.fd = get_ve_corefile_fd(socket_fd[1]);
 	if (-1 == ve_cprm.fd) {
 		retval = -1;
-		VEOS_ERROR("Failed to receive ve core file descriptor");
+		VEOS_ERROR("[%d] Failed to receive ve core file"
+				" descriptor", p_ve_task->pid);
 		goto free_sock;
 	}
 
@@ -1790,7 +1838,7 @@ void *do_ve_coredump(void *ve_dump_info)
 	 * b. Check Dump file size does not exceed the core file limit.
 	 * */
 	if (false == ve_elf_core_dump(&ve_cprm)) {
-		VEOS_ERROR("ELF dumping failed");
+		VEOS_ERROR("[%d] ELF dumping failed",  p_ve_task->pid);
 		retval = -1;
 		goto close_fd;
 	}
@@ -1805,19 +1853,16 @@ free_corefname:
 close_socket:
 	close(socket_fd[1]);
 hndl_err:
-	if (retval == -1) {
-		VEOS_ERROR("coredump failed");
-	}
 	/* Perform cleanup of current thread */
 	p_ve_task->sighand->signal_flag = VE_SIGNAL_GROUP_EXIT;
 
 	if (SYNCHRONOUS_SIGNAL == ((struct dump_info *)ve_dump_info)->flag) {
-		VEOS_DEBUG("Signal generated from h/w exception");
+		VEOS_DEBUG("Signal %d sent to %d", signum, p_ve_task->pid);
 		kill(p_ve_task->pid, signum);
 	} else {
 		/* Terminating signals
 		 * */
-		VEOS_DEBUG("Signal Action is to Terminate");
+		VEOS_DEBUG("Signal %d sent to %d", SIGKILL, p_ve_task->pid);
 		kill(p_ve_task->pid, SIGKILL);
 	}
 
@@ -1892,61 +1937,53 @@ int ve_get_signal(struct ve_task_struct *p_ve_task, int *flag,
 
 	/* Do not proceed if core dumping is ongoing */
 	if (!should_dump_core(p_ve_task)) {
-		VEOS_DEBUG("Core dump ongoing: %d", p_ve_task->pid);
+		VEOS_DEBUG("[%d] core dump ongoing", p_ve_task->pid);
 		signum = -1;
 		goto hndl_ret;
 	}
 
 	for (;;) {
 		/* Dequeue the signal */
-		VEOS_DEBUG("Dequeue a signal from pending list");
-
 		signum = psm_dequeue_ve_signal(ve_siginfo,
 				&p_ve_task->pending,
 				&p_ve_task->blocked, flag,
 				p_ve_task);
 		if (!signum) {
-			VEOS_DEBUG("No signal is pending list");
+			VEOS_DEBUG("[%d] No signal is pending list",
+					p_ve_task->pid);
 			p_ve_task->sigpending = 0;
 			break;
 		}
 		/* Signal handler registered */
 		if (SIG_IGN ==
 			p_ve_task->sighand->action[signum - 1].sa_handler) {
-			VEOS_DEBUG("Signal: %d action is ignore",
-					signum);
+			VEOS_DEBUG("%d Signal: %d action is ignore",
+				p_ve_task->pid,	signum);
 			continue;
 		}
 
 		/* Signal handler registered */
 		if (SIG_DFL !=
 			p_ve_task->sighand->action[signum - 1].sa_handler) {
-			VEOS_DEBUG("Signal handler registered signr: %d",
-					signum);
+			VEOS_DEBUG("%d Signal: %d handler registered",
+					p_ve_task->pid ,signum);
 			p_ve_task->sigpending = 0;
 			break;
 		}
 		/* Signals whose default action is to ignore */
 		if (ve_sig_ignore(signum)) {
-			VEOS_DEBUG("Default action is to IGNORE signal %d",
-					signum);
+			VEOS_DEBUG("%d signal: %d action is IGNORE",
+					p_ve_task->pid ,signum);
 			continue;
 		}
-		/* Signal whose default action is to stop. Set the VE
-		 * process state to STOP for every thread in thread group
+		/* Signal whose default action is to stop are handled using
+		 * veos_stopping_thread()
 		 * */
-		if (ve_sig_stop(signum)) {
-			VEOS_DEBUG("Default action is to STOP the VE process");
-			ve_do_group_action(p_ve_task, FSIGSTOPPING, signum);
-			signum = -2;
-			p_ve_task->sigpending = 0;
-			break;
-		}
 
 		/* Signal whose default action is generate dump + terminate */
 		if (ve_sig_coredump(signum)) {
-			VEOS_DEBUG("Generate Coredump for signal %d",
-					signum);
+			VEOS_DEBUG("%d signal: %d action is Coredump",
+					p_ve_task->pid ,signum);
 
 			pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock)
 					, LOCK, "failed to acquire task lock");
@@ -1973,7 +2010,6 @@ int ve_get_signal(struct ve_task_struct *p_ve_task, int *flag,
 			ve_dump_info->flag = *flag;
 			ve_dump_info->signum = signum;
 
-			VEOS_DEBUG("Creating new thread for Coredumping");
 			if (0 != get_ve_task_struct(p_ve_task)) {
 				VEOS_ERROR("Failed to get reference: %d",
 						p_ve_task->pid);
@@ -1996,13 +2032,13 @@ int ve_get_signal(struct ve_task_struct *p_ve_task, int *flag,
 hndl_terminate:
 		/* Terminate the process */
 		if (SYNCHRONOUS_SIGNAL == *flag) {
-			VEOS_DEBUG("Signal generated from h/w exception");
 			/* updating process flag when terminated by signal */
 			p_ve_task->flags |= PF_SIGNALED;
-
+			VEOS_DEBUG("Signal: %d sent to %d", signum, p_ve_task->pid);
 			kill(p_ve_task->pid, signum);
 		} else {
-			VEOS_DEBUG("Signal Action is to Terminate: %d", p_ve_task->pid);
+			VEOS_DEBUG("%d signal: %d action is terminate",
+					p_ve_task->pid ,signum);
 			kill(p_ve_task->pid, SIGKILL);
 		}
 hndl_exit:
@@ -2060,7 +2096,6 @@ int ve_handle_signal(struct ve_task_struct *p_ve_task,
 	/* Set signal handler context and save process context */
 	ret = setup_ve_frame(signum, p_ve_task, ve_siginfo, *flag);
 	if (0 > ret) {
-		VEOS_ERROR("failed to setup signal frame");
 		ve_force_sigsegv(SIGSEGV, p_ve_task);
 		goto hndl_ret;
 	}
@@ -2087,7 +2122,6 @@ int ve_handle_signal(struct ve_task_struct *p_ve_task,
 		sigaddset(&blocked, signum);
 	}
 
-	VEOS_DEBUG("Set the mask");
 	/* Clear the saved signal mask flag */
 	p_ve_task->mask_saved = false;
 	psm_set_current_blocked(p_ve_task, &blocked);
@@ -2133,15 +2167,12 @@ int psm_do_signal_ve(struct ve_task_struct *p_ve_task)
 		retval = ve_handle_signal(p_ve_task, &flag, signum
 							, &ve_siginfo);
 		if (0 > retval) {
-			VEOS_ERROR("Signal handler stack setup has failed");
+			VEOS_ERROR("[%d] failed to setup signal frame"
+					, p_ve_task->pid);
 			retval = -1;
-		} else {
-			VEOS_DEBUG("Signal handler setup is complete"
-					", signal %d handler will be executed"
-					"PID: %d", signum, p_ve_task->pid);
+		} else
 			retval = 0;
-		}
-	} else if ((0 == signum) || (-2 == signum)) {
+	} else if (0 == signum) {
 		/* Check if the signal interrupted the system call */
 		switch (p_ve_task->p_ve_thread->SR[00]) {
 		case -VE_ENORESTART:
@@ -2158,20 +2189,11 @@ int psm_do_signal_ve(struct ve_task_struct *p_ve_task)
 			p_ve_task->mask_saved = false;
 		}
 
-		if (-2 == signum) {
-			VEOS_INFO("VE process is stopped due to"
-					" signal: %d, PID: %d",
-					signum, p_ve_task->pid);
-			retval = -1;
-		} else {
-			retval = 0;
-		}
-	} else {
+		retval = 0;
+	} else
 		/* VE process has been terminated */
-		VEOS_DEBUG("VE process: %d will be terminated"
-				, p_ve_task->pid);
 		retval = -1;
-	}
+
 	VEOS_TRACE("Exiting");
 	return retval;
 }
@@ -2192,9 +2214,6 @@ void psm_do_sigaction_ve(struct ve_task_struct *p_ve_task_struct,
 {
 
 	VEOS_TRACE("Entering");
-
-	VEOS_DEBUG("Sigaction for signal no = %d received",
-			sigaction_info->signum);
 
 	VEOS_DEBUG("sa_mask in handler context %lx",
 			sigaction_info->ve_sigaction.sa_mask.__val[0]);
@@ -2286,7 +2305,8 @@ int psm_setnew_sas(struct ve_task_struct *ve_task_curr, stack_t *new_sas)
 	if (-1 == __veos_virt_to_phy((uint64_t)new_sas->ss_sp,
 			&(ve_task_curr->p_ve_mm->atb), NULL, NULL)) {
 		VEOS_DEBUG("new_sas->ss_sp : %p", new_sas->ss_sp);
-		VEOS_ERROR("Invalid Alternate stack address");
+		VEOS_ERROR("[%d] Invalid Alternate stack address",
+				ve_task_curr->pid);
 		retval = -EFAULT;
 		goto hndl_ret;
 	}
@@ -2294,8 +2314,9 @@ int psm_setnew_sas(struct ve_task_struct *ve_task_curr, stack_t *new_sas)
 	/* Verify whether alernate signal stack is active
 	 * */
 	if (on_sig_stack(ve_task_curr)) {
-		VEOS_ERROR("Attempt to change the alternate "
-				"signal stack while it is active");
+		VEOS_ERROR("[%d] Attempt to change the alternate "
+				"signal stack while it is active",
+				ve_task_curr->pid);
 		retval = -EPERM;
 		goto hndl_ret;
 	}
@@ -2305,7 +2326,8 @@ int psm_setnew_sas(struct ve_task_struct *ve_task_curr, stack_t *new_sas)
 	if (new_sas->ss_flags != SS_DISABLE &&
 			new_sas->ss_flags != SS_ONSTACK &&
 			new_sas->ss_flags != 0) {
-		VEOS_ERROR("Invalid alternate stack flag argument");
+		VEOS_ERROR("[%d] Invalid alternate stack flag argument"
+				, ve_task_curr->pid);
 		retval = -EINVAL;
 		goto hndl_ret;
 	}
@@ -2317,8 +2339,9 @@ int psm_setnew_sas(struct ve_task_struct *ve_task_curr, stack_t *new_sas)
 		new_sas->ss_sp = NULL;
 	} else {
 		if (new_sas->ss_size < VE_MINSIGSTKSZ) {
-			VEOS_ERROR("New signal stack size is "
-					"less than required");
+			VEOS_ERROR("[%d ]New signal stack size is "
+					"less than required",
+					ve_task_curr->pid);
 			retval = -ENOMEM;
 			goto hndl_ret;
 		}
@@ -2326,6 +2349,7 @@ int psm_setnew_sas(struct ve_task_struct *ve_task_curr, stack_t *new_sas)
 
 	ve_task_curr->sas_ss_sp = (unsigned long) new_sas->ss_sp;
 	ve_task_curr->sas_ss_size = new_sas->ss_size;
+	VEOS_DEBUG("Added alternate stack information");
 hndl_ret:
 	VEOS_TRACE("Exiting");
 	return retval;
@@ -2450,7 +2474,7 @@ hndl_ret:
 void psm_handle_hw_exception(struct ve_task_struct *ve_task_curr,
 		siginfo_t *ve_siginfo, int signum)
 {
-	int blocked, ignored, flag = 0;
+	int blocked, ignored;
 
 	VEOS_TRACE("Entering");
 
@@ -2464,14 +2488,13 @@ void psm_handle_hw_exception(struct ve_task_struct *ve_task_curr,
 		if (blocked)
 			sigdelset(&(ve_task_curr)->blocked, signum);
 	}
-	/* Set Synchronous signal flag */
-	VEOS_DEBUG("Fatal signal occurred");
-	flag = SYNCHRONOUS_SIGNAL;
+	VEOS_DEBUG("Hardware exception on VE");
 	ve_task_curr->syncsignal = SYNCHRONOUS_SIGNAL;
 
 	pthread_mutex_lock_unlock(&(ve_task_curr->ve_task_lock), UNLOCK
 			, "failed to release task lock");
-	psm_send_ve_signal(ve_task_curr, ve_siginfo, signum, flag);
+	psm_send_ve_signal(ve_task_curr, ve_siginfo, signum,
+			SYNCHRONOUS_SIGNAL);
 
 	VEOS_TRACE("Exiting");
 }
@@ -2578,6 +2601,17 @@ void veos_stopping_thread(void)
 				, "failed to release stop mutex lock"
 				" corresponding to node");
 
+		retval = pthread_rwlock_tryrdlock(&handling_request_lock);
+		if (retval) {
+			VEOS_ERROR("failed to acquire request lock");
+			if (EBUSY == retval)
+				goto terminate;
+			else
+				goto abort;
+		}
+		pthread_rwlock_lock_unlock(
+			&(VE_NODE(0)->ve_relocate_lock), RDLOCK,
+			 "Failed to release ve_relocate_lock read lock");
 		pthread_rwlock_lock_unlock(&init_task_lock, RDLOCK,
 				"failed to acquire init task lock");
 		/* Set VE processes state to STOP VE if corresponding pseudo
@@ -2597,25 +2631,11 @@ void veos_stopping_thread(void)
 			if (STOP == tmp->ve_task_state)
 				continue;
 
-			retval = pthread_rwlock_tryrdlock(&handling_request_lock);
-			if (retval) {
-				VEOS_ERROR("failed to acquire request lock");
-				pthread_rwlock_lock_unlock(&init_task_lock
-					, UNLOCK, "failed to release"
-						" init task lock");
-				if (EBUSY == retval)
-					goto terminate;
-				else
-					goto abort;
-			}
 			/* Find state of Pseudo process */
 			retval = psm_get_ve_proc_info(tmp->pid, &proc_info);
 			if (-1 == retval) {
 				VEOS_WARN("Failed to get state info"
 					" for task: %d", tmp->pid);
-				pthread_rwlock_lock_unlock
-					(&handling_request_lock, UNLOCK,
-					 "failed to release handling_request_lock");
 				continue;
 			}
 			/* Stopping VE process as pseudo process is in
@@ -2623,8 +2643,7 @@ void veos_stopping_thread(void)
 			 * */
 			if (proc_info.state == 'T') {
 				VEOS_DEBUG("Stopping VE process %d as "
-						"pseudo process is stopped"
-						, tmp->pid);
+					"pseudo process is stopped", tmp->pid);
 				VEOS_DEBUG("Acquiring tasklist_lock");
 				pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
 						"Failed to acquire tasklist_lock lock");
@@ -2632,12 +2651,14 @@ void veos_stopping_thread(void)
 				pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
 						"Failed to release tasklist_lock lock");
 			}
-			pthread_rwlock_lock_unlock(&handling_request_lock
-					, UNLOCK, "failed to release"
-					" handling_request_lock");
 		}
 		pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
 				"failed to release init task lock");
+		pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock), UNLOCK,
+				"Failed to release ve_relocate_lock read lock");
+		pthread_rwlock_lock_unlock(&handling_request_lock,
+				UNLOCK, "failed to release"
+				" handling request lock");
 		/* Sleep for 1 milisecond to avoid CPU busy loop as stopping
 		 * thread check the pseudo process state in while loop.
 		 */
@@ -2649,7 +2670,6 @@ terminate:
 	VEOS_TRACE("Exiting");
 	return;
 abort:
-	VEOS_FATAL("veos stopping thread failed");
 	veos_abort("veos stopping thread failed");
 }
 
@@ -2699,7 +2719,7 @@ void veos_polling_thread(void)
 	memset(tid_buf, '\0', PATH_MAX);
 
 	while (!terminate_flag) {
-		/* Poll on the attribute file */
+
 		retval = poll(ufds, 1, POLL_TIMEOUT);
 		if (-1 == retval) {
 			VEOS_ERROR("polling attribute file failed");
@@ -2717,8 +2737,8 @@ void veos_polling_thread(void)
 						"dead pid");
 				goto hndl_err1;
 			}
-			VEOS_DEBUG("Driver Notified about process death");
 			lseek(ufds[0].fd, 0L, SEEK_SET);
+			VEOS_DEBUG("Driver Notified about process death");
 
 			/* Read the attribute file and perform veos cleanup */
 			if (-1 == read(ufds[0].fd, tid_buf, PATH_MAX)) {
@@ -2743,11 +2763,22 @@ void veos_polling_thread(void)
 						goto terminate;
 					else
 						goto hndl_err1;
+
 				}
+				/* Poll on the attribute file */
+				pthread_rwlock_lock_unlock(
+					&(VE_NODE(0)->ve_relocate_lock), RDLOCK,
+					"Failed to acquire ve_relocate_lock read lock");
+
 				tsk = find_ve_task_struct(pid);
 				if (!tsk) {
-					VEOS_ERROR("PID %d not found. "
-							"Task deletion failed", pid);
+					VEOS_DEBUG("Task[%d] not found", pid);
+					pthread_rwlock_lock_unlock(
+						&(VE_NODE(0)->ve_relocate_lock), UNLOCK,
+						"Failed to acquire ve_relocate_lock read lock");
+					pthread_rwlock_lock_unlock(
+						&handling_request_lock, UNLOCK,
+						 "failed to release handling_request_lock");
 					continue;
 				}
 				set_state(tsk);
@@ -2764,6 +2795,9 @@ void veos_polling_thread(void)
 					"Failed to release task lock [PID = %d]",
 					tsk->pid);
 				put_ve_task_struct(tsk);
+				pthread_rwlock_lock_unlock(
+					&(VE_NODE(0)->ve_relocate_lock), UNLOCK,
+					"Failed to acquire ve_relocate_lock read lock");
 				pthread_rwlock_lock_unlock
 					(&handling_request_lock, UNLOCK,
 					 "failed to"
@@ -2771,6 +2805,7 @@ void veos_polling_thread(void)
 			}
 			memset(tid_buf, '\0', PATH_MAX);
 		}
+
 	}
 
 terminate:

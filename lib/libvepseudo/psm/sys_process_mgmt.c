@@ -39,6 +39,7 @@
 #include "pseudo_ptrace.h"
 #include <proc/readproc.h>
 #include <sys/statvfs.h>
+#include "pseudo_vhshm.h"
 
 struct tid_info global_tid_info[VEOS_MAX_VE_THREADS] = {{0}};
 int tid_counter = -1;
@@ -258,12 +259,25 @@ ret_t ve_exit(int syscall_num, char *syscall_name, veos_handle *handle)
 				NULL);
 	}
 
+	PSEUDO_DEBUG("Acquiring lock for ve_exit() syscall");
+	if (pthread_mutex_lock(&(global_tid_info[0].mutex)) != 0) {
+		PSEUDO_DEBUG("Failed to acquire global_tid lock");
+		fprintf(stderr, "Internal resource usage error\n");
+		pseudo_abort();
+	}
+
 	process_thread_cleanup(handle, (args & BYTE_MASK) << 8);
+
+	PSEUDO_DEBUG("Releasing lock for ve_exit() syscall");
+	if (pthread_mutex_unlock(&(global_tid_info[0].mutex)) != 0) {
+		PSEUDO_DEBUG("Failed to release global_tid lock");
+		fprintf(stderr, "Internal resource usage error\n");
+		pseudo_abort();
+	}
 
 	/* call pthread_exit to perform cleanup of library specific data
 	 * structure(s)
 	 */
-
 	pthread_exit(&args);
 }
 
@@ -313,6 +327,11 @@ static void thread_dummy_func(void *thread_args)
 	ve_clone_info.ctid = thread_dummy_func_args->ctid;
 	ve_proc_sigmask = thread_dummy_func_args->sigmask_var;
 
+	/* Populate the parent pid in clone info before cleaning the heap */
+	ve_clone_info.parent_pid = thread_dummy_func_args->parent_pid;
+
+	free(thread_dummy_func_args);
+
 	/* Create a new handle for child thread */
 	child_handle = veos_handle_create(parent_handle->device_name,
 			parent_handle->veos_sock_name, parent_handle, -1);
@@ -343,7 +362,7 @@ static void thread_dummy_func(void *thread_args)
 
 	/* Request VEOS to perform cloning */
 	retval = pseudo_psm_send_clone_req(child_handle->veos_sock_fd, ve_clone_info,
-			thread_dummy_func_args->parent_pid);
+			(pid_t)ve_clone_info.parent_pid);
 	if (retval < 0) {
 		PSEUDO_ERROR("clone() failure: veos request error");
 		PSEUDO_DEBUG("Failed to send request to veos, return value %d, "
@@ -926,6 +945,8 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 	}
 	*shared_var = DO_FORK_INIT;
 
+	sys_prepar_clear_all_vhshm_resource();
+
 	/* Create new child process */
 	child_pid = pid =  fork();
 	if (0 < pid) {
@@ -936,16 +957,17 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 		do {
 			/*
 			 * In case when VH child process exits abnormally
-			 * without notifying parent, break polling on
-			 * shared variable
+			 * without changing shared variable, for instance,
+			 * calling pseudo_abort(), break polling on the shared_variable.
 			 *
-			 * Parent process polls on a variable to check if
-			 * child is created successfully at VEOS. But in
-			 * case where child pseudo process aborts due to
-			 * some failure, parent would not be notified of the
-			 * same and would keep polling indefinitely.
+			 * However, ve_premature_child_exit() will return non-zero
+			 * in case where child exited normally before parent could check
+			 * the shared variable in next iteration, hence falsely returning
+			 * failure. Hence, we recheck whether child has updated
+			 * the shared_var.
 			 * */
-			if (ve_premature_child_exit(pid)) {
+			if (ve_premature_child_exit(pid) &&
+					DO_FORK_SUCCESS != *shared_var) {
 				*shared_var = -EAGAIN;
 				PSEUDO_ERROR("VH child process exit"
 						" unexpectdly");
@@ -991,6 +1013,8 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 					syscall(SYS_gettid));
 			trace = (SIGTRAP | (PTRACE_EVENT_VFORK<<8));
 		}
+
+		sys_clear_all_vhshm_resource(pid);
 
 		/* If trace event enabled send SIGTRAP to itself and
 		 * populate ptrace event information in si_code.
@@ -1157,6 +1181,8 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 		 * into ve_fork_info */
 		copy_vemva_dir_info(ve_fork_info.veshm_dir);
 
+		sys_clear_all_vhshm_resource(CHILD_PROCESS);
+
 		/* Request VEOS to perform cloning */
 		retval = pseudo_psm_send_fork_req(syscall_name,
 				ve_fork_info,
@@ -1248,6 +1274,7 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 		PSEUDO_DEBUG("VH fork failed, return value %d", (int)retval);
 	}
 
+	munmap((void *)shared_var, sizeof(int));
 	/* write return value */
 	return retval;
 
@@ -1277,6 +1304,7 @@ hndl_fail2:
 
 hndl_fail3:
 	*shared_var = retval;
+	munmap((void *)shared_var, sizeof(int));
 	if (child_pid == 0) {
 		PSEUDO_ERROR("Child process creation failed");
 		exit(EXIT_FAILURE);
@@ -1402,7 +1430,8 @@ ret_t ve_fork(int syscall_num, char *syscall_name, veos_handle *handle)
 ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 {
 	ret_t retval = -1;
-	char *exe_name;
+	char *exe_name = NULL;
+	char * real_exe_name = NULL;
 	char *head = NULL;
 	uint64_t args[3] = {0};
 	struct statvfs st = {0};
@@ -1480,8 +1509,8 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 	}
 
 	/* To Fetch the real path of binary */
-	exe_name = realpath(exe_name, NULL);
-	if (NULL == exe_name) {
+	real_exe_name = realpath(exe_name, NULL);
+	if (NULL == real_exe_name) {
 		retval = -errno;
 		PSEUDO_ERROR("Fail(%s) to get realpath of:%s",
 				strerror(errno),
@@ -1489,9 +1518,9 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 		goto hndl_fail1;
 	}
 
-	PSEUDO_DEBUG("Realpath of binary is %s", exe_name);
+	PSEUDO_DEBUG("Realpath of binary is %s", real_exe_name);
 
-	retval = statvfs(exe_name, &st);
+	retval = statvfs(real_exe_name, &st);
 	if (-1 == retval) {
 		retval = -errno;
 		PSEUDO_ERROR("File stat fail: %s",
@@ -1514,7 +1543,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 
 	/* Check if realpath has search permissions
 	 * If not, then EACCES should be returned */
-	retval = access(exe_name, F_OK);
+	retval = access(real_exe_name, F_OK);
 	if (-1 == retval) {
 		retval = -errno;
 		PSEUDO_ERROR("Path of binary inaccessible");
@@ -1523,7 +1552,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 		goto hndl_fail1;
 	}
 
-	retval = stat(exe_name, &sb);
+	retval = stat(real_exe_name, &sb);
 	if (-1 == retval) {
 		retval = -errno;
 		PSEUDO_ERROR("File stat fail: %s",
@@ -1557,12 +1586,12 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 	}
 
 
-	/* To check whether the binary (pointed by exe_name)
+	/* To check whether the binary (pointed by real_exe_name)
 	 * is VE binary or VH binary */
-	head = open_bin_file(exe_name, &fd);
+	head = open_bin_file(real_exe_name, &fd);
 	if (head) {
 		if (!chk_elf_consistency((Elf_Ehdr *)head)) {
-			PSEUDO_DEBUG("%s is VE binary", exe_name);
+			PSEUDO_DEBUG("%s is VE binary", real_exe_name);
 			elf_type = EXIT_EXECVE_VE;
 			exe_flag = 1;
 			shift_cntr = VE_EXECVE_ARGS;
@@ -1574,7 +1603,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 			execve_vh_arg[2] = handle->device_name;
 			execve_vh_arg[3] = "-s";
 			execve_vh_arg[4] = handle->veos_sock_name;
-			execve_vh_arg[5] = exe_name;
+			execve_vh_arg[5] = real_exe_name;
 
 			PSEUDO_DEBUG("CREATED VE ARGUMENT LIST AT VH");
 			for (cntr = 0; cntr <= shift_cntr; cntr++) {
@@ -1582,6 +1611,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 						cntr, execve_vh_arg[cntr]);
 			}
 		}
+		free(head); /* done with elf check */
 	} else {
 		retval = -errno;
 		PSEUDO_ERROR("Failed to check binary type");
@@ -1818,7 +1848,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 	if (exe_flag) {
 		retval = execve(execve_vh_arg[0], execve_vh_arg, execve_vh_envp);
 	} else {
-		retval = execve(exe_name, execve_vh_arg, execve_vh_envp);
+		retval = execve(real_exe_name, execve_vh_arg, execve_vh_envp);
 	}
 	retval = -errno;
 	PSEUDO_ERROR("VH execve failed due to: %d %s", errno, strerror(errno));
@@ -1846,7 +1876,10 @@ hndl_fail2:
 		free(execve_vh_envp[cntr++]);
 	}
 hndl_fail1:
-	free(exe_name);
+	if (real_exe_name != NULL)
+		free(real_exe_name);
+	if (exe_name != NULL);
+		free(exe_name);
 	/* Cleaning of all the task associated with pid*/
 	if (kill_flag == 1) {
 		close(fd);
@@ -4251,6 +4284,8 @@ ret_t ve_exit_group(int syscall_num, char *syscall_name, veos_handle *handle)
 	if (-1 == ve_sync_vhva(handle)) {
 		PSEUDO_ERROR("Failed to Sync Host Virtual addresses");
 	}
+
+	munmap((void *)PTRACE_PRIVATE_DATA,4096);
 
 	/* Invoking VH exit_group() syscall */
 	retval = syscall(syscall_num, args);

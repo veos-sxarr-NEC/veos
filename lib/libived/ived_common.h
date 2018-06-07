@@ -99,12 +99,9 @@ extern log4c_category_t *log4cat_lib;
 
 /* #ifdef DEBUG */
 #define IVED_DEBUG(category, fmt, ...) \
-	VE_LOG(category, LOG4C_PRIORITY_DEBUG, "%s() "fmt, \
-	       __func__, ## __VA_ARGS__)
+	VE_LOG(category, LOG4C_PRIORITY_DEBUG, fmt, ## __VA_ARGS__)
 
 #define IVED_TRACE(category, fmt, ...) \
-	VE_LOG(category, LOG4C_PRIORITY_TRACE, "%s() "fmt, \
-	       __func__, ## __VA_ARGS__)
-
+	VE_LOG(category, LOG4C_PRIORITY_TRACE, fmt, ## __VA_ARGS__)
 
 #endif

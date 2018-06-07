@@ -103,7 +103,7 @@ int amm_dump_cr_reg_process(char *file, int cr_cluster_no)
 	cr_arr = (cr_cluster_t *)calloc(1, sizeof(cr_cluster_t));
 	if (NULL == cr_arr) {
 		ret = -errno;
-		VEOS_DEBUG("Error (%s) while allocating CR cluster object",
+		VEOS_CRIT("Error (%s) while allocating CR cluster object",
 				 strerror(-ret));
 		return ret;
 	}
@@ -395,7 +395,7 @@ int veos_dump_cr(struct ve_task_struct *tsk, uint64_t mode_flag)
 		break;
 	}
 #if 0
-		VEOS_DEBUG("---------------------------------------------------------\n");
+		VEOS_DEBUG("---------------------------------------------------------");
 		fclose(fp);
 		ret = amm_dump_cr_reg_node(vnode->cr_dump_fname);
 		if (0 > ret) {
@@ -437,7 +437,7 @@ int veos_dump_cr(struct ve_task_struct *tsk, uint64_t mode_flag)
 		}
 		VEOS_DEBUG("---------------------------------------------------------");
 #if 0
-		VEOS_DEBUG("---------------------------------------------------------\n");
+		VEOS_DEBUG("---------------------------------------------------------");
 		fclose(fp);
 		for (crd_num = 0; crd_num < MAX_CRD_PER_CORE; crd_num++) {
 			if (crdisvalid(&mm->crd[crd_num])) {
@@ -1223,7 +1223,7 @@ int veos_get_cr_page(uint64_t crd, pid_t owner)
 	if (!crdisvalid(&mm->crd[crd])) {
 		ret = -EINVAL;
 		put_ve_task_struct(tsk);
-		VEOS_DEBUG("Error (%s) CRD not allocated : %ld\n",
+		VEOS_DEBUG("Error (%s) CRD not allocated : %ld",
 				strerror(-ret), crd);
 		return ret;
 	}

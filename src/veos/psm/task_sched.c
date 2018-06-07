@@ -37,6 +37,12 @@
 #include "locking_handler.h"
 #include "vesync.h"
 
+#define PSM_CTXSW_CREG_VERAA(phys_core_num) (\
+	PCI_BAR2_CREG_SIZE * phys_core_num)
+#define PSM_CTXSW_CREG_SIZE (\
+	offsetof(core_user_reg_t, VR) +\
+	sizeof(((core_user_reg_t *)NULL)->VR))
+
 /**
 * @brief Function handles the failure of assigning task on core
 * while context switch decision is ongoing.
@@ -63,10 +69,9 @@ void psm_handle_assign_failure(struct ve_task_struct *curr_ve_task,
 		VEOS_DEBUG("DECREMENT THREAD_SCHED_COUNT %d PID %d",
 				*(curr_ve_task->thread_sched_count),
 				curr_ve_task->pid);
-		VEOS_DEBUG("Saving current user context from core");
 		psm_save_current_user_context(curr_ve_task);
-		VEOS_DEBUG("Setting reg_dirty to false for %d",
-				curr_ve_task->pid);
+		VEOS_DEBUG("Saved current user context from core"
+				"for PID %d", curr_ve_task->pid);
 		curr_ve_task->reg_dirty = false;
 	}
 
@@ -114,7 +119,7 @@ bool psm_unassign_assign_task(struct ve_task_struct *tsk)
 		 * we will rely on scheduler to assign
 		 * task on core.
 		 * */
-		VEOS_DEBUG("Not assigning task on core");
+		VEOS_DEBUG("Not assigning task %d on core", tsk->pid);
 		return ret;
 	}
 
@@ -407,7 +412,8 @@ int psm_set_jdid(struct ve_task_struct *tsk)
 			VE_CORE_OFFSET_OF_JIDR,
 			&(tsk->jid), sizeof(reg_t));
 	if (0 > retval) {
-		VEOS_ERROR("Setting JID failed");
+		VEOS_ERROR("Setting JID %d failed for task %d",
+				tsk->jid, tsk->pid);
 		retval = -1;
 		goto set_jdid_fail;
 	}
@@ -469,8 +475,6 @@ int psm_alloc_udma_context_region(struct ve_task_struct *ve_task)
 	if (!(ve_task->udma_context)) {
 		retval = -errno;
 		VEOS_CRIT("Internal Memory allocation failed");
-		VEOS_DEBUG("Malloc failed for task udma context:"
-				" %s", strerror(errno));
 		goto hndl_return;
 	}
 	memset(ve_task->udma_context, 0, sizeof(struct ve_udma));
@@ -506,7 +510,6 @@ bool psm_check_sched_jid_core(uint64_t *core_set,
 	VEOS_TRACE("Entering");
 	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores; core_loop++) {
 		p_ve_core = VE_CORE(0, core_loop);
-		VEOS_DEBUG("Core loop %d", core_loop);
 		/* Check scheduling status of bit set in thread_sched_bitmap */
 		if (CHECK_BIT(*(ve_task->thread_sched_bitmap), core_loop)) {
 			/* Halt the core */
@@ -515,11 +518,10 @@ bool psm_check_sched_jid_core(uint64_t *core_set,
 			if (!(*(arr_exs + core_loop) & VE_EXCEPTION) || reg_type == _DMAATB) {
 				if (psm_unassign_assign_task(p_ve_core->curr_ve_task)) {
 					*core_set |= 1 << core_loop;
-					VEOS_DEBUG("Thread of same thread group at core %d",
-							core_loop);
 					/* Set core state to HALT so that it cannot be
 					 * started until syncing finish */
-					VEOS_DEBUG("Setting core state to HALT");
+					VEOS_DEBUG("Thread of same thread group at core %d "
+						"Setting core state to HALT", core_loop);
 					SET_CORE_STATE(p_ve_core->ve_core_state,
 							HALT);
 					retval = true;
@@ -528,7 +530,7 @@ bool psm_check_sched_jid_core(uint64_t *core_set,
 							p_ve_core->curr_ve_task->pid);
 				}
 			} else {
-				VEOS_DEBUG("Exception has occured on core");
+				VEOS_DEBUG("Exception has occurred on core");
 			}
 		}
 	}
@@ -609,8 +611,6 @@ int psm_halt_ve_core(int node_id, int core_id, reg_t *regdata,
 	 * content of EXS register
 	 * */
 	if (p_ve_core->ve_core_state != EXECUTING) {
-		VEOS_DEBUG("Core: %d already stopped.",
-				core_id);
 		if (vedl_get_usr_reg(VE_HANDLE(node_id),
 				VE_CORE_USR_REG_ADDR(node_id, core_id),
 				EXS, regdata)) {
@@ -619,7 +619,7 @@ int psm_halt_ve_core(int node_id, int core_id, reg_t *regdata,
 					core_id);
 			goto hndl_return;
 		}
-		VEOS_DEBUG("Core: %d EXS: %lx", core_id, *regdata);
+		VEOS_DEBUG("Core: %d already stopped EXS: %lx", core_id, *regdata);
 		retval = 0;
 		goto hndl_return1;
 	}
@@ -634,9 +634,6 @@ int psm_halt_ve_core(int node_id, int core_id, reg_t *regdata,
 		if (curr_ve_task) {
 			curr_ve_task->time_slice -=
 				timeval_diff(now, curr_ve_task->stime);
-			VEOS_DEBUG("Update Core %d Task %d exec_time",
-					p_ve_core->core_num,
-					curr_ve_task->pid);
 			psm_calc_task_exec_time(curr_ve_task);
 		}
 	}
@@ -818,8 +815,6 @@ int psm_udma_no_migration(struct ve_task_struct *curr_ve_task)
 	VEOS_TRACE("Entering");
 	/* Check if core's DMA is mapped to VEHVA */
 	if (psm_check_udma_desc(curr_ve_task)) {
-		VEOS_DEBUG("Core DMA descriptor table is used");
-
 		/* core_dma_desc reset */
 		VEOS_DEBUG("Reset Core DMA descriptor flag");
 		*(curr_ve_task->core_dma_desc) = -1;
@@ -980,7 +975,7 @@ int psm_process_dma_migration(struct ve_task_struct* curr_ve_task)
 
 	if (tsd == 0) {
 		/* No other thread of thread group is executing */
-		VEOS_DEBUG("No other thread of thread group PID %d is running",
+		VEOS_DEBUG("No other thread of PID %d is running",
 				curr_ve_task->pid);
 		if (psm_udma_no_migration(curr_ve_task)) {
 			VEOS_ERROR("No DMA migration failed");
@@ -988,7 +983,8 @@ int psm_process_dma_migration(struct ve_task_struct* curr_ve_task)
 		}
 	} else if (tsd > 0) {
 		/* Other thread of thread group are executing */
-		VEOS_DEBUG("Some other threads are executing");
+		VEOS_DEBUG("Some other threads of PID %d are executing",
+				curr_ve_task->pid);
 		if (psm_check_udma_desc(curr_ve_task)) {
 			/* Core DMA desc is mapped to VEHVA */
 			if (psm_check_sched_jid_core(&core_set,
@@ -1010,7 +1006,8 @@ int psm_process_dma_migration(struct ve_task_struct* curr_ve_task)
 		/* Normally this should never happen. If this happens then
 		 * there is inconsistency while updating "thread_sched_count".
 		 */
-		VEOS_DEBUG("tsd is %d for pid %d", tsd, curr_ve_task->pid);
+		VEOS_DEBUG("THREAD_SCHED_COUNT is %d for PID %d",
+				tsd, curr_ve_task->pid);
 		goto dma_migration_fail;
 	}
 
@@ -1040,7 +1037,8 @@ int psm_calc_task_exec_time(struct ve_task_struct *curr_ve_task)
 	curr_ve_task->exec_time += timeval_diff(now_time,
 			(curr_ve_task->stime));
 
-	VEOS_DEBUG("PID %d Exec Time %ld",
+	VEOS_DEBUG("Core %d PID %d Exec Time %ld",
+			curr_ve_task->p_ve_core->core_num,
 			curr_ve_task->pid, curr_ve_task->exec_time);
 
 	/* Check the RLIMIT_CPU resource limit of current
@@ -1101,9 +1099,15 @@ void psm_save_current_user_context(struct ve_task_struct *curr_ve_task)
 	reg_t sr_tmp[64] = {0};
 	reg_t pmr_tmp[64] = {0};
 	int node_id = -1, core_id = -1;
+	struct ve_node_struct *p_ve_node = NULL;
+	struct ve_core_struct *p_ve_core = NULL;
+	ve_dma_status_t dmast = 0;
+	pid_t pid = getpid();
 
 	node_id = curr_ve_task->node_id;
 	core_id = curr_ve_task->core_id;
+	p_ve_node = VE_NODE(node_id);
+	p_ve_core = VE_CORE(node_id, core_id);
 
 	VEOS_TRACE("Entering");
 	pthread_mutex_lock_unlock(&(curr_ve_task->ve_task_lock), LOCK,
@@ -1131,23 +1135,24 @@ void psm_save_current_user_context(struct ve_task_struct *curr_ve_task)
 
 	/* Copy context from hardware registers
 	 * to software for curr_ve_task */
-	VEOS_DEBUG("Getting all VE registers");
-	if (vedl_get_usr_reg_all(VE_HANDLE(node_id),
-			VE_CORE_USR_REG_ADDR(node_id, core_id),
-			(core_user_reg_t *)curr_ve_task->
-			p_ve_thread)) {
-		VEOS_ERROR("Failed to get user registers "
-				" for PID %d", curr_ve_task->pid);
+	dmast = ve_dma_xfer_p_va(p_ve_node->dh, VE_DMA_VERAA, pid,
+			PSM_CTXSW_CREG_VERAA(p_ve_core->phys_core_num),
+			VE_DMA_VHVA, pid, (uint64_t)curr_ve_task->p_ve_thread,
+			PSM_CTXSW_CREG_SIZE);
+	if (dmast != VE_DMA_STATUS_OK) {
 		pthread_mutex_lock_unlock(&(curr_ve_task->ve_task_lock),
 			UNLOCK,
 			"Failed to release task lock");
 		pthread_mutex_lock_unlock(&curr_ve_task->p_ve_mm->
 				thread_group_mm_lock, UNLOCK,
 			"Failed to release thread group lock");
+		VEOS_ERROR("Failed to get user registers "
+				" for PID %d", curr_ve_task->pid);
 		veos_abort("Getting user context failed");
 	}
 
-	VEOS_DEBUG("Getting user context done");
+	VEOS_DEBUG("Getting VE registers done for PID %d",
+			curr_ve_task->pid);
 
 	/* restore SR register context */
 	if (curr_ve_task->sr_context_bitmap)
@@ -1483,6 +1488,10 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *curr_ve_task,
 	int node_id = -1;
 	int core_id = -1;
 	int ret = -1;
+	struct ve_node_struct *p_ve_node = NULL;
+	struct ve_core_struct *p_ve_core = NULL;
+	ve_dma_status_t dmast = 0;
+	pid_t pid = getpid();
 
 	VEOS_TRACE("Entering");
 	if (!task_to_schedule)
@@ -1490,6 +1499,8 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *curr_ve_task,
 
 	node_id = task_to_schedule->node_id;
 	core_id = task_to_schedule->core_id;
+	p_ve_node = VE_NODE(node_id);
+	p_ve_core = VE_CORE(node_id, core_id);
 
 	if (curr_ve_task && curr_ve_task != task_to_schedule) {
 		/* Number of voluntary or involuntary context switches count
@@ -1574,12 +1585,8 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *curr_ve_task,
 		 * */
 		VEOS_DEBUG("Sigpending Flag set.");
 		ret = psm_do_signal_ve(task_to_schedule);
-		if (-1 == ret) {
-			VEOS_ERROR("Signal delivery either failed or"
-					" process terminated after signal"
-					" delivery");
+		if (-1 == ret)
 			goto hndl_return1;
-		}
 		task_to_schedule->usr_reg_dirty = true;
 	}
 
@@ -1675,12 +1682,12 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *curr_ve_task,
 	} else {
 		VEOS_DEBUG("Setting all user registers");
 		/* Load the VE process context */
-		if (vedl_set_usr_reg_all(
-					VE_HANDLE(node_id),
-					VE_CORE_USR_REG_ADDR(node_id,
-						core_id),
-					(core_user_reg_t *)task_to_schedule->
-					p_ve_thread)) {
+		dmast = ve_dma_xfer_p_va(p_ve_node->dh,	VE_DMA_VHVA, pid,
+				(uint64_t)task_to_schedule->p_ve_thread,
+				VE_DMA_VERAA, pid,
+				PSM_CTXSW_CREG_VERAA(p_ve_core->phys_core_num),
+				PSM_CTXSW_CREG_SIZE);
+		if (dmast != VE_DMA_STATUS_OK) {
 			VEOS_DEBUG("Setting all user registers failed");
 			goto abort;
 		}
@@ -2085,7 +2092,6 @@ directly_update_dmaatb:
 		if (halt_all) {
 			/* Halt all the threads of thread group
 			 * and update CRD */
-			VEOS_DEBUG("Update CRD for whole thread group");
 			VEOS_DEBUG("Mark CRD DIRTY for thread group");
 			update_atb_crd_dirty(ve_task, reg_type);
 			if (psm_check_sched_jid_core(&core_set, ve_task, reg_type, exception_arr)) {
@@ -2355,7 +2361,6 @@ void psm_find_sched_new_task_on_core(struct ve_core_struct *p_ve_core,
 		bool schedule_current)
 {
 	reg_t regdata = 0;
-	int core_id;
 	struct ve_task_struct *task_to_schedule = NULL;
 	struct ve_task_struct *curr_ve_task = NULL;
 	struct timeval now_time = {0};
@@ -2395,7 +2400,6 @@ void psm_find_sched_new_task_on_core(struct ve_core_struct *p_ve_core,
 			"Failed to acquire Core %d read lock",
 			p_ve_core->core_num);
 	curr_ve_task = p_ve_core->curr_ve_task;
-	core_id = p_ve_core->core_num;
 
 	/* Skip scheduling as no task exists in core list */
 	if (NULL == p_ve_core->ve_task_list) {
@@ -2413,25 +2417,21 @@ void psm_find_sched_new_task_on_core(struct ve_core_struct *p_ve_core,
 			&& (p_ve_core->nr_active == 1)
 			&& (curr_ve_task->ve_task_state == RUNNING)
 			&& p_ve_core->ve_core_state == EXECUTING) {
-		VEOS_DEBUG("No exception for pid %d No scheduling",
-				curr_ve_task->pid);
 		/* Update core busy time */
-		VEOS_DEBUG("Update core %d busy time",
-				p_ve_core->core_num);
 		p_ve_core->busy_time +=
 			timeval_diff(now_time, p_ve_core->core_stime);
 		p_ve_core->core_stime = now_time;
 
 		/* Update VE task execution time */
-		VEOS_DEBUG("Update Core %d task %d exec_time",
-				p_ve_core->core_num,
-				curr_ve_task->pid);
 		psm_calc_task_exec_time(curr_ve_task);
 
 		/* Update time quantum of VE task
 		 * As this is the only eligible VE task on VE core, therefore
 		 * re-assign time quantum even if it is exhausted
 		 * */
+		VEOS_DEBUG("Core %d No exception for pid %d No scheduling",
+				p_ve_core->core_num,
+				curr_ve_task->pid);
 		curr_ve_task->time_slice -=
 				timeval_diff(now_time, curr_ve_task->stime);
 		if (curr_ve_task->time_slice <= 0) {
@@ -2481,8 +2481,6 @@ void psm_find_sched_new_task_on_core(struct ve_core_struct *p_ve_core,
 		goto hndl_return;
 	}
 
-	VEOS_DEBUG("Stopped Core : %d", core_id);
-
 	/* Handling scenario:
 	 * When monc or any other h/w exception like ILSA/ILPV/ILOP etc
 	 * is encountered on VE and schedule timer expires before the
@@ -2494,11 +2492,11 @@ void psm_find_sched_new_task_on_core(struct ve_core_struct *p_ve_core,
 				(curr_ve_task->block_status == BLOCK_RECVD)) {
 			pthread_mutex_lock_unlock(&curr_ve_task->ve_task_lock,
 					LOCK, "Failed to acquire task lock");
-			psm_set_task_state(curr_ve_task, WAIT);
 			VEOS_DEBUG("Scheduler setting task state to WAIT for"
 					" PID : %d CORE ID: %d",
 					curr_ve_task->pid,
 					p_ve_core->core_num);
+			psm_set_task_state(curr_ve_task, WAIT);
 			pthread_mutex_lock_unlock(&curr_ve_task->ve_task_lock,
 					UNLOCK, "Failed to release task lock");
 			if (scheduler_expiry) {

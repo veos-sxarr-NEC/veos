@@ -344,7 +344,7 @@ int veos_ptrace_attach(struct veos_thread_arg *pti, pid_t pid)
 		goto hndl_return1;
 	}
 
-	VEOS_INFO("Pid: %d is now attached", pid);
+	VEOS_DEBUG("Pid: %d is now attached", pid);
 
 	retval = 0;
 hndl_return1:
@@ -1102,7 +1102,7 @@ int veos_ptrace_seize(struct veos_thread_arg *pti, pid_t pid, uint64_t data)
 		goto hndl_return1;
 	}
 
-	VEOS_INFO("Pid: %d is now attached(SEIZE)", pid);
+	VEOS_DEBUG("Pid: %d is now attached(SEIZE)", pid);
 
 	retval = 0;
 hndl_return1:

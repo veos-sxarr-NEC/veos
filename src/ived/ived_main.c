@@ -129,8 +129,8 @@ initialize_ived()
 	for (i=0; i< MAX_VE_NODE; i++){
 		ret = pthread_mutex_init(&boot_lock[i], NULL);
 		if ( ret != 0 ){
-			IVED_FATAL(log4cat_main, "Initializing IVED failed: %s", 
-				   strerror(ret));
+			IVED_CRIT(log4cat_main, "Initializing IVED failed: %s", 
+				  strerror(ret));
 			return (-1);
 		}
 	}
@@ -138,8 +138,8 @@ initialize_ived()
 	/* Initialize semaphore */
 	ret = sem_init(&worker_sem, 0, MAX_THREADS);
 	if ( ret != 0 ){
-		IVED_FATAL(log4cat_main, "Initializing IVED failed: %s", 
-			   strerror(ret));
+		IVED_CRIT(log4cat_main, "Initializing IVED failed: %s", 
+			  strerror(ret));
 		return (-1);
 	}
 
@@ -153,8 +153,8 @@ initialize_ived()
 		ret = pthread_mutex_init(&veos_info[i].os_lock, &chkmutex);
 		ret = pthread_cond_init(&veos_info[i].os_cv, NULL);
 		if (ret != 0){
-			IVED_FATAL(log4cat_main, "Initializing IVED failed: %s",
-				   strerror(errno));
+			IVED_CRIT(log4cat_main, "Initializing IVED failed: %s",
+				  strerror(errno));
 			return (-1);
 		}
 		INIT_LIST_HEAD(&veos_info[i].proc_info_list);
@@ -163,8 +163,8 @@ initialize_ived()
 		veos_info[i].cr_page_info = (struct cr_page_info *)malloc
 			(sizeof(struct cr_page_info) * NODE_CR_PAGE_NUM);
 		if (veos_info[i].cr_page_info == NULL){
-			IVED_FATAL(log4cat_main, "Initializing IVED failed: %s",
-				   strerror(errno));
+			IVED_CRIT(log4cat_main, "Initializing IVED failed: %s",
+				  strerror(errno));
 			return (-1);
 		}
 		for (j=0; j < NODE_CR_PAGE_NUM; j++){
@@ -178,8 +178,8 @@ initialize_ived()
 			INIT_LIST_HEAD(&cr_info->cr_users_list);
 			ret = pthread_mutex_init(&cr_info->cr_lock, &chkmutex);
 			if (ret != 0){
-				IVED_FATAL(log4cat_main, "Initializing IVED failed: %s",
-					   strerror(errno));
+				IVED_CRIT(log4cat_main, "Initializing IVED failed: %s",
+					  strerror(errno));
 				return (-1);
 			}
 		}
@@ -282,13 +282,13 @@ test_os_socket(int os_pid, int veos_sock){
 
 	} else if (pollval > 0){
 		if (pollfd.revents & POLLNVAL){
-			IVED_WARN(log4cat_main, 
+			IVED_DEBUG(log4cat_main, 
 				   "OS socket test: Socket not open (pid:%d)",
 				   os_pid);
 			retval = VE_STAT_STOP;
 		}
 		if (pollfd.revents & POLLERR){
-			IVED_WARN(log4cat_main, 
+			IVED_ERROR(log4cat_main, 
 				   "OS socket test: Error condition (pid:%d)",
 				   os_pid);
 			retval = 0;
@@ -457,7 +457,7 @@ err_ret:
 	if (message_buf != NULL)
 		memset(message_buf, 0, IVED_BUF_MAX_SIZE);
 	if (retval == 1){
-		IVED_ERROR(log4cat_main, "Send error");
+		IVED_ERROR(log4cat_main, "Receiving a request failed");
 		if (pti != NULL){
 			ived_send_int64(pti->socket_descriptor, 
 					rpc_retval, rpc_reterr);
@@ -519,7 +519,7 @@ ived_thread_start(void *arg)
 	IVED_DEBUG(log4cat_main, "tid %u is started.", (unsigned int)selfid);
 
 	if (pti == NULL){
-		IVED_ERROR(log4cat_main, "Thread data is invalid.");
+		IVED_CRIT(log4cat_main, "Thread data is invalid.");
 		goto pti_error;
 	}
 
@@ -537,7 +537,7 @@ ived_thread_start(void *arg)
 
 	ret = get_rpc_buf(&pti->telegram_buf, IVED_BUF_MAX_SIZE);
 	if (ret != 0){
-		IVED_ERROR(log4cat_main, "Allocating a buffer failed");
+		IVED_CRIT(log4cat_main, "Allocating a buffer failed");
 		goto pti_error;
 	}
 	memset(pti->telegram_buf, 0, IVED_BUF_MAX_SIZE);
@@ -570,13 +570,13 @@ ived_thread_start(void *arg)
 			rpc_reterr = -ECANCELED;
 		}
 		if (pti->cred.uid != ROOT_USR){
-			IVED_ERROR(log4cat_main, "Credencial check failed.");
+			IVED_DEBUG(log4cat_main, "Credential check failed.");
 			rpc_retval = IVED_REQ_NG;
 			rpc_reterr = -EACCES;
 		}
 
 		if (rpc_retval == IVED_REQ_NG){
-			IVED_ERROR(log4cat_main, "Connection failed");
+			IVED_DEBUG(log4cat_main, "Connection failed");
 			ived_send_int64(pti->socket_descriptor, 
 					rpc_retval, rpc_reterr);
 			close(pti->socket_descriptor);
@@ -704,7 +704,7 @@ ived_main_thread()
 
 	/* create socket */
 	if ((l_sock = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
-		IVED_ERROR(log4cat_main, "Socket for IVED server failed.");
+		IVED_FATAL(log4cat_main, "Socket for IVED server failed.");
 		goto ived_error;
 	}
 
@@ -718,13 +718,13 @@ ived_main_thread()
 
 	/* bind */
 	if (bind(l_sock, (struct sockaddr *)&sa, sizeof(sa)) == -1) {
-		IVED_ERROR(log4cat_main, "IVED Server could not bind.");
+		IVED_FATAL(log4cat_main, "IVED Server could not bind.");
 		goto ived_error;
 	}
 
 	/* listen */
 	if ((listen(l_sock, 80)) == -1) {
-		IVED_ERROR(log4cat_main, "IVED listen failed.");
+		IVED_FATAL(log4cat_main, "IVED listen failed.");
 		goto ived_error;
 	}
 	IVED_TRACE(log4cat_main, "[%u] PASS", (uint)pthread_self());
@@ -746,14 +746,14 @@ ived_main_thread()
 			a_sock = accept(l_sock, NULL, NULL);
 			if (a_sock == -1) {
 				if (errno == EBADF || errno == EINVAL){
-					IVED_WARN(log4cat_main, 
+					IVED_CRIT(log4cat_main, 
 						  "Accept a connection: %s", 
 						  strerror(errno));
 					goto ived_terminate; 
 				}
 				IVED_WARN(log4cat_main, 
 					  "Accept a connection: %s", 
-					   strerror(errno));
+					  strerror(errno));
 				continue;
 			}
 			break;
@@ -870,15 +870,15 @@ main(int argc, char *argv[])
 
 	ret = initialize_ived();
 	if (ret != 0 ){
-		IVED_ERROR(log4cat_main, "Initializing failed.");
+		IVED_FATAL(log4cat_main, "Initializing failed.");
 		exit(EXIT_FAILURE);
 	}
 
 	/* allocate tid */
 	worker_tid = (pthread_t *)malloc(MAX_THREADS * sizeof(pthread_t));
 	if (worker_tid == NULL){
-		IVED_CRIT(log4cat_main, "Initializing failed: %s",
-			  strerror(errno));
+		IVED_FATAL(log4cat_main, "Initializing failed: %s",
+			   strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 	IVED_DEBUG(log4cat_main, "worker_tid = %p", worker_tid);
@@ -887,8 +887,8 @@ main(int argc, char *argv[])
 	pt_info = (ived_thread_arg_t *)malloc
 		(MAX_THREADS * sizeof(ived_thread_arg_t));
 	if (pt_info == NULL){
-		IVED_CRIT(log4cat_main, "Initializing failed: %s",
-			  strerror(errno));
+		IVED_FATAL(log4cat_main, "Initializing failed: %s",
+			   strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 	IVED_DEBUG(log4cat_main, "ptinfo = %p", pt_info);
@@ -1055,8 +1055,8 @@ get_osinfo_struct(pid_t id)
 	for (i= 0; i < MAX_VE_NODE; i++){
 		ret = pthread_mutex_lock(&veos_info[i].os_lock);
 		if (ret != 0){
-			IVED_WARN(log4cat_main, "Acquire OS lock: %s",
-				  strerror(ret));
+			IVED_DEBUG(log4cat_main, "Acquire OS lock: %s",
+				   strerror(ret));
 		}
 
 		if (veos_info[i].os_pid == id){
@@ -1100,7 +1100,7 @@ try_clear_osinfo(struct veos_info *os_info, int self)
 	IVED_TRACE(log4cat_main, "PASS");
 
 	if (os_info == NULL){
-		IVED_ERROR(log4cat_main, "Cleared OS is not specified.");
+		IVED_CRIT(log4cat_main, "Cleared OS is not specified.");
 		return(-1);
 	}
 	if (self != 0 && self != VEOS_SELF_SHUTDOWN){
@@ -1110,7 +1110,7 @@ try_clear_osinfo(struct veos_info *os_info, int self)
 
 	ret = ived_check_mutex_locked(&os_info->os_lock);
 	if (ret != 0){
-		IVED_ERROR(log4cat_main, "Not locked (os)");
+		IVED_DEBUG(log4cat_main, "Not locked (os)");
 		return (-1);
 	}
 
@@ -1218,8 +1218,8 @@ search_node_proc_info(int pid, uuid_t uuid_proc,
 	for (i=0; i < MAX_VE_NODE; i++){
 		ret = pthread_mutex_lock(&veos_info[i].os_lock);
 		if (ret != 0){
-			IVED_WARN(log4cat_main, "Acquire OS lock: %s",
-				  strerror(ret));
+			IVED_DEBUG(log4cat_main, "Acquire OS lock: %s",
+				   strerror(ret));
 		}
 
 		procp = get_procinfo_struct(&veos_info[i], pid, uuid_proc, 0);
@@ -1347,8 +1347,8 @@ get_procinfo_struct(struct veos_info *osdata, int pid, uuid_t uuid_proc,
 
 		ret = pthread_mutex_lock(&entry->proc_lock);
 		if (ret != 0){
-			IVED_WARN(log4cat_main, "Acquire Process lock: %s",
-				  strerror(ret));
+			IVED_DEBUG(log4cat_main, "Acquire Process lock: %s",
+				   strerror(ret));
 		}
 
 		if (flag_uuid == 0){
@@ -1416,13 +1416,13 @@ erase_procinfo_struct(struct veos_info *os_info, struct process_info *proc_info)
 	ret = ived_check_mutex_locked(&os_info->os_lock);
 	assert(ret == 0);
 	if (ret != 0){
-		IVED_ERROR(log4cat_main, "Not locked (os)");
+		IVED_DEBUG(log4cat_main, "Not locked (os)");
 		return (-1);
 	}
 	ret = ived_check_mutex_locked(&proc_info->proc_lock);
 	assert(ret == 0);
 	if (ret != 0){
-		IVED_ERROR(log4cat_main, "Not locked (process)");
+		IVED_DEBUG(log4cat_main, "Not locked (process)");
 		return (-1);
 	}
 
@@ -1431,7 +1431,8 @@ erase_procinfo_struct(struct veos_info *os_info, struct process_info *proc_info)
 	ret = pthread_mutex_destroy(&proc_info->proc_lock);
 	if (ret != 0){
 		pthread_mutex_lock(&proc_info->proc_lock);
-		IVED_ERROR(log4cat_main, "Mutex error: %s", strerror(ret));
+		IVED_ERROR(log4cat_main, "Erasing mutex error: %s", 
+			   strerror(ret));
 		return (-1);
 	}
 
@@ -1547,8 +1548,8 @@ release_all_resource(struct veos_info *os_info,
 				       struct process_info, list);
 		ret = pthread_mutex_lock(&proc_info->proc_lock);
 		if (ret != 0){
-			IVED_WARN(log4cat_main, "Acquire Process lock: %s",
-				  strerror(ret));
+			IVED_DEBUG(log4cat_main, "Acquire Process lock: %s",
+				   strerror(ret));
 		}
 
 		IVED_TRACE(log4cat_main, "Clearing process: PID: %d",
@@ -1608,7 +1609,8 @@ wait_resource_clear(struct veos_info *os_info)
 	/* Wait veos_info[os_index].node_stat becomes UNUSED. */
 	ret = clock_gettime(CLOCK_REALTIME, &timeout);
 	if (ret != 0){
-		IVED_ERROR(log4cat_main, "%s", strerror(errno));
+		IVED_ERROR(log4cat_main, "Wait resource clearing: %s", 
+			   strerror(errno));
 		return (-1);
 	}
 	timeout.tv_sec += BOOT_TIMEOUT;
@@ -1682,7 +1684,7 @@ clear_old_os_resource(struct veos_info *os_info)
 
 	ret = pthread_mutex_lock(&os_info->os_lock);
 	if (ret != 0){
-		IVED_WARN(log4cat_main, "Acquire OS lock: %s", strerror(ret));
+		IVED_DEBUG(log4cat_main, "Acquire OS lock: %s", strerror(ret));
 	}
 	ret = try_clear_osinfo(os_info, VEOS_SELF_SHUTDOWN);
 	if (ret > 0){

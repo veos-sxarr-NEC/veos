@@ -152,7 +152,7 @@ struct ve_node_struct {
 	pthread_mutex_t pciatb_lock;/*!< Per VE node lock to protect pciatb entry update */
 	pthread_mutex_t ve_tasklist_lock; /*!< Global tasklist_lock to serialize deletions/modifications
 					* of task lists */
-	pthread_rwlock_t ve_affinity_lock; /*!< Affinity read-write lock during sched_setaffinity request */
+	pthread_rwlock_t ve_relocate_lock; /*! Global lock for synchronizing task relocation */
 	pthread_cond_t stop_cond;/*!< Conditional lock for SIGSTOP signal */
 	struct ve_mem_info mem; /*!< VE memory data , mem START and its SIZE */
 	uint64_t zeroed_page_address; /*!< VE Memory Zeroed Page address */

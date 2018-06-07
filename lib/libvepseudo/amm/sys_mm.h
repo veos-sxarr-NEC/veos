@@ -41,6 +41,12 @@
 #include <sys/syscall.h>
 #include <sys/uio.h>
 
+/*
+ * A definition of the size of stack area for signal handling
+ * 3 signal handlers can be cascaded
+ */
+#define STACK_AREA_FOR_SIGNAL ((524952 + 512) * 3)
+
 #define MIN_2(type, x, y) ({\
 		type __min1 = (x);\
 		type __min2 = (y);\

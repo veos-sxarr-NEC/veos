@@ -184,8 +184,9 @@ ived_veshm_open(ived_thread_arg_t *pti, RpcVeshmArg *request)
 	search_node_proc_info(req_pid, null_id, &os_info, &proc_info);
 	if (os_info == NULL || proc_info == NULL){
 		rpc_reterr = -ESRCH;
-		IVED_ERROR(log4cat_veshm, "%s (pid=%d)", 
-			   strerror(ESRCH), req_pid);
+		IVED_ERROR(log4cat_veshm, 
+			   "VESHM registration: pid=%d data is not found", 
+			   req_pid);
 		goto err_ret_nolock;
 	}
 
@@ -208,8 +209,8 @@ ived_veshm_open(ived_thread_arg_t *pti, RpcVeshmArg *request)
 	if (having_veshm != NULL){
 		ret = pthread_mutex_lock(&having_veshm->veshm_info->veshm_lock);
 		if (ret != 0){
-			IVED_WARN(log4cat_veshm, "Acquire VESHM lock: %s",
-				  strerror(ret));
+			IVED_DEBUG(log4cat_veshm, "Acquire VESHM lock: %s",
+				   strerror(ret));
 		}
 
 		if (isset_flag(having_veshm->veshm_info->mode_flag,
@@ -269,8 +270,8 @@ ived_veshm_open(ived_thread_arg_t *pti, RpcVeshmArg *request)
 	veshm_info = having_veshm->veshm_info;
 	ret = pthread_mutex_lock(&veshm_info->veshm_lock);
 	if (ret != 0){
-		IVED_WARN(log4cat_veshm, "Acquire VESHM lock: %s",
-			  strerror(ret));
+		IVED_DEBUG(log4cat_veshm, "Acquire VESHM lock: %s",
+			   strerror(ret));
 	}
 
 	if ( veshm_info->start_vemva == UNUSED){
@@ -430,8 +431,9 @@ ived_veshm_attach(ived_thread_arg_t *pti, RpcVeshmArg *request)
 			      &owner_proc_info);
 	if (owner_os_info == NULL || owner_proc_info == NULL){
 		rpc_reterr = -ESRCH;
-		IVED_ERROR(log4cat_veshm, "%s (pid=%d)", 
-			   strerror(ESRCH), req_owner_pid);
+		IVED_DEBUG(log4cat_veshm,
+			   "VESHM attach: owner(pid=%d) data is not found", 
+			   req_owner_pid);
 		goto err_ret_nolock;
 	}
 	locked_owner = 1;
@@ -471,12 +473,12 @@ ived_veshm_attach(ived_thread_arg_t *pti, RpcVeshmArg *request)
 	locked_veshm = 1;
 
 	if (isset_flag(veshm_info->mode_flag, VESHM_MODE_CLOSE)){
-		IVED_ERROR(log4cat_veshm, "%s", strerror(EINVAL));
+		IVED_DEBUG(log4cat_veshm, "%s", strerror(EINVAL));
 		rpc_reterr = -EINVAL;
 		goto err_ret_lock_veshm;
 	}
 	if (veshm_info->uid_of_owner != req_user_uid){
-		IVED_ERROR(log4cat_veshm, "%s", strerror(EACCES));
+		IVED_DEBUG(log4cat_veshm, "%s", strerror(EACCES));
 		rpc_reterr = -EACCES;
 		goto err_ret_lock_veshm;
 	}
@@ -558,7 +560,7 @@ ived_veshm_attach(ived_thread_arg_t *pti, RpcVeshmArg *request)
 	}
 
 	if ((unsigned int)user_proc_info->attach_veshm_num + 1 > INT_MAX){
-		IVED_ERROR(log4cat_veshm, "Too many VESHM attachement (pid:%d)",
+		IVED_ERROR(log4cat_veshm, "Too many VESHM attachment (pid:%d)",
 			   user_proc_info->pid);
 		rpc_reterr = -ENOMEM;
 		goto err_ret;
@@ -626,8 +628,8 @@ err_ret:
 err_ret_revert:
 	if (locked_veshm == 0){
 		ret = pthread_mutex_lock(&veshm_info->veshm_lock);
-		IVED_WARN(log4cat_veshm, "Acquire VESHM lock: %s",
-			  strerror(ret));
+		IVED_DEBUG(log4cat_veshm, "Acquire VESHM lock: %s",
+			   strerror(ret));
 		locked_veshm = 1;
 	}
 	if (change_attach_proc == 1){
@@ -814,7 +816,6 @@ erase_veshm_info_by_detach( struct veos_info *owner_os_info,
 
 		if (ret != 0){
 			IVED_WARN(log4cat_veshm, "Erase request failed");
-			IVED_WARN(log4cat_veshm, "Data for VESHM remain.");
 		}
 	}
 
@@ -823,8 +824,8 @@ erase_veshm_info_by_detach( struct veos_info *owner_os_info,
 		 owner_proc_info, veshm_info->uuid_veshm);
 	if (having_veshm == NULL){
 		pthread_mutex_unlock(&veshm_info->veshm_lock);
-		IVED_WARN(log4cat_veshm, 
-			  "VESHM tracker is not found.");
+		IVED_ERROR(log4cat_veshm, 
+			  "VESHM tracker is not found. VESHM is not cleared");
 		goto err_ret;
 	}
 
@@ -892,16 +893,16 @@ erase_veshm_info_batch(struct veos_info *cur_os_info,
 		search_node_proc_info(-1, veshm_info->uuid_owner_proc,
 				      &owner_os_info, &owner_proc_info);
 		if (owner_os_info == NULL || owner_proc_info == NULL){
-			IVED_WARN(log4cat_veshm, 
-				  "Owner process is not found. (Skip %p)",
-				  veshm_info);
+			IVED_ERROR(log4cat_veshm, 
+				   "Owner process is not found. (Skip clearing %p)",
+				   veshm_info);
 			continue;
 		}
 
 		ret = pthread_mutex_lock(&veshm_info->veshm_lock);
 		if (ret != 0){
-			IVED_WARN(log4cat_veshm, "Acquire VESHM lock: %s",
-				  strerror(ret));
+			IVED_DEBUG(log4cat_veshm, "Acquire VESHM lock: %s",
+				   strerror(ret));
 		}
 
 		/* This request is sent to a VEOS of an attached VESHM. */
@@ -1060,14 +1061,15 @@ ived_veshm_detach(ived_thread_arg_t *pti, RpcVeshmArg *request)
 					      req_uuid_proc, 0);
 	if (owner_proc_info == NULL){
 		rpc_reterr = -ESRCH;
-		IVED_ERROR(log4cat_veshm, "%s", strerror(ESRCH));
+		IVED_ERROR(log4cat_veshm, 
+			   "VESHM detach: Owner process data is not found");
 		goto err_ret_lock2;
 	}
 
 	ret = pthread_mutex_lock(&veshm_info->veshm_lock);
 	if (ret != 0){
-		IVED_WARN(log4cat_veshm, "Acquire VESHM lock: %s",
-			  strerror(ret));
+		IVED_DEBUG(log4cat_veshm, "Acquire VESHM lock: %s",
+			   strerror(ret));
 	}
 
 	/* Delete attaching processes infomation and tracker */
@@ -1201,15 +1203,15 @@ ived_veshm_close_common(struct veos_info *os_info,
 
 	veshm_info = having_veshm->veshm_info;
 	if (veshm_info == NULL){
-		IVED_ERROR(log4cat_veshm, "veshm_info = %p", veshm_info);
+		IVED_ERROR(log4cat_veshm, "Closing VESHM failed");
 		*reterr = -EINVAL;
 		goto err_ret;
 	}
 
 	ret = pthread_mutex_lock(&veshm_info->veshm_lock);
 	if (ret != 0){
-		IVED_WARN(log4cat_veshm, "Acquire VESHM lock: %s",
-			  strerror(ret));
+		IVED_DEBUG(log4cat_veshm, "Acquire VESHM lock: %s",
+			   strerror(ret));
 	}
 
 	/* Update registration count */
@@ -1221,7 +1223,7 @@ ived_veshm_close_common(struct veos_info *os_info,
 	 * VE_REQ_DEV and IVED_PROC_EXIT can be ORed value.
 	 *
 	 */
-	
+
 	if ( isset_flag(req_mode_flag, IVED_VEOS_EXIT) ){
 		veshm_info->register_cnt_proc = 0;
 		veshm_info->register_cnt_dev = 0;
@@ -1261,8 +1263,8 @@ ived_veshm_close_common(struct veos_info *os_info,
 	}
 
 	if ((veshm_info->register_cnt_proc == 0)
-	     && (veshm_info->register_cnt_dev == 0)
-	     && (veshm_info->reference_cnt == 0)){
+	    && (veshm_info->register_cnt_dev == 0)
+	    && (veshm_info->reference_cnt == 0)){
 
 		/* NOTE: Even though register_cnt_* are 0, VESHM may shared. 
 		 * (reference_cnt > 0) Delete it later in detach function. */
@@ -1340,7 +1342,8 @@ ived_veshm_close(ived_thread_arg_t *pti, RpcVeshmArg *request)
 	search_node_proc_info(-1, req_uuid_proc, &os_info, &proc_info);
 	if (os_info == NULL || proc_info == NULL){
 		rpc_reterr = -ESRCH;
-		IVED_ERROR(log4cat_veshm, "%s", strerror(ESRCH));
+		IVED_ERROR(log4cat_veshm, 
+			   "VESHM close: process data is not found"); 
 		goto err_ret_nolock;
 	}
 
@@ -1355,7 +1358,7 @@ ived_veshm_close(ived_thread_arg_t *pti, RpcVeshmArg *request)
 	}
 
 	if (req_pid != having_veshm->veshm_info->pid_of_owner){
-		IVED_ERROR(log4cat_veshm, "Invalid close request: %s", 
+		IVED_DEBUG(log4cat_veshm, "Invalid close request: %s", 
 			   strerror(EACCES));
 		rpc_reterr = -EACCES;
 		goto err_ret;
@@ -1439,14 +1442,14 @@ ived_get_pciatb_pgmode(ived_thread_arg_t *pti, RpcVeshmArg *request)
 	search_node_proc_info(req_pid, null_id, &os_info, &proc_info);
 	if (os_info == NULL || proc_info == NULL){
 		rpc_reterr = -ESRCH;
-		IVED_ERROR(log4cat_veshm, "%s (pid=%d)", 
-			   strerror(ESRCH), req_pid);
+		IVED_DEBUG(log4cat_veshm, "pid=%d data is not found", 
+			   req_pid);
 		goto err_ret_nolock;
 	}
 
 	if (os_info->node_stat != VE_STAT_RUNNING){
 		rpc_reterr = -ESRCH;
-		IVED_ERROR(log4cat_veshm, "%s (pid=%d)", 
+		IVED_DEBUG(log4cat_veshm, "%s (pid=%d)", 
 			   strerror(ESRCH), req_pid);
 		goto err_ret;
 	}
@@ -1507,7 +1510,6 @@ ived_handle_veshm_request(ived_thread_arg_t *pti)
 {
 	int retval = -1;
 	RpcVeshmArg	*request = NULL;
-	pthread_t tid = pthread_self();
 	struct veos_info *os_info = NULL;
 
 	int rpc_retval = IVED_REQ_NG;	/* Return value of RPC message */
@@ -1555,9 +1557,7 @@ ived_handle_veshm_request(ived_thread_arg_t *pti)
 		ived_get_pciatb_pgmode(pti, request);
 		break;
 	default:
-		IVED_ERROR(log4cat_veshm,
-			   "TID[%u] Invalid VESHM command",
-			   (unsigned int)tid);
+		IVED_ERROR(log4cat_veshm, "Invalid VESHM command");
 		rpc_reterr = -EINVAL;
 		retval = -1;
 		goto err_ret;

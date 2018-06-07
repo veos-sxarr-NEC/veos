@@ -178,9 +178,9 @@ void veos_terminate_node_core(int abnormal)
 					"Node tasklist lock destroy failed");
 		}
 
-		if (pthread_rwlock_destroy(&(VE_NODE(0)->ve_affinity_lock))) {
+		if (pthread_rwlock_destroy(&(VE_NODE(0)->ve_relocate_lock)) != 0) {
 			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-					"Failed to destroy affinity read-write lock");
+					"Failed to destroy ipc read-write lock");
 		}
 
 		vedl_close_ve(VE_HANDLE(0));
@@ -243,7 +243,7 @@ static void veos_termination(int abnormal)
 	 */
 	psm_terminate_all(p_ve_node->node_num);
 
-	/* VESHM/CR agent notifies VEOS’s termination to IVED */
+	/* VESHM/CR agent notifies VEOS's termination to IVED */
 	if (opt_ived != 0) {
 		if (veos_ived_erase_osdata() != 0) {
 			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
@@ -461,9 +461,9 @@ static int veos_create_socket(void)
 	if ((sizeof(sa.sun_path)) < (strlen(veos_sock_file) + 1)) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 					"Socket file path is too long");
-		goto hndl_error;
+		goto hndl_close;
 	}
-	strcpy(sa.sun_path, veos_sock_file);
+	strncpy(sa.sun_path, veos_sock_file, sizeof(sa.sun_path) - 1);
 
 	/* VEOS socket file has already removed.
 	 * bind()
@@ -471,7 +471,7 @@ static int veos_create_socket(void)
 	if (bind(l_sock, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 					"Binding socket failed");
-		goto hndl_error;
+		goto hndl_close;
 	}
 
 	/* change permission */
@@ -481,11 +481,18 @@ static int veos_create_socket(void)
 	if ((listen(l_sock, IPC_QUEUE_LEN)) != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 						"Listing socket failed");
-		goto hndl_error;
+		goto hndl_close;
 	}
 
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
 	return l_sock;
+
+hndl_close:
+	errno = 0;
+	if (close(l_sock) != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+						"Closing socket failed");
+	}
 
 hndl_error:
 	remove(sa.sun_path);
@@ -638,8 +645,7 @@ int main(int argc, char *argv[])
 	cat_os_core = log4c_category_get("veos.os_module.core");
 	if (cat_os_core == NULL) {
 		fprintf(stderr, "Initializing log4c category failed\n");
-		retval = 1;
-		goto hndl_return;
+		exit(EXIT_FAILURE);
 	}
 	if (veos_ived_log4c_init()) {
 		fprintf(stderr, "Initializing log4c for IVED failed\n");

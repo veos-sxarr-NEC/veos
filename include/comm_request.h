@@ -594,6 +594,7 @@ enum pseudo_veos_msg_id {
 	CMD_CR,
 	CMD_VEMM,
 	VHVA_SYNC,
+	CMD_VHSHM,
 	PSEUDO_VEOS_MAX_MSG_NUM,
 	CMD_INVALID = -1,
 };

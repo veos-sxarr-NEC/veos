@@ -98,9 +98,9 @@ void veos_sysinfo(int node_id, struct sysinfo *sys)
 			if ((PG_SHM & VE_PAGE(vnode, i)->flag) ||
 					(MAP_SHARED & VE_PAGE(vnode, i)->flag)) {
 				count = count + VE_PAGE(vnode, i)->pgsz;
-				VEOS_DEBUG("VE page %lx is shared", i);
+				VEOS_TRACE("VE page %lx is shared", i);
 			}
-		VEOS_DEBUG("VE page no %lx not shared", i);
+		VEOS_TRACE("VE page no %lx not shared", i);
 		}
 
 	}
@@ -206,7 +206,7 @@ uint64_t get_vm_size(struct ve_mm_struct *mm)
 			} /* end entry loop */
 		} /* end*/
 		else
-			VEOS_DEBUG("Task page directory %d is invalidated", dir_cntr);
+			VEOS_TRACE("Task page directory %d is invalidated", dir_cntr);
 	} /* end dir loop */
 
 	VEOS_TRACE("returned");
@@ -369,7 +369,6 @@ int veos_pmap(pid_t pid, struct ve_mapheader *header)
 	int ret = 0;
 	int str_len = 0;
 	void *shmaddr = NULL;
-	struct shmid_ds buf;
 
 	VEOS_TRACE("invoked for task:pid(%d) and header %p", pid, header);
 	/* Find the VE task for given pid */
@@ -385,6 +384,7 @@ int veos_pmap(pid_t pid, struct ve_mapheader *header)
 	if (0 == pmapcount) {
 		VEOS_DEBUG("no segment to dump");
 		ret = 0;
+		header->shmid = 0;
 		goto err;
 	}
 	vemap_l = ve_map;
@@ -401,8 +401,7 @@ int veos_pmap(pid_t pid, struct ve_mapheader *header)
 		VEOS_DEBUG("VHOS shmat failed for pmap");
 
 		if (0 > shmctl(shmid, IPC_RMID, NULL))
-			VEOS_DEBUG("Failed to set shared memory for deletion\n");
-
+			VEOS_DEBUG("Failed to set shared memory for deletion");
 		ret = -errno;
 		goto err;
 	}
@@ -471,7 +470,7 @@ int veos_pmap(pid_t pid, struct ve_mapheader *header)
 	VEOS_DEBUG("VE maping List:");
 	/*Dumping As well as freeing the VE pmap list*/
 	while (vemap_l != NULL) {
-		VEOS_DEBUG("%p - %p, %s, %s\n",
+		VEOS_TRACE("%p - %p, %s, %s",
 				(void *)vemap_l->begin, (void *)vemap_l->end,
 				vemap_l->perm, vemap_l->mapname);
 		vemap_tmp = vemap_l;
@@ -482,40 +481,12 @@ int veos_pmap(pid_t pid, struct ve_mapheader *header)
 	header->shmid = shmid;
 	header->length = pmapcount;
 
-	/*Changing the owner of Sys V shared memory*/
-	ret = shmctl(shmid, IPC_STAT, &buf);
-	if (0 > ret) {
-		VEOS_DEBUG("Failed to get shared memory segment stat");
-
-		if (0 > shmctl(shmid, IPC_RMID, NULL))
-			VEOS_DEBUG("Failed to set shared memory for deletion");
-
-		ret = -errno;
-		goto err;
-	}
-
-	buf.shm_perm.uid = tsk->uid;
-
-	ret = shmctl(shmid, IPC_SET, &buf);
-	if (0 > ret) {
-		VEOS_DEBUG("Failed to Set shared memory segment stat");
-
-		if (0 > shmctl(shmid, IPC_RMID, NULL))
-			VEOS_DEBUG("Failed to set shared memory for deletion");
-
-		ret = -errno;
-		goto err;
-	}
-
 	ret = shmdt(shmaddr);
 	if (0 > ret) {
 		VEOS_DEBUG("VHOS shmdt failed for pmap");
-
 		if (0 > shmctl(shmid, IPC_RMID, NULL))
 			VEOS_DEBUG("Failed to set shared memory for deletion");
-
 		ret = -errno;
-		goto err;
 	}
 
 err:
@@ -666,4 +637,41 @@ bool check_flag(vemva_t vemap, uint64_t flag, struct ve_mm_struct *mm)
 
 	VEOS_TRACE("returned");
 	return is_flag;
+}
+
+/*
+* @brief This function will change the owner of shm segmnet.
+*
+* @param[in] uid uid of requestor process.
+* @param[in] shmid shmid of segment whose owner to be changed.
+*
+* @return if success return 0 else negative of errno.
+*/
+int change_owner_shm(int uid, int shmid)
+{
+	int ret = 0;
+	struct shmid_ds buf;
+
+	VEOS_TRACE("Entering");
+	VEOS_DEBUG("Changing owner of shm segment shmid(%d)", shmid);
+	/*Changing the owner of Sys V shared memory*/
+	ret = shmctl(shmid, IPC_STAT, &buf);
+	if (0 > ret) {
+		ret = -errno;
+		VEOS_DEBUG("Failed to get shared memory segment stat");
+		shmctl(shmid, IPC_RMID, NULL);
+		goto err;
+	}
+
+	buf.shm_perm.uid = uid;
+
+	ret = shmctl(shmid, IPC_SET, &buf);
+	if (0 > ret) {
+		ret = -errno;
+		VEOS_DEBUG("Failed to Set shared memory segment stat");
+		shmctl(shmid, IPC_RMID, NULL);
+	}
+	VEOS_TRACE("returning");
+err:
+	return ret;
 }

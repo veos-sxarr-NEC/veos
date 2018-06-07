@@ -156,7 +156,7 @@ void __dump_dmaatb(FILE *fd, dmaatb_reg_t *dmaatb)
 				}
 			} /* end entry loop */
 		} else {
-			VEOS_DEBUG("DMAATB DIR:%d Invalid", dir_cntr);
+			VEOS_TRACE("DMAATB DIR:%d Invalid", dir_cntr);
 		}
 	}
 }
@@ -833,6 +833,11 @@ dir_t __validate_pte(vemva_t vaddr, int rw, pgno_t pgno,
 					pgoff, vaddr);
 			ret =  -ENOMEM;
 			goto error;
+		} else if (!(0 > jid) && (vehva_flag & VEHVA_MAP_FIXED)) {
+			pg_unsetprot(&pte[pgoff]);
+			pg_unsettype(&pte[pgoff]);
+			pg_clearpfn(&pte[pgoff]);
+			pg_invalid(&pte[pgoff]);
 		}
 	}
 
@@ -1327,12 +1332,12 @@ int veos_get_pgmode(uint8_t type, pid_t pid, uint64_t vaddr)
 */
 pgno_t __replace_page(atb_entry_t *pte)
 {
-	ret_t ret = 0, shmrm = 0;
+	ret_t ret = 0, shmrm = 0, found = 0;
 	pgno_t old_pgno = 0;
 	ssize_t pgsz = 0;
 	pgno_t new_pgno = 0;
 	vemaa_t pb[2] = {0};
-	struct shm *seg = NULL;
+	struct shm *seg = NULL, *shm_ent = NULL;
 	struct ve_page *old_ve_page = NULL;
 	struct ve_page *new_ve_page = NULL;
 	struct ve_node_struct *vnode = VE_NODE(0);
@@ -1413,15 +1418,24 @@ pgno_t __replace_page(atb_entry_t *pte)
 			shmrm = 1;
 		pthread_mutex_lock_unlock(&seg->shm_lock, UNLOCK,
 				"Failed to release shm lock");
-		if ((0 == seg->nattch) &&
-				(seg->flag & SHM_DEL)) {
-			if (shmrm) {
-				pthread_mutex_lock_unlock(&vnode->shm_node_lock,
-						LOCK, "Failed to acquire node lock");
-				amm_release_shm_segment(seg);
-				pthread_mutex_lock_unlock(&vnode->shm_node_lock,
-						UNLOCK, "Failed to release node shm lock");
+		if (shmrm) {
+			pthread_mutex_lock_unlock(&vnode->shm_node_lock,
+					LOCK, "Failed to acquire node lock");
+			list_for_each_entry(shm_ent, &vnode->shm_head, shm_list) {
+				if (shm_ent == seg) {
+					VEOS_DEBUG("Shared memory segment(%p) for shmid(%d) found",
+							shm_ent, shm_ent->shmid);
+					found = 1;
+					break;
+				}
 			}
+			if (found) {
+				if ((seg->flag & SHM_DEL) &&
+						(seg->nattch == 0))
+					amm_release_shm_segment(seg);
+			}
+			pthread_mutex_lock_unlock(&vnode->shm_node_lock,
+					UNLOCK, "Failed to release node shm lock");
 		}
 	}
 

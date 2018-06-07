@@ -25,4 +25,5 @@ libpseudopsm_la_CFLAGS = \
 	-I$(top_srcdir)/vhcall/include \
 	-I$(top_srcdir)/include \
 	-I$(top_builddir)/lib/libveosprotoc \
-	-I@prefix@/include
+	-I@prefix@/include \
+	-I$(srcdir)/../ived

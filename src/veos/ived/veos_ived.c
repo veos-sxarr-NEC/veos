@@ -43,6 +43,7 @@
 #include "veos_cr.h"
 #include "veos_veshm_ipc.h"
 #include "veos_veshm.h"
+#include "veos_vhshm.h"
 
 #define LOCK_TIMEOUT 10      /* seconds */
 
@@ -130,7 +131,7 @@ veos_ived_init()
 	/* misc */
 	uuid_clear(null_id);
 
-	IVED_DEBUG(log4cat_veos_ived, "Initialized libivedipc.");
+	IVED_DEBUG(log4cat_veos_ived, "Initialized IVED agent.");
 
 	return(0);
 
@@ -151,7 +152,7 @@ err_ret_nolock:
 int
 veos_ived_finalize()
 {
-	IVED_DEBUG(log4cat_veos_ived, "Clean up IVED resouces.");
+	IVED_DEBUG(log4cat_veos_ived, "Clean up IVED resources.");
 
 	/* Clear locks */
 	pthread_mutex_destroy(&veshm_remains_lock);
@@ -359,7 +360,7 @@ veos_ived_register_osdata()
 
 	handle = current_node->handle;
 	if (handle == NULL){
-		IVED_ERROR(log4cat_veos_ived, "vedl handle is NULL");
+		IVED_CRIT(log4cat_veos_ived, "vedl handle is NULL");
 		goto err_ret;
 	}
 
@@ -412,7 +413,7 @@ veos_ived_register_osdata()
 
 	ret = ived_exchange_ived_msg(ived_socket_fd, &ived_arg, &result);
 	if (ret != 0){
-		retval = ret;
+		IVED_ERROR(log4cat_veos_ived, "Sending OS registration failed");
 		goto err_ret;
 	}
 	if (result->error){
@@ -459,7 +460,7 @@ err_ret:
 	if (result != NULL)
 		ived_return__free_unpacked(result, NULL);
 
-	IVED_ERROR(log4cat_veos_ived, "error retval = %d", retval);
+	IVED_DEBUG(log4cat_veos_ived, "error retval = %d", retval);
 	return(retval);
 }
 
@@ -512,12 +513,12 @@ veos_ived_erase_osdata()
 		/* Even if this communication failed, it isn't a fatal error.
 		 * IVED can detect VEOS termination. */
 		IVED_WARN(log4cat_veos_ived,
-			  "Informing of OS termination failed.");
+			  "Sending OS termination failed.");
 		goto err_ret;
 	} 
 	if (result->retval < 0){
 		IVED_WARN(log4cat_veos_ived,
-			  "Informing of OS termination failed.:#%d %s",
+			  "Sending OS termination failed.:#%d %s",
 			  result->error, strerror(-result->error));
 		goto err_ret;
 	}
@@ -574,7 +575,7 @@ veos_init_ived_proc_property(struct ve_task_struct *tsk)
 	}
 
 	if (tsk == NULL) {
-		IVED_ERROR(log4cat_veos_ived, "%s", strerror(EINVAL));
+		IVED_CRIT(log4cat_veos_ived, "%s", strerror(EINVAL));
 		goto err_ret;
 	}
 
@@ -585,7 +586,7 @@ veos_init_ived_proc_property(struct ve_task_struct *tsk)
 		goto ret_sucess;
 	}
 	if (tsk->ived_resource != NULL){
-		IVED_DEBUG(log4cat_veos_ived, "Data exist: %p",
+		IVED_ERROR(log4cat_veos_ived, "IVED data exists: %p",
 			   tsk->ived_resource);
 		goto ret_sucess;
 	}
@@ -600,7 +601,8 @@ veos_init_ived_proc_property(struct ve_task_struct *tsk)
 
 	if (pthread_rwlock_init(&newdata->ived_resource_lock,
 				&rw_lock_attr) != 0){
-		IVED_ERROR(log4cat_veos_ived, "Initialize a lock failed.");
+		IVED_CRIT(log4cat_veos_ived, 
+			  "Initialize ived resource lock failed.");
 		goto err_ret;
 	}
 
@@ -617,11 +619,21 @@ veos_init_ived_proc_property(struct ve_task_struct *tsk)
 	newdata->pid		    = tsk->pid;
 	uuid_generate(newdata->uuid_proc);
 
+	/* Initialize a resource information about VHSHM */
+	ret = veos_initialize_vhshm_resource(newdata);
+	if (ret != 0) {
+		pthread_rwlock_destroy(&newdata->ived_resource_lock);
+		pthread_mutex_destroy(&newdata->proc_cr_lock);
+		goto err_ret;
+	}
+
 	/* Register a new process with IVED */
 	ret = veos_ived_register_procdata(newdata); 
 	if (ret < 0){
 		pthread_rwlock_destroy(&newdata->ived_resource_lock);
 		pthread_mutex_destroy(&newdata->proc_cr_lock);
+		pthread_mutex_destroy(
+				&newdata->veos_vhshm_res_head.veos_vhshm_lock);
 		goto err_ret;
 	}
 
@@ -662,7 +674,7 @@ veos_clean_ived_proc_property(struct ve_task_struct *tsk)
 
 	IVED_TRACE(log4cat_veos_ived, "PASS");
 	if (tsk == NULL){
-		IVED_ERROR(log4cat_veos_ived, "%s",strerror(EINVAL)); 
+		IVED_CRIT(log4cat_veos_ived, "%s",strerror(EINVAL)); 
 		return(-1);
 
 	}
@@ -678,13 +690,19 @@ veos_clean_ived_proc_property(struct ve_task_struct *tsk)
 	 * in IVED side will be cleared in a erasing process data request. */
 	ret = veos_veshm_discard_all(tsk);
 	if (ret != 0){
-		IVED_WARN(log4cat_veos_ived, "Releasing VESHM failed.");
+		IVED_ERROR(log4cat_veos_ived, "Releasing VESHM failed.");
 	}
 
 	ret = veos_cr_discard_all(tsk);
 	if (ret != 0){
-		IVED_WARN(log4cat_veos_ived, "Releasing local CR pages failed.");
+		IVED_ERROR(log4cat_veos_ived, "Releasing local CR pages failed.");
 	}
+
+	/* Release VHSHM resources */
+	ret = veos_delete_vhshm_resource(ived_resource);
+	if (ret != 0)
+		IVED_ERROR(log4cat_veos_ived,
+					"Releasing VHSHM resources failed");
 
 	/* Erase a registration of this process */
 	veos_ived_erase_procdata(ived_resource);
@@ -711,7 +729,7 @@ veos_clean_ived_proc_property(struct ve_task_struct *tsk)
  *
  * @param [in] resource  IVED resource management data
  *
- * @return  O on success, -1 on failure.
+ * @return  O on success, negative value on failure.
  */
 static int
 veos_ived_register_procdata(struct ived_shared_resource_data *resource)
@@ -758,6 +776,7 @@ veos_ived_register_procdata(struct ived_shared_resource_data *resource)
 
 	ret = ived_exchange_ived_msg(ived_req_sock, &ived_arg, &result);
 	if (ret != 0){
+		IVED_ERROR(log4cat_veos_ived, "Sending process registration failed");
 		retval = ret;
 		goto err_ret;
 	}
@@ -785,7 +804,7 @@ err_ret:
 
 	if (retval == IVED_RPC_ERR_RECV){
 		/* Send a cancel request */
-		IVED_WARN(log4cat_veos_ived, "Cancel the failed request.");
+		IVED_DEBUG(log4cat_veos_ived, "Cancel the failed request.");
 		/* IVED closes a socket per a request (ived_exchange_ived_msg),
 		 * so this if statement should be after ived_finish_soc(). */
 
@@ -857,12 +876,13 @@ veos_ived_erase_procdata(struct ived_shared_resource_data *resource)
 
 	ret = ived_exchange_ived_msg(ived_req_sock, &ived_arg, &result);
 	if (ret != 0){
+		IVED_WARN(log4cat_veos_ived, "Sending process termination failed");
 		goto err_ret;
 	}
 	if (result->retval){
-		IVED_ERROR(log4cat_veos_ived,
-			   "Erasing a process failed.:#%d %s",
-			   result->error, strerror(-result->error));
+		IVED_WARN(log4cat_veos_ived,
+			  "Erasing a process failed.:#%d %s",
+			  result->error, strerror(-result->error));
 		goto err_ret;
 	}
 	IVED_DEBUG(log4cat_veos_ived, 
@@ -932,9 +952,13 @@ veos_ived_get_pciatb_pgmode(int pid)
 	}
 
 	if (ret_ived->retval == IVED_REQ_NG){
-		IVED_ERROR(log4cat_veos_ived,
-			   "The query is failed.  ret:%"PRId64", err:%d",
-			   ret_ived->retval, ret_ived->error);
+		if (ret_ived->error == -ECANCELED)
+			IVED_ERROR(log4cat_veos_ived,
+				   "The query is failed (ECANCELED)");
+		else 
+			IVED_DEBUG(log4cat_veos_ived,
+				   "The query is failed.  err:%d",
+				   ret_ived->error);
 		sv_errno = -ret_ived->error;
 		goto err_ret;
 	}

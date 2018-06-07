@@ -1101,6 +1101,8 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 	int idx = 0;
 	vemva_t old_bottom = 0;
 	vemva_t new_bottom = 0;
+	vemva_t actual_new_bottom;
+	vemva_t requested_new_bottom;
 	vemva_t new_stack_limit = 0;
 	int64_t ret = 0;
 	void *ret_addr = NULL;
@@ -1187,55 +1189,67 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 	/*update ve page info*/
 	update_ve_page_info(&flag);
 
-	if (!IS_ALIGNED(new_bottom, ve_page_info.page_size)) {
+	requested_new_bottom = new_bottom;
+	/*
+	 * Stack area for signal handling is required.
+	 */
+	actual_new_bottom = requested_new_bottom - STACK_AREA_FOR_SIGNAL;
+
+	new_bottom = ALIGN_RD(new_bottom, ve_page_info.page_size);
+	actual_new_bottom = ALIGN_RD(actual_new_bottom, ve_page_info.page_size);
+	old_bottom = ALIGN_RD(old_bottom, ve_page_info.page_size);
+
+	if (pid == tid) {
 		/*
-		 * Stack grows downwards so aligned address should be
-		 * roundown and ALIGN macro gives roundup aligned address.
+		 * While changing the stack limit Check:
+		 * 1. If it overlaps the process heap or not.
+		 * 2. If STACK LIMIT is defined, then check if it is
+		 * going beyond the limit or not.
+		 *
+		 * If stack grows and goes beyond in both the cases,
+		 * we just return the new stack limit.
+		 * Let hardware exception occur.
 		 */
-		new_bottom = (uint64_t)ALIGN(new_bottom, ve_page_info.page_size) -
-			ve_page_info.page_size;
-		PSEUDO_DEBUG("new_bottom (0x%lx) aligned with page size(0x%lx)",
-				new_bottom, ve_page_info.page_size);
+		if (new_bottom < ve_info.stack_limit) {
+			PSEUDO_DEBUG("new stack(0x%lx) is crossing stack limit(0x%lx)",
+				new_bottom, ve_info.stack_limit);
+			goto out;
+		}
+		if (new_bottom < ve_info.heap_top) {
+			PSEUDO_DEBUG("new stack(0x%lx) is crossing heap top(0x%lx)",
+				new_bottom, ve_info.heap_top);
+			goto out;
+		}
+
+		if (actual_new_bottom < ve_info.stack_limit) {
+			PSEUDO_DEBUG("new stack(0x%lx) is crossing stack limit(0x%lx)",
+				new_bottom, ve_info.stack_limit);
+			actual_new_bottom = ve_info.stack_limit;
+		}
+		if (actual_new_bottom < ve_info.heap_top) {
+			PSEUDO_DEBUG("new stack(0x%lx) is crossing heap top(0x%lx)",
+				new_bottom, ve_info.heap_top);
+			actual_new_bottom = ve_info.heap_top;
+		}
 	}
 
 	/*
-	 * While changing the stack limit Check:
-	 * 1. If it overlaps the process heap or not.
-	 * 2. If STACK LIMIT is defined, then check if it is
-	 * going beyond the limit or not.
-	 *
-	 * If stack grows and goes beyond in both the cases,
-	 * we just return the new stack limit.
-	 * Let hardware exception occur.
+	 * We try to allocate physical pages including area for signal handling.
 	 */
-	if (new_bottom < ve_info.stack_limit) {
-		PSEUDO_DEBUG("new stack(0x%lx) is crossing stack limit(0x%lx)",
-				new_bottom, ve_info.stack_limit);
-		goto out;
-	}
-	if (new_bottom < ve_info.heap_top) {
-		PSEUDO_DEBUG("new stack(0x%lx) is crossing heap top(0x%lx)",
-				new_bottom, ve_info.heap_top);
-		goto out;
-	}
-
-	size = (old_bottom - new_bottom);
-
-	if (guard_addr && (new_bottom < guard_addr)) {
-		size -= (guard_addr - new_bottom);
+	size = (old_bottom - actual_new_bottom);
+	if (guard_addr && (actual_new_bottom < guard_addr)) {
+		size -= (guard_addr - actual_new_bottom);
 		if ((int64_t)size <= 0)
 			goto out;
 	}
 
 	/*
-	 * Check if new_bottom_address >= page aligned old_bottom_address
+	 * Check if actual_new_bottom address >= page aligned old_bottom address
 	 */
-	if (new_bottom >= (old_bottom &
-				(~(ve_page_info.page_size - 1))))
+	if (actual_new_bottom >= old_bottom)
 		goto out;
 
-	/* Calculate size of the VE program stack space to extend */
-	PSEUDO_DEBUG("new stack bottom(0x%lx)", new_bottom);
+	PSEUDO_DEBUG("actual new stack bottom(0x%lx)", actual_new_bottom);
 	PSEUDO_DEBUG("old stack bottom(0x%lx)", old_bottom);
 	PSEUDO_DEBUG("stack to be increase by size(0x%lx)", size);
 
@@ -1245,23 +1259,61 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 	flag |= MAP_FIXED | MAP_ANON | MAP_PRIVATE | MAP_STACK;
 
 	/* Request for memory map */
-	ret_addr = __ve_mmap(handle, new_bottom, size, prot,
+	ret_addr = __ve_mmap(handle, actual_new_bottom, size, prot,
 			flag, -1, 0);
-	if (MAP_FAILED == ret_addr) {
-		PSEUDO_DEBUG("Error while mapping new stack");
-		goto out;
+	if (MAP_FAILED != ret_addr) {
+		/*
+		 * After succesfull grow, update the value of new stack
+		 * pointer aligned.
+		 */
+		if (pid == tid)
+			ve_info.stack_pointer_aligned = actual_new_bottom;
+		/*
+		 * Update new_bottom to return value exclude stack area for
+		 * signal. But, update new_bottom to return actual value if
+		 * we have failed to allocate stack area for signal.
+		 */
+		if ((requested_new_bottom - actual_new_bottom)
+			> STACK_AREA_FOR_SIGNAL)
+			new_bottom = actual_new_bottom + STACK_AREA_FOR_SIGNAL;
+		else
+			new_bottom = actual_new_bottom;
+	} else if (new_bottom != actual_new_bottom) {
+		PSEUDO_DEBUG("Error while mapping new stack including area for signal handling");
+		/*
+		 * VEOS fails to allocate physical pages including a
+		 * area for signal_handling. So, we try to allocate
+		 * physical pages excluding a area for
+		 * signal_handling.
+		 */
+		size = (old_bottom - new_bottom);
+		if (new_bottom >= old_bottom)
+			goto out;
+
+		if (guard_addr && (new_bottom < guard_addr)) {
+			size -= (guard_addr - new_bottom);
+			if ((int64_t)size <= 0)
+				goto out;
+		}
+
+		PSEUDO_DEBUG("new stack bottom(0x%lx)", new_bottom);
+		PSEUDO_DEBUG("old stack bottom(0x%lx)", old_bottom);
+		PSEUDO_DEBUG("stack to be increase by size(0x%lx)", size);
+		ret_addr = __ve_mmap(handle, new_bottom, size, prot,
+				flag, -1, 0);
+		if (MAP_FAILED != ret_addr) {
+			/*
+			 * After succesfull grow, update the value of new stack
+			 * pointer aligned.
+			 */
+			if (pid == tid)
+				ve_info.stack_pointer_aligned = new_bottom;
+		} else
+			PSEUDO_DEBUG("Error while mapping new stack");
 	}
 out:
-	/* New stack limit to update
-	 * musl libc will do this in future */
 	new_stack_limit = new_bottom;
-	PSEUDO_DEBUG("new stack limit changed to (0x%lx)", new_stack_limit);
 
-	/*
-	 * After succesfull grow, update the value of new stack
-	 * pointer aligned.
-	 */
-	ve_info.stack_pointer_aligned = new_stack_limit;
 	memset(&ve_page_info, '\0', sizeof(ve_page_info));
 	PSEUDO_TRACE("returning new stack(0x%lx)", new_stack_limit);
 	return new_stack_limit;

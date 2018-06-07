@@ -265,7 +265,7 @@ void veos_set_pciatb(pciatb_entry_t *reg, int entry_no, int count)
 	/* here we will set pciatb_entries
 	 * from entry_no to (entry_no + count)*/
 	for (idx = entry_no; idx < (entry_no + count); idx++) {
-		VEOS_DEBUG("Updating PCIATB entry :%d", idx);
+		VEOS_TRACE("Updating PCIATB entry :%d", idx);
 		ret = vedl_update_pciatb_entry(handle,
 			vnode_info->cnt_regs_addr, &reg[idx], idx);
 		if (ret < 0)
@@ -1045,7 +1045,7 @@ int64_t veos_alloc_pciatb(pid_t pid, uint64_t vaddr,
 			/*whether allocation is contiguous or not*/
 			if (true == is_contiguos(vnode_info->pci_mempool,
 					size, &pci_entry)) {
-				VEOS_DEBUG("Allocated pciatb entry is : %ld\n",
+				VEOS_DEBUG("Allocated pciatb entry is : %ld",
 						pci_entry);
 				if (pg_mode == PGMOD_2MB)
 					tmp_addr = pci_entry << LARGE_PSHFT;
@@ -1145,14 +1145,14 @@ int64_t veos_delete_pciatb(uint64_t entry, size_t size)
 
 	if (((int64_t)size <= 0) || ((int64_t)entry < 0)) {
 		ret = -EINVAL;
-		VEOS_DEBUG("Error(%s) entry(%ld) size(0x%lx)\n",
+		VEOS_DEBUG("Error(%s) entry(%ld) size(0x%lx)",
 			strerror(-ret), entry, size);
 		return ret;
 	}
 
 	if (!IS_ALIGNED(size, pci_pgsize)) {
 		size = ALIGN(size, pci_pgsize);
-		VEOS_DEBUG("aligned size with 0x%lx pci page size: 0x%lx\n",
+		VEOS_DEBUG("aligned size with 0x%lx pci page size: 0x%lx",
 			size, pci_pgsize);
 	}
 
@@ -1207,7 +1207,7 @@ int64_t veos_delete_pciatb(uint64_t entry, size_t size)
 		pthread_mutex_lock_unlock(&vnode_info->pci_mempool->
 				buddy_mempool_lock, UNLOCK,
 				"Failed to release pci buddy lock");
-		VEOS_DEBUG("PCI Entries %ld has been free\n", idx);
+		VEOS_TRACE("PCI Entries %ld has been free", idx);
 	}
 
 	/*update H/w PCI entries*/

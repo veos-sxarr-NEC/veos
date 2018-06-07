@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([veos], [1.0.1])
+AC_INIT([veos], [1.1.1])
 AC_CONFIG_SRCDIR([lib/libvepseudo/psm/exception.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([./build-aux])
@@ -50,6 +50,12 @@ AC_ARG_WITH(ve-os-launcher-confdir, [AS_HELP_STRING([--with-ve-os-launcher-confd
 	    [ve_os_launcher_confdir=${with_ve_os_launcher_confdir}],
 	    [ve_os_launcher_confdir=${sysconfdir}/ve-os-launcher.d])
 AC_SUBST(ve_os_launcher_confdir)
+AC_ARG_WITH(binfmtdir, [AS_HELP_STRING([--with-binfmtdir],
+	    [Specify binfmt configuration file directory for VE program 
+	    [/usr/lib/binfmt.d]])],
+	    [binfmtdir=${with_binfmtdir}],
+	    [binfmtdir=/usr/lib/binfmt.d])
+AC_SUBST(binfmtdir)
 
 AC_ARG_WITH([vemm-agent-includedir],
 	AS_HELP_STRING([--with-vemm-agent-includedir],

@@ -84,4 +84,18 @@ struct cr_args {
 	uint64_t args[NR_CR_ARGS];
 };
 
+struct vhshm_args {
+	int subcmd;
+	union {
+		struct at_args {  /* Used to vh_shmat() request. */
+			uint64_t vhva;
+			size_t size;
+			int shmflag;
+		} at_arg;
+		struct dt_args {/* Used to vh_shmdt() request. */
+			uint64_t vehva;
+		} dt_arg;
+	};
+};
+
 #endif

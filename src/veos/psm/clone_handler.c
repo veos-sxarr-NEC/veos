@@ -562,9 +562,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	 */
 	new_task = dup_ve_task_struct(current);
 	if (!new_task) {
-		VEOS_ERROR("Failed to duplicate task structure");
-		VEOS_DEBUG("Task structure, current: %p, new_task: %p",
-					current, new_task);
+		VEOS_ERROR("Failed to duplicate task structure for child");
 		retval = -ENOMEM;
 		goto hndl_return;
 	}
@@ -603,9 +601,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	new_task->is_crt_drv = false;
 
 	if (!(clone_flags & CLONE_THREAD)) {
-		VEOS_DEBUG("Setting private members for process %d to NULL",
-				new_task->pid);
-
+		VEOS_DEBUG("Setting private members in child to NULL");
 		new_task->flags |= PF_FORKNOEXEC;
 		new_task->exit_signal = 0;
 		new_task->group_leader = new_task;
@@ -705,6 +701,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	new_task->exit_code = 0;
 	new_task->exit_status = 0;
 	new_task->exit_code_set = false;
+	new_task->reg_dirty = false;
 
 	/* Initialize block_status with BLOCK_RECVD, so that
 	 * this process can be scheduled successfully after it
@@ -917,7 +914,7 @@ int do_ve_fork(unsigned long clone_flags,
 		retval = -ENOMEM;
 		goto hndl_return;
 	}
-	if (VE_NODE(0)->num_ve_proc == MAX_TASKS_PER_NODE) {
+	if (VE_NODE(0)->num_ve_proc >= MAX_TASKS_PER_NODE) {
 		VEOS_ERROR("Reached maximum(%d) VEOS tasks limit",
 				MAX_TASKS_PER_NODE);
 		retval = -EAGAIN;
@@ -1026,8 +1023,8 @@ int do_ve_fork(unsigned long clone_flags,
 		new_task->sighand->lshm_addr =
 			(uint64_t)shmat(fork_info->shmid, NULL, 0);
 		if ((void *)-1 == (void *)new_task->sighand->lshm_addr) {
-			VEOS_ERROR("Failed to attach shared memeory");
-			VEOS_DEBUG("Failed to attach shared memeory, return "
+			VEOS_ERROR("Failed to attach shared memory");
+			VEOS_DEBUG("Failed to attach shared memory, return "
 					"value %d, mapped value %d",
 					-errno, -ENOMEM);
 			retval = -ENOMEM;

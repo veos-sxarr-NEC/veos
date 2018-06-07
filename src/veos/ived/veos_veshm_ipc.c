@@ -360,7 +360,7 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 
 		if (ret < 0 || ret != newent->physical_pages){
 			IVED_DEBUG(log4cat_veos_ived, 
-				  "VESHM registration: Physical address check failed");
+				   "VESHM registration: Physical address check failed");
 			reply->error  = -ENOMEM;
 			goto err_ret_free_newent;
 		}
@@ -508,7 +508,7 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 
 		reply->error = -ECANCELED;
 
-		IVED_ERROR(log4cat_veos_ived, "IPC failed");
+		IVED_ERROR(log4cat_veos_ived, "IPC (VESHM open) failed");
 		if (ret == IVED_RPC_ERR || ret == IVED_RPC_ERR_SEND){
 			goto err_ret_ipc_failed;
 		} else {
@@ -516,15 +516,13 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 			 * doesn't release PCIATB. If a request is from IB,
 			 * VESHM data in IVED is not cleared when a process
 			 * terminates. */
-			IVED_CRIT(log4cat_veos_ived, 
-				  "Receiving a result in IVED daemon failed.");
-			IVED_CRIT(log4cat_veos_ived, 
-				  "It may cause memory leaking of IVED.");
+			IVED_ERROR(log4cat_veos_ived, 
+				   "Receiving a result in IVED daemon failed.");
 			goto err_ret_ipc_failed;
 		}
 	}
 	if (ret_ived->retval == IVED_REQ_NG){
-		IVED_DEBUG(log4cat_veos_ived, "IPC failed");
+		IVED_ERROR(log4cat_veos_ived, "IPC (VESHM open) failed");
 		reply->error = ret_ived->error;
 		goto err_ret_ipc_failed;
 	}
@@ -591,9 +589,9 @@ err_ret_free_pciatb:
 				   i, entry->pciatb_slot[i]);
 			if (veos_delete_pciatb((uint64_t)entry->pciatb_slot[i], 
 					       (size_t)pciatb_pagesize) < 0){
-				IVED_WARN(log4cat_veos_ived,
-					  "Release PCIATB failed: slot %d", 
-					  entry->pciatb_slot[i]);
+				IVED_ERROR(log4cat_veos_ived,
+					   "Release PCIATB failed: slot %d", 
+					   entry->pciatb_slot[i]);
 			}
 		}
 		veos_sync_r_bar2();
@@ -737,7 +735,7 @@ veos_ived_cancel_attach_req(pid_t pid,
 	retval = ived_exchange_veshm_msg(ived_req_sock, &request, &ret_ived);
 
 	if (ret_ived != NULL){
-		IVED_DEBUG(log4cat_veos_ived, 
+		IVED_ERROR(log4cat_veos_ived, 
 			   "Cancel request of VESHM attaching finished(returned err:%d)",
 			   -ret_ived->error);
 		ived_return__free_unpacked(ret_ived, NULL);
@@ -1128,7 +1126,7 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 				user_ived_resource->attach_veshm_num++;
 				list_add(&entry->list, 
 					 &user_ived_resource->attach_veshm_list
-					 );
+					);
 			}
 			attached_addr = entry->vehva;
 			goto ret_success_mem_local;
@@ -1170,22 +1168,24 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 	 * send a cancel request. If an attching request in IVED succeeded,
 	 * the data will be delete when a process terminates. */
 	if (ret != 0){
-		if (ret == IVED_RPC_ERR_RECV){
-			IVED_WARN(log4cat_veos_ived,
-				  "Receiving a result of attaching failed.");
-		}
+		IVED_ERROR(log4cat_veos_ived, "IPC (VESHM attach) failed in VEOS (%d)",
+			   ret);
 		reply->error = -ECANCELED;
 		goto err_ret;
 	}
 	if (ret_ived->retval == IVED_REQ_NG){
 		reply->error = ret_ived->error;
-		IVED_DEBUG(log4cat_veos_ived, "The query is failed.  err:%d", 
-			   -(reply->error));
+		if (ret_ived->error == -ECANCELED)
+			IVED_ERROR(log4cat_veos_ived, "IPC (VESHM attach) failed. err:%d", 
+				   -(reply->error));
+		else
+			IVED_DEBUG(log4cat_veos_ived, "IPC (VESHM attach) failed. err:%d", 
+				   -(reply->error));
 		goto err_ret;
 	}
 	if (ret_ived->veshm_ret == NULL){
 		IVED_CRIT(log4cat_veos_ived, 
-			  "IPC message is corrupted.");
+			  "IPC (VESHM attach) is corrupted.");
 		assert(ret_ived->veshm_ret != NULL);
 		reply->error = -ECANCELED;
 		goto err_ret_cancel_req;
@@ -1212,13 +1212,13 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 	/* ------------ requested to IVED ---------------- */
 
 	if (pgsize == -1){
-	       if (owner_tsk == NULL || owner_tsk->ived_resource == NULL){
-		       IVED_ERROR(log4cat_veos_ived, 
-				  "Getting VESHM owner process (%d) data failed",
-				  req_owner_pid);
-		       reply->error  = -ESRCH;
-		       veshm_paddr_chk_err = 1;
-	       }
+		if (owner_tsk == NULL || owner_tsk->ived_resource == NULL){
+			IVED_ERROR(log4cat_veos_ived, 
+				   "Getting VESHM owner process (%d) data failed",
+				   req_owner_pid);
+			reply->error  = -ESRCH;
+			veshm_paddr_chk_err = 1;
+		}
 
 	} 
 	if (pgsize == -1 && veshm_paddr_chk_err == 0){
@@ -1280,7 +1280,7 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 			renewed_veshm = 1;
 		}
 	}
-	 
+
 	if ( veshm_paddr_chk_err == 1){
 		/* For err_ret_cancel_req, need entry and renewed_veshm */
 		goto err_ret_cancel_req;
@@ -1598,6 +1598,8 @@ veos_veshm_detach_ipc(uuid_t detach_uuid_proc, uuid_t detach_uuid_veshm,
 	}
 	if ( ret_ived != NULL ){
 		ived_return__free_unpacked(ret_ived, NULL);
+	} else {
+		IVED_ERROR(log4cat_veos_ived, "IPC (VESHM detach) failed");
 	}
 
 err_ret:
@@ -1729,8 +1731,8 @@ veos_veshm_detach_common(RpcVeshmSubDetach *request_detach, IvedReturn *reply)
 						     attaching_info->size);
 			if (ret != 0){
 				reply->error  = -ECANCELED;
-				IVED_WARN(log4cat_veos_ived, 
-					  "Releasing VEHVA failed");
+				IVED_ERROR(log4cat_veos_ived, 
+					   "Releasing VEHVA failed");
 			}
 			attaching_info->vehva = UNUSED;
 		}
@@ -1761,8 +1763,8 @@ veos_veshm_detach_common(RpcVeshmSubDetach *request_detach, IvedReturn *reply)
 				 attaching_info->vemva, attaching_info->size);
 			if (ret != 0){
 				memory_error = 1;
-				IVED_WARN(log4cat_veos_ived, 
-					  "Releasing VEMVA failed");
+				IVED_ERROR(log4cat_veos_ived, 
+					   "Releasing VEMVA failed");
 			}
 			attaching_info->vemva = UNUSED;
 		}
@@ -1936,16 +1938,19 @@ veos_veshm_close_ipc(struct owned_veshm_info *entry,
 	ret = ived_exchange_veshm_msg(ived_req_sock, &request, &ret_ived);
 
 	if (ret != 0){
+		IVED_ERROR(log4cat_veos_ived, "IPC (VESHM close) failed in VEOS (%d)",
+			   ret);
 		reply->retval = ret;
 		reply->error  = -ECANCELED;
 	} 
 	else if (ret_ived->retval == IVED_REQ_NG){
+		IVED_ERROR(log4cat_veos_ived, "IPC (VESHM close) failed");
 		reply->retval = IVED_REQ_NG;
 		reply->error  = ret_ived->error;
 	} else {
 		if (ret_ived->veshm_ret == NULL){
 			IVED_ERROR(log4cat_veos_ived, 
-				   "Reply message is corrupted");
+				   "Reply message (VESHM close) is corrupted");
 			reply->retval = IVED_REQ_NG;
 			reply->error  = -ECANCELED;
 			goto err_ret;
@@ -2199,9 +2204,9 @@ veos_veshm_close_common(RpcVeshmSubClose *request_close, IvedReturn *reply,
 					(entry->pciatb_slot[i], 
 					 pciatb_pagesize);
 				if (ret != 0){
-					IVED_WARN(log4cat_veos_ived, 
-						  "Releasing PCI adress failed. (slot:%d)",
-						  entry->pciatb_slot[i]);
+					IVED_ERROR(log4cat_veos_ived, 
+						   "Releasing PCI adress failed. (slot:%d)",
+						   entry->pciatb_slot[i]);
 				}
 			}
 			veos_sync_r_bar2();
@@ -2306,9 +2311,9 @@ veos_veshm_erase_area(size_t n_pci_address, uint64_t *pci_address)
 
 		ret = veos_delete_pciatb(pciatb_slot, pciatb_pagesize);
 		if (ret != 0){
-			IVED_WARN(log4cat_veos_ived, 
-				  "Releasing PCI adress failed. (slot:%lld)",
-				  (long long)pciatb_slot);
+			IVED_ERROR(log4cat_veos_ived, 
+				   "Releasing PCI adress failed. (slot:%lld)",
+				   (long long)pciatb_slot);
 		}
 
 		IVED_DEBUG(log4cat_veos_ived, "shift:%x slot:%lld",

@@ -615,7 +615,8 @@ int ve_recv_string(veos_handle *handle, uint64_t from, char *dest,
 				} else if (dest_size == len) {
 					PSEUDO_DEBUG("Null not found"
 							"in prescribed range");
-					return DSTSMLL;
+					ret = DSTSMLL;
+					goto failure;
 				}
 				if (isprint(buff[len]) == 0
 						&& buff[len] != '\n') {
@@ -638,7 +639,8 @@ int ve_recv_string(veos_handle *handle, uint64_t from, char *dest,
 				goto success;
 			} else if (recv_size == dest_size) {
 				PSEUDO_DEBUG("null character not found.");
-				return NULLNTFND;
+				ret = NULLNTFND;
+				goto failure;
 			}
 
 
@@ -648,7 +650,8 @@ int ve_recv_string(veos_handle *handle, uint64_t from, char *dest,
 		}
 	}
 	PSEUDO_DEBUG("null character not found in the area.");
-	return NULLNTFND;
+	ret = NULLNTFND;
+	goto failure;
 
 success:
 	len = strlen(dest);

@@ -90,7 +90,7 @@ check_mem_pgmode(int pid, int64_t vemva, int64_t size)
 
 	last_pgmode = veos_get_pgmode(VE_ADDR_VEMVA, pid, vemva);
 	if (last_pgmode < 0){
-		IVED_ERROR(log4cat_veos_ived, 
+		IVED_DEBUG(log4cat_veos_ived, 
 			   "Getting page size failed.(err:%d)", last_pgmode);
 		return (-1);
 	}
@@ -99,12 +99,12 @@ check_mem_pgmode(int pid, int64_t vemva, int64_t size)
 		pgmode = veos_get_pgmode(VE_ADDR_VEMVA, pid, 
 					 vemva + PGSIZE_2M * i);
 		if (pgmode < 0){
-			IVED_ERROR(log4cat_veos_ived, 
+			IVED_DEBUG(log4cat_veos_ived, 
 				   "Getting page size failed.(err:%d)", pgmode);
 			return (-1);
 		}
 		if (pgmode != last_pgmode){
-			IVED_ERROR(log4cat_veos_ived, 
+			IVED_DEBUG(log4cat_veos_ived, 
 				   "Detected multiple page sizes in a requested memory.");
 			return (-1);
 		}
@@ -146,12 +146,12 @@ check_mem_perm(int pid, int64_t vemva, int64_t size, int prot)
 		paddr = veos_virt_to_phy(vemva + PGSIZE_2M * i, pid, false, 
 					 &atb_prot);
 		if (paddr == -1){
-			IVED_ERROR(log4cat_veos_ived, 
+			IVED_DEBUG(log4cat_veos_ived, 
 				   "Permission check failed");
 			return (-1);
 		}
 		if (atb_prot != prot){
-			IVED_ERROR(log4cat_veos_ived, 
+			IVED_DEBUG(log4cat_veos_ived, 
 				   "Permissions are not matched");
 			return (-1);
 		}
@@ -203,7 +203,7 @@ create_veshm_paddr_array(pid_t pid, uint64_t start_vemva, int64_t size,
 	while (rest_size > 0){
 		paddr = veos_virt_to_phy(cur_vemva, pid, false, &atb_prot);
 		if (paddr == -1){
-			IVED_ERROR(log4cat_veos_ived, 
+			IVED_DEBUG(log4cat_veos_ived, 
 				   "Address translation failed.");
 			return (-1);
 		}
@@ -285,7 +285,7 @@ conv_pcislot_to_pciaddr(int pciatb_entries, int *pciatb_slot,
 	uint64_t pciatb_pagesize;
 
 	if (current_node == NULL){
-		IVED_DEBUG(log4cat_veos_ived, 
+		IVED_CRIT(log4cat_veos_ived, 
 			   "Current node data is invalid.");
 		assert(0);
 		return(-1);
@@ -293,9 +293,9 @@ conv_pcislot_to_pciaddr(int pciatb_entries, int *pciatb_slot,
 
 	if (pciatb_entries <= 0
 	    || pciatb_slot == NULL || pci_address == NULL){
-		IVED_ERROR(log4cat_veos_ived, 
-			   "Conversion failed: entries: %d, slot:%p, out: %p",
-			   pciatb_entries, pciatb_slot, pci_address);
+		IVED_CRIT(log4cat_veos_ived, 
+			  "Conversion failed: entries: %d, slot:%p, out: %p",
+			  pciatb_entries, pciatb_slot, pci_address);
 		return(-1);
 	}
 
@@ -452,7 +452,7 @@ delete_owned_veshm_info(struct list_head *owner_list_head,
 	IVED_TRACE(log4cat_veos_ived, "PASS");
 
 	if (owner_list_head == NULL || entry == NULL){
-		IVED_ERROR(log4cat_veos_ived, "(debug)%s", strerror(EINVAL));
+		IVED_CRIT(log4cat_veos_ived, "Argument is NULL");
 		return (-1);
 	}
 	if (list_cnt != NULL)
@@ -493,7 +493,7 @@ release_owned_veshm_all(struct ve_task_struct *tsk)
 
 	assert(tsk != NULL);
 	if (tsk == NULL){
-		IVED_ERROR(log4cat_veos_ived, "%s", strerror(EINVAL));
+		IVED_CRIT(log4cat_veos_ived, "Argument is NULL");
 		return(-1);
 	}
 	resource = tsk->ived_resource;
@@ -583,7 +583,7 @@ pickup_attaching_veshm(struct ived_shared_resource_data *resource,
 
 	assert(resource != NULL);
 	if (resource == NULL){
-		IVED_ERROR(log4cat_veos_ived, "%s",strerror(EINVAL)); 
+		IVED_CRIT(log4cat_veos_ived, "Argument is NULL");
 		goto err_ret;
 	}
 
@@ -628,7 +628,7 @@ pickup_attaching_veshm_kind(struct ived_shared_resource_data *resource,
 
 	assert(resource != NULL);
 	if (resource == NULL){
-		IVED_ERROR(log4cat_veos_ived, "%s",strerror(EINVAL)); 
+		IVED_CRIT(log4cat_veos_ived, "Argument is NULL");
 		goto err_ret;
 	}
 
@@ -659,9 +659,7 @@ err_ret:
  * @brief Delete a specified entry
  *
  * @param [in]		resource IVED shared resource struct
- * @param [in]		pid     PID of VESHM owner process
- * @param [in]		vemva	VEMVA of VESHM
- * @param [in]		size	Size  of VESHM
+ * @param [in]		entry    Erased data
  *
  * @return 0 on success, -errno on failure
  */
@@ -674,12 +672,12 @@ delete_attaching_veshm_info(struct ived_shared_resource_data *resource,
 	assert(resource != NULL);
 
 	if (entry == NULL){
-		IVED_ERROR(log4cat_veos_ived, "%s", strerror(EINVAL));
+		IVED_CRIT(log4cat_veos_ived, "Argument is NULL");
 		return (-EINVAL);
 	}
 
 	if (resource == NULL ){
-		IVED_ERROR(log4cat_veos_ived, "%s", strerror(EINVAL));
+		IVED_CRIT(log4cat_veos_ived, "Argument is NULL");
 		return(-EINVAL);
 	}
 
@@ -748,12 +746,12 @@ veos_veshm_discard_all(struct ve_task_struct *tsk)
 
 	if (tsk->group_leader != tsk){
 		tsk->ived_resource = NULL;
-		IVED_DEBUG(log4cat_veos_ived, "Not group leader");
+		IVED_ERROR(log4cat_veos_ived, "Not group leader");
 		goto ret_sucess;
 	}
 
 	if (tsk->ived_resource == NULL){
-		IVED_ERROR(log4cat_veos_ived, "Resourece data is NULL.");
+		IVED_CRIT(log4cat_veos_ived, "Resource data is NULL.");
 		return(-1);
 	}
 

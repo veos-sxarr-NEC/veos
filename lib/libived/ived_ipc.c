@@ -57,7 +57,7 @@ int
 get_rpc_buf(uint8_t **buf, size_t size){
 
 	if (size == 0){
-		IVED_ERROR(log4cat_lib, "Requested size is 0.");
+		IVED_DEBUG(log4cat_lib, "Requested size is 0.");
 		*buf = NULL;
 		return(1);
 	}
@@ -97,7 +97,6 @@ ived_create_soc(char *sockpath)
 	/* Create a socket */
 	sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (sockfd < 0) {
-		perror("create_soc");
 		IVED_ERROR(log4cat_lib, 
 			   "Failed to create socket: %s\n", sockpath);
 		return -1;
@@ -117,7 +116,6 @@ ived_create_soc(char *sockpath)
 
 	/* connect */
 	if (-1 == connect(sockfd, (struct sockaddr *)&sa, sizeof(sa))) {
-		perror("create_soc");
 		IVED_ERROR(log4cat_lib, 
 			   "Connection to veos socket failed %s\n", sock_path);
 		close(sockfd);
@@ -209,7 +207,7 @@ ived_rpc_receive(int soc_fd, uint8_t **reply_buf)
 		if (ret == 0){
 			sv_err = errno;
 			retval = IVED_RPC_ERR_RECV;
-			IVED_ERROR(log4cat_lib, 
+			IVED_DEBUG(log4cat_lib, 
 				   "Socket of a peer is closed.");
 			goto err_ret;
 		}
@@ -240,7 +238,7 @@ ived_rpc_receive(int soc_fd, uint8_t **reply_buf)
 		if (read_size == 0) {
 			sv_err = errno;
 			retval = IVED_RPC_ERR_RECV;
-			IVED_ERROR(log4cat_lib, "Socket of a peer is closed.");
+			IVED_DEBUG(log4cat_lib, "Socket of a peer is closed.");
 			goto err_ret;
 		}
 		if (read_size == -1) {

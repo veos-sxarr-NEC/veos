@@ -1,6 +1,6 @@
 Name:		@PACKAGE@
 Version:	@VERSION@
-Release:	@RELEASE@
+Release:	@RELEASE@%{?dist}
 Summary:	VE Operating System
 Group:		System Environment/Daemons
 License:	GPL
@@ -67,7 +67,8 @@ VE programs or libraries include them if required.
 
 %build
 %configure --with-ve-musl-includedir=@ve_musl_includedir@ \
-  --with-vemm-agent-includedir=@VEMM_AGENT_INCLUDEDIR@
+  --with-vemm-agent-includedir=@VEMM_AGENT_INCLUDEDIR@ \
+  --with-binfmtdir=@binfmtdir@
 make %{?_smp_mflags}
 
 %install
@@ -94,6 +95,7 @@ if [ $1 -gt 1 ] ; then
         /usr/bin/systemctl start ve-ived.service
     fi
 fi
+/usr/bin/systemctl restart systemd-binfmt
 
 %preun
 for dev in /dev/veslot*; do
@@ -118,6 +120,7 @@ done
 @ve_libexecdir@/*
 @ve_bindir@/*
 %config %{_sysconfdir}/log4crc
+%config @binfmtdir@/ve.conf
 @ve_os_launcher_confdir@/ve-ived.options
 @ve_os_launcher_confdir@/veos_timer.options
 %{_prefix}/lib/python2.7/site-packages/*

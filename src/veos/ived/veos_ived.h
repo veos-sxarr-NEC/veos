@@ -35,6 +35,7 @@
 #include "task_mgmt.h"
 #include "cr_api.h"
 #include "veos_cr.h"
+#include "veos_vhshm.h"
 
 /* List of ived_shared_resource_data */
 extern struct list_head ived_task_list;
@@ -74,6 +75,8 @@ struct ived_shared_resource_data{
 	int owned_veshm_num;    /*!< For debug only. Don't divert to other purpose. */
 	struct list_head attach_veshm_list; /*!< List head of attaching VESHM */
 	int attach_veshm_num;	/*!< For debug only. Don't divert to other purpose. */
+
+	struct veos_vhshm veos_vhshm_res_head; /* !< VHSHM resource structure */
 };
 
 

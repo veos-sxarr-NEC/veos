@@ -94,11 +94,16 @@ void psm_set_task_state(struct ve_task_struct *task_struct,
 
 	if (NULL == p_ve_core) {
 		VEOS_ERROR("VE Core struct is NULL");
-		veos_abort("Core struct NULL");
+		veos_abort("Core struct is NULL");
 	}
 
-	VEOS_DEBUG("Current task state: %d, state to set: %d",
-			curr_state, new_state);
+	VEOS_DEBUG("Core:%d nr_active:%d PID : %d"
+			" Current task state: %d, state to set: %d",
+			p_ve_core->core_num,
+			p_ve_core->nr_active,
+			task_struct->pid,
+			curr_state,
+			new_state);
 
 	/* Checking for following:
 	 * 1. if new state is same as current state, no change needed
@@ -109,8 +114,6 @@ void psm_set_task_state(struct ve_task_struct *task_struct,
 			|| new_state == P_INVAL || curr_state == P_INVAL)
 		goto hndl_return;
 
-	VEOS_DEBUG("Setting task state for PID: %d", task_struct->pid);
-
 	if (curr_state == ZOMBIE) {
 		if (new_state == EXIT_DEAD)
 			task_struct->ve_task_state = new_state;
@@ -120,17 +123,12 @@ void psm_set_task_state(struct ve_task_struct *task_struct,
 	/* If state is changing from RUNNING to any other */
 	if (curr_state == RUNNING) {
 		task_struct->ve_task_state = new_state;
-		VEOS_DEBUG("Decrementing nr_active to %d as state "
-				"changed from RUNNING",
-				p_ve_core->nr_active - 1);
 		ve_atomic_dec(&(p_ve_core->nr_active));
 		goto hndl_return;
 	}
 	/* If state is changing from any other to RUNNING */
 	if (new_state == RUNNING) {
 		task_struct->ve_task_state = new_state;
-		VEOS_DEBUG("Incrementing nr_active to %d as state "
-				"changed to RUNNING", p_ve_core->nr_active + 1);
 		ve_atomic_inc(&(p_ve_core->nr_active));
 		goto hndl_return;
 	}
@@ -138,8 +136,11 @@ void psm_set_task_state(struct ve_task_struct *task_struct,
 	task_struct->ve_task_state = new_state;
 
 hndl_return:
-	VEOS_DEBUG("Task state for PID: %d set to %d",
-			task_struct->pid, task_struct->ve_task_state);
+	VEOS_DEBUG("Core:%d nr_active:%d Task state for PID: %d set to %d",
+						p_ve_core->core_num,
+						p_ve_core->nr_active,
+						task_struct->pid,
+						task_struct->ve_task_state);
 	VEOS_TRACE("Exiting");
 	return;
 }
@@ -536,7 +537,6 @@ int psm_terminate_all(int node_id)
 					core_id);
 			goto err_handle;
 		}
-		VEOS_DEBUG("Stopping core : %d", core_id);
 
 		retval = psm_halt_ve_core(node_id, core_id, &regdata, false);
 		if (retval < 0) {
@@ -582,9 +582,9 @@ int psm_terminate_all(int node_id)
 					&(tmp->ve_task_lock), UNLOCK,
 					"Failed to release task lock [PID = %d]",
 					tmp->pid);
-                        VEOS_DEBUG("Deleting PID : %d",
+                        VEOS_DEBUG("Deleting PID : %d. "
+					"Getting reference for group leader",
                                         tmp_pid);
-			VEOS_DEBUG("Getting reference for group leader");
 			get_ve_task_struct(tmp);
 			psm_do_process_cleanup(tmp, tmp, EXIT_EXECVE_VH);
                         VEOS_INFO("Sending SIGKILL to PID: %d",
@@ -837,20 +837,14 @@ int psm_relocate_ve_task(int old_node_id, int old_core_id,
 	if (!p_ve_task)
 		goto hndl_return;
 
-	VEOS_DEBUG("Acquiring ve_affinity write lock");
-	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_affinity_lock), WRLOCK,
-			"Failed to acquire ve_affinity_lock write lock");
-
 	p_ve_core = p_ve_task->p_ve_core;
 
-	/* Set the task state to WAITING */
+	/* Set the task state to WAITING
+	* Acquire core lock as we can update number of active task on core */
 	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
 			WRLOCK, "Failed to acquire core's write lock");
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK,
 			"Failed to acquire task lock");
-
-	/* sched_setaffinity ongoing for task */
-	p_ve_task->affinity_ongoing = true;
 
 	if (RUNNING == p_ve_task->ve_task_state) {
 		psm_set_task_state(p_ve_task, WAIT);
@@ -919,6 +913,8 @@ int psm_relocate_ve_task(int old_node_id, int old_core_id,
 	/* Set the state of task to RUNNING if no exception is
 	 * pending for the task or,
 	 * the task was to be set RUNNING due to its unblock */
+	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), WRLOCK,
+			"Failed to acquire ve core write lock");
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK,
 			"Failed to acquire task lock");
 
@@ -930,21 +926,18 @@ int psm_relocate_ve_task(int old_node_id, int old_core_id,
 				"after affinity system call");
 		psm_set_task_state(p_ve_task, RUNNING);
 	} else {
-		VEOS_DEBUG("VE process task state not changed");
 		VEOS_DEBUG("EXS: %d, Task state: %d, p_ve_task->block_status %d",
 				(int) p_ve_task->p_ve_thread->EXS,
 				p_ve_task->ve_task_state,
 				p_ve_task->block_status);
 
 	}
-	p_ve_task->affinity_ongoing = false;
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK,
 			"Failed to release task lock");
+	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
+			"Failed to release ve core lock");
 	retval = 0;
 hndl_return:
-	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_affinity_lock), UNLOCK,
-				"Failed to release ve_affinity_lock");
-
 	VEOS_TRACE("Exiting");
 	return retval;
 }
@@ -1073,7 +1066,6 @@ int get_ve_core_n_node_new_ve_proc(struct ve_task_struct *p_ve_task,
 	if (-1 == min_proc_num_core) {
 		VEOS_ERROR("All VE resources are busy,"
 				" unable to accept new request");
-		VEOS_DEBUG("BUG: This should not be failed here");
 		*ve_node_id = -1;
 		retval = -ENOMEM;
 		goto hndl_return;
@@ -1167,7 +1159,6 @@ err_handle:
  *	reference corrensponding to it
  *
  * @param[in] task VE task whose reference count is to be decremented
- * @param[in] exit_code Exit code of the process
  *
  * @internal
  * @author PSMG / MP-MT
@@ -1242,8 +1233,6 @@ struct ve_task_struct *find_ve_task_struct(int pid)
 	struct ve_task_struct *ve_task_ret = NULL;
 
 	VEOS_TRACE("Entering");
-	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_affinity_lock), RDLOCK,
-			"Failed to acquire ve_affinity_lock read lock");
 #ifdef VE_OS_DEBUG
 	list_ve_proc();
 #endif
@@ -1251,7 +1240,7 @@ struct ve_task_struct *find_ve_task_struct(int pid)
 
 		/* Core loop */
 		for (; core_loop < max_core; core_loop++) {
-			VEOS_DEBUG("Core loop: %d", core_loop);
+			VEOS_TRACE("Core loop: %d", core_loop);
 			p_ve_core = VE_CORE(VE_NODE_ID(node_loop), core_loop);
 			pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
 					RDLOCK,
@@ -1270,7 +1259,7 @@ struct ve_task_struct *find_ve_task_struct(int pid)
 						"Failed to release ve core lock");
 				continue;
 			}
-			VEOS_DEBUG("Node %d: Core %d "
+			VEOS_TRACE("Node %d: Core %d "
 					"Head is %p "
 					"PID(C) = %d "
 					"PID(s) = %d",
@@ -1311,15 +1300,12 @@ struct ve_task_struct *find_ve_task_struct(int pid)
 			pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
 					UNLOCK,
 					"Failed to release ve core lock");
-			VEOS_DEBUG("Task not found in Node %d Core %d",
-					VE_NODE_ID(node_loop),
-					core_loop);
 		}
+		VEOS_DEBUG("Task with PID : %d not found in Node %d",
+							pid,
+							VE_NODE_ID(node_loop));
 
 hndl_return:
-	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_affinity_lock), UNLOCK,
-			"Failed to release ve_affinity_lock");
-
 	VEOS_TRACE("Exiting");
 	return ve_task_ret;
 }
@@ -1348,8 +1334,7 @@ int64_t psm_handle_set_tid_addr(pid_t pid, uint64_t tid_addr)
 
 	ve_task_curr = find_ve_task_struct(pid);
 	if (!ve_task_curr) {
-		VEOS_ERROR("Failed to find the task structure");
-		VEOS_DEBUG("Failed to fetch task structure for PID: %d ", pid);
+		VEOS_ERROR("Failed to find task structure for PID: %d ", pid);
 		retval = -ESRCH;
 		goto hndl_return;
 	}
@@ -1389,6 +1374,8 @@ int64_t psm_handle_schedule_ve_process(pid_t pid)
 		goto hndl_return;
 	}
 
+	pthread_rwlock_lock_unlock(&(tsk->p_ve_core->ve_core_lock),
+			WRLOCK,	"Failed to acquire core lock");
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
 			"Failed to acquire task lock");
 
@@ -1421,6 +1408,8 @@ int64_t psm_handle_schedule_ve_process(pid_t pid)
 	}
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
 			"Failed to release task lock");
+	pthread_rwlock_lock_unlock(&(tsk->p_ve_core->ve_core_lock),
+				UNLOCK,	"Failed to release core lock");
 
 	if (invoke_scheduler)
 		psm_find_sched_new_task_on_core(tsk->p_ve_core,
@@ -1482,14 +1471,20 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 	veos_clean_ived_proc_property(del_task_struct);
 
 	del_task_struct->execed_proc = true;
-	del_task_struct->is_dlt_drv = false;
 
 	/* task exit status is set to 0 so that it does not invoke delete
 	 * in put_ve_task_struct()
 	 */
 	del_task_struct->exit_status = 0;
-	del_task_struct->ve_task_state =  WAIT;
 
+	pthread_rwlock_lock_unlock(&(del_task_struct->p_ve_core->ve_core_lock),
+			WRLOCK,	"Failed to acquire core lock");
+	/* If state is RUNNING, decrement nr_active */
+	if (del_task_struct->ve_task_state == RUNNING)
+		ve_atomic_dec(&(del_task_struct->p_ve_core->nr_active));
+	del_task_struct->ve_task_state =  WAIT;
+	pthread_rwlock_lock_unlock(&(del_task_struct->p_ve_core->ve_core_lock),
+			UNLOCK,	"Failed to release core lock");
 	/* Acquiring tasklist_lock so that children list of del_task_struct
 	 * isn't modified. Could have been done by del_task_struct task lock,
 	 * but then Hierarchy would become parent_lock -> child_lock which is
@@ -1531,9 +1526,7 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 	}
 	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
 			"Failed to release tasklist_lock lock");
-
-	pthread_mutex_lock_unlock(
-			&(del_task_struct->ve_task_lock), LOCK,
+	pthread_mutex_lock_unlock(&(del_task_struct->ve_task_lock), LOCK,
 			"Failed to acquire task lock");
 
 	/* If task is vforked child and its parent exists, then wake up parent */
@@ -1543,6 +1536,9 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 		del_task_real_parent = del_task_struct->real_parent;
 
 		VEOS_DEBUG("vforked process execution completed");
+		pthread_rwlock_lock_unlock(
+				&(del_task_real_parent->p_ve_core->ve_core_lock),
+				WRLOCK,	"Failed to acquire core lock");
 		pthread_mutex_lock_unlock(
 				&(del_task_real_parent->ve_task_lock), LOCK,
 				"Failed to acquire task lock");
@@ -1562,6 +1558,9 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 		pthread_mutex_lock_unlock(
 				&(del_task_real_parent->ve_task_lock), UNLOCK,
 				"failed to release task lock");
+		pthread_rwlock_lock_unlock(
+				&(del_task_real_parent->p_ve_core->ve_core_lock),
+				UNLOCK,	"Failed to release core lock");
 	}
 
 	/* resetting vfork related states */
@@ -1576,8 +1575,7 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 	 * as NULL
 	 */
 	pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
-		WRLOCK,
-		"Failed to acquire ve core read lock");
+			WRLOCK, "Failed to acquire ve core write lock");
 	if (del_task_struct == VE_CORE(node_id, core_id)->curr_ve_task) {
 		if (del_task_struct->reg_dirty) {
 			VEOS_DEBUG("Get process context");
@@ -1586,6 +1584,7 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 
 		VEOS_DEBUG("Invoking psm_unassign_migrate_task");
 		psm_unassign_migrate_task(del_task_struct);
+		del_task_struct->reg_dirty = false;
 	}
 	pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
 			UNLOCK,	"Failed to release ve core lock");
@@ -1871,6 +1870,7 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	tsk->p_ve_ptrace = NULL;
 	tsk->atb_dirty = false;
 	tsk->crd_dirty = false;
+	tsk->reg_dirty = false;
 	tsk->usr_reg_dirty = false;
 	tsk->gid = gid;
 	tsk->uid = uid;
@@ -1962,6 +1962,10 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	/* Insert VE task list for Node and Core task list */
 	insert_ve_task(*ve_node_id, *ve_core_id, tsk);
 
+	tsk->node_id = *ve_node_id;
+	tsk->core_id = *ve_core_id;
+	tsk->p_ve_core = VE_CORE(*ve_node_id, *ve_core_id);
+
 	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_node_lock), UNLOCK,
 			"Failed to release VE node mutex lock");
 
@@ -1999,10 +2003,6 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	list_add_tail(&tsk->tasks, &ve_init_task.tasks);
 	pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
 		"Failed to release init_task lock");
-
-	tsk->node_id = *ve_node_id;
-	tsk->core_id = *ve_core_id;
-	tsk->p_ve_core = VE_CORE(*ve_node_id, *ve_core_id);
 
 	/* Get SHM/LHM area */
 	if (!rpm_task_create) {
@@ -2163,6 +2163,7 @@ int psm_handle_start_ve_request(struct veos_thread_arg *pti, int pid)
 				tsk->p_ve_thread) != 0) {
 			VEOS_ERROR("Failed to update thread structure");
 			retval = -EINVAL;
+			put_ve_task_struct(tsk);
 			goto hndl_return;
 		}
 	}
@@ -2181,6 +2182,9 @@ int psm_handle_start_ve_request(struct veos_thread_arg *pti, int pid)
 	tsk->p_ve_mm->auxv_size = start_ve_req.auxv_size;
 	tsk->p_ve_mm->pgsz = start_ve_req.pgsz;
 
+	pthread_rwlock_lock_unlock
+		(&(tsk->p_ve_core->ve_core_lock), WRLOCK,
+		"Failed to acquire core lock");
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
 		"Failed to acquire task lock");
 
@@ -2189,18 +2193,22 @@ int psm_handle_start_ve_request(struct veos_thread_arg *pti, int pid)
 	if (0 != retval) {
 		retval = -errno;
 		VEOS_ERROR("Failed to get the time");
-		goto hndl_return;
+		goto hndl_return1;
 	}
 
 	if (tsk->ptraced == true) {
 		tsk->ve_task_state = STOP;
 		VEOS_DEBUG("Set state STOP for pid: %d, tracer will"
 				" start this process", tsk->pid);
-	} else {
+	} else
 		psm_set_task_state(tsk, RUNNING);
-	}
+
+hndl_return1:
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
 		"Failed to release task lock");
+	pthread_rwlock_lock_unlock
+			(&(tsk->p_ve_core->ve_core_lock),
+			UNLOCK,	"Failed to release core lock");
 
 	put_ve_task_struct(tsk);
 hndl_return:
@@ -2531,13 +2539,21 @@ int psm_handle_block_request(pid_t pid)
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
 			"Failed to release task lock");
 
-	if (p_ve_core->nr_active == 0) {
+	/* #1084: If "tsk" is current task on core then invoke psm_halt_ve_core(),
+	 * this will set software state of core to STOP forcefully
+	 * This has been added to ensure that core's software and hardware
+	 * state are in sync
+	 * */
+	if (p_ve_core->nr_active == 0 || (p_ve_core->curr_ve_task == tsk)) {
 		/* Halt core specially added for correct
 		 * CPU busy time update */
 		psm_halt_ve_core(0, p_ve_core->core_num, &regdata, false);
-		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
-				"Failed to release ve core lock");
-		goto hndl_return1;
+
+		if (p_ve_core->nr_active == 0) {
+			pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
+				UNLOCK, "Failed to release ve core lock");
+			goto hndl_return1;
+		}
 	}
 
 	/* Skip scheduling if current task on core is not
@@ -2622,12 +2638,13 @@ int psm_handle_un_block_request(struct ve_task_struct *tsk,
 		}
 	} while(1);
 
+	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
+			WRLOCK, "Failed to acquire core's write lock");
+	VEOS_DEBUG("Acquired core's write lock");
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
 			"Failed to acquire task lock");
 
-	if (tsk->affinity_ongoing == true) {
-		VEOS_DEBUG("affinity ongoing for task");
-	} else if (VFORK_ONGOING == tsk->vfork_state) {
+	if (VFORK_ONGOING == tsk->vfork_state) {
 		VEOS_DEBUG("vforked child is executing, "
 				"task state not changed");
 	} else if (sys_trace && tsk->ptraced && tsk->p_ve_ptrace &&
@@ -2664,6 +2681,9 @@ int psm_handle_un_block_request(struct ve_task_struct *tsk,
 
 	if (p_ve_core->nr_active == 1)
 		schedule_current = true;
+
+	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
+			"Failed to release ve core lock");
 
 	/* Scheduling a new VE process on VE core as current
 	 * VE process have generated MONC

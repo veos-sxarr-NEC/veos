@@ -55,7 +55,78 @@ enum veos_rpm_subcmd {
 	VE_PRLIMIT,
 	VE_ACCTINFO,
 	VE_CREATE_PROCESS,
+	VE_SHM_RMLS,
 	VE_RPM_INVALID = -1
+};
+
+/**
+* @brief This enumration will used to decide option for ipcrm command.
+*/
+enum ipc_mode {
+	SHMKEY = 0,	/*!< Delete shm segment having this key*/
+	SHMID,		/*!< Delete shm segment having this shmid */
+	SHM_ALL,	/*!< Delete all shm segment*/
+	SHMID_INFO,	/*!< Give infomation of specific shm segment*/
+	SHM_LS,		/*!< List All segment*/
+	SHM_SUMMARY,	/*!< Summary of share Memory*/
+	SHMID_QUERY,	/*!< Query whether shmid is valid or not*/
+	SHMKEY_QUERY,	/*!< Query whether shmkey is valid or not*/
+};
+
+/**
+ * @brief Structure to provide summary of shared memory present on veos.
+ */
+struct shm_summary {
+	int used_ids;
+	ulong shm_tot;          /* total allocated shm */
+	ulong shm_rss;          /* total resident shm */
+};
+
+
+/**
+* @brief Structure to provide shared memory information present on veos.
+*/
+typedef struct ve_shm_data {
+	int             id;
+	key_t           key;
+	uid_t           uid;	/* current uid */
+	gid_t           gid;    /* current gid */
+	uid_t           cuid;   /* creator uid */
+	gid_t           cgid;   /* creator gid */
+	unsigned int    mode;   /*Permissions + SHM_DEST*/
+	uint64_t        shm_nattch; /*No. of current attaches*/
+	uint64_t        shm_segsz;	/*Size of segment (bytes)*/
+	int64_t         shm_atim;       /*Last attach time*/
+	int64_t         shm_dtim;	/*Last detach time*/
+	int64_t         shm_ctim;	/*Last change time*/
+	pid_t           shm_cprid;	/*PID of creator*/
+	pid_t           shm_lprid;	/*PID of last shmat(2)/shmdt(2)*/
+	uint64_t        shm_rss;	/*resident shared memory*/
+	uint64_t	shm_swp;	/*swaped memory*/
+} sdata_t;
+
+/**
+* @brief Structure to provide information of deleted shm segment.
+*/
+typedef struct ipcrm_info {
+	int shmid;	/*!< shmid of deleted shm segment*/
+	int shm_errno;	/*!< error occured while deleting the segment*/
+} sinfo_t;
+/**
+* @brief Structure to provide info to remove shared memory from VEOS.
+*/
+struct ve_shm_info {
+       int mode;
+	/*!< SHMKEY = 0,	-Delete shm segment having this key*/
+	/*!< SHMID,		-Delete shm segment having this shmid */
+	/*!< SHM_ALL,		-Delete all shm segment*/
+	/*!< SHMID_INFO,	-Give infomation of specific shm segment*/
+	/*!< SHM_LS,		-List All segment*/
+	/*!< SHM_SUMMARY,	-Summary of share Memory*/
+	/*!< SHMID_QUERY,	-Query whether shmid is valid or not*/
+	/*!< SHMKEY_QUERY,	-Query whether shmkey is valid or not*/
+
+       int key_id; /*shmkey or shmid of segment to be delete*/
 };
 
 /**
@@ -343,4 +414,5 @@ int rpm_handle_set_affinity_req(struct veos_thread_arg *);
 int rpm_handle_get_affinity_req(struct veos_thread_arg *);
 int rpm_handle_prlimit_req(struct veos_thread_arg *);
 int rpm_handle_acctinfo_req(struct veos_thread_arg *);
+int rpm_handle_ipc_ls_rm_req(struct veos_thread_arg *);
 #endif

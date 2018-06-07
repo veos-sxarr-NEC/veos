@@ -63,6 +63,9 @@ int psm_ve_start_process(struct ve_task_struct *p_ve_task)
 	if (!p_ve_task)
 		goto hndl_return;
 
+	/* Acquire core lock as we can update number of active task on core */
+	pthread_rwlock_lock_unlock(&(p_ve_task->p_ve_core->ve_core_lock),
+			WRLOCK,	"Failed to acquire core lock");
 	/* Acquire task lock */
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK,
 			"Failed to acquire task lock");
@@ -90,6 +93,8 @@ int psm_ve_start_process(struct ve_task_struct *p_ve_task)
 	/* Release task lock */
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK,
 			"Failed to release task lock");
+	pthread_rwlock_lock_unlock(&(p_ve_task->p_ve_core->ve_core_lock),
+				UNLOCK,	"Failed to release core lock");
 	retval = 0;
 hndl_return:
 	VEOS_TRACE("Exiting");

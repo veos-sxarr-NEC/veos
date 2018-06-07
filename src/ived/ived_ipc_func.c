@@ -55,7 +55,6 @@ ived_handle_daemon_request(ived_thread_arg_t *pti)
 	int ret;
 	int retval = 0;
 	RpcIvedArg	*request;
-	pthread_t tid = pthread_self();
 	struct veos_info *os_info = NULL;
 
 	int rpc_retval = 0;	/* Return value of RPC message */
@@ -118,9 +117,7 @@ ived_handle_daemon_request(ived_thread_arg_t *pti)
 		break;
 
 	default:
-		IVED_ERROR(log4cat_main,
-			   "TID[%u] Invalid command",
-			   (unsigned int)tid);
+		IVED_ERROR(log4cat_main, "Invalid command");
 		rpc_retval = IVED_REQ_NG;
 		rpc_reterr = -EINVAL;
 		retval = -1;

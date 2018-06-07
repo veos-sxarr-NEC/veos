@@ -3,7 +3,8 @@ ve_musl_include_HEADERS = \
 	veshm_defs.h \
 	vecr_defs.h \
 	sysve.h \
-	vhcall.h
+	vhcall.h \
+	vhshm_defs.h
 
 ve_include_HEADERS = \
 	veos_defs.h \

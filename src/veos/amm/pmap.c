@@ -434,7 +434,7 @@ int insert_heap(struct _psuedo_pmap *pvemap,
 			if (!ret) {
 				(void)strncpy(ptempobj->mapname, "[heap]",
 						sizeof("[heap]"));
-				VEOS_DEBUG("Heap %p - %p, %s, %s\n",
+				VEOS_DEBUG("Heap %p - %p, %s, %s",
 						(void *)ptempobj->begin,
 						(void *)ptempobj->end,
 						ptempobj->perm,
@@ -611,12 +611,12 @@ int parse_psuedopmap(struct _psuedo_pmap *pmap,
 	ptempobj = *pvemap;
 	VEOS_DEBUG("Filter Data:");
 	while (ptempobj != NULL) {
-		VEOS_DEBUG("%p - %p, %s, %s\n",
+		VEOS_DEBUG("%p - %p, %s, %s",
 				(void *)ptempobj->begin, (void *)ptempobj->end,
 				ptempobj->perm, ptempobj->mapname);
 		ptempobj = ptempobj->next;
 	}
-	VEOS_DEBUG("Out Func %d (ve pmap count)\n", nve);
+	VEOS_DEBUG("Out Func %d (ve pmap count)", nve);
 	VEOS_TRACE("Out Func");
 	return nve;
 }
@@ -771,8 +771,7 @@ int fill_maps(struct _psuedo_pmap **pmap,
 				sizeof(psuedo_map) * nentry);
 		if (NULL == head) {
 			ret = -errno;
-			VEOS_DEBUG(
-					"%s: %s\n",
+			VEOS_DEBUG("%s: %s",
 					"Realloc fail: Parsing pmap file",
 					strerror(-ret));
 			nentry = ret;

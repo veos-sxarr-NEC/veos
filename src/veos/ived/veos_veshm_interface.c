@@ -155,7 +155,7 @@ veshm_open_internal(int uid, int pid, uint64_t vemva, uint64_t size,
 	RpcVeshmReturn veshm_ret = RPC_VESHM_RETURN__INIT;
 
 	if (IVED_LINKAGE_OFF){
-		IVED_ERROR(log4cat_veos_ived,"IVED is unavailable.");
+		IVED_DEBUG(log4cat_veos_ived,"IVED is unavailable.");
 		errno = ENOTSUP;
 		goto err_ret;
 	}
@@ -451,7 +451,7 @@ veshm_close_internal(uuid_t uuid_veshm, int owner_pid)
 	reply.veshm_ret = &veshm_ret;
 
 	if (IVED_LINKAGE_OFF){
-		IVED_ERROR(log4cat_veos_ived,"IVED is unavailable.");
+		IVED_DEBUG(log4cat_veos_ived,"IVED is unavailable.");
 		errno = ENOTSUP;
 		goto err_ret;
 	}
@@ -569,7 +569,7 @@ int veos_veshm_veshmctl(veos_thread_arg_t *pti)
 	}
 
 	if (pti ==  NULL){
-		IVED_ERROR(log4cat_veos_ived,"%s", strerror(EINVAL));
+		IVED_CRIT(log4cat_veos_ived,"Argument is null.");
 		retval = -1;
 		goto err_ret;
 	}

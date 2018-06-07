@@ -343,6 +343,15 @@ get_pmap:
 		VEOS_ERROR("Populating information failed for PID: %d",
 				pid);
 		VEOS_DEBUG("VEOS populate mapheader struct returned %d", retval);
+	} else {
+		/*Change the owner of shared memory segment*/
+		if (header.shmid) {
+			retval = change_owner_shm(pti->cred.uid, header.shmid);
+			if (retval < 0) {
+				header.shmid = 0;
+				VEOS_DEBUG("can't change shm segment owner");
+			}
+		}
 	}
 hndl_return:
 	retval = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&header,
@@ -1071,7 +1080,109 @@ hndl_return1:
 	VEOS_TRACE("Exiting");
 	return retval;
 }
+/**
+ * @brief Handles the VE_SHM_RMLS request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_ipc_rmls_req(struct veos_thread_arg *pti)
+{
+	int ret = 0;
+	bool key_id_valid = false;
+	struct ve_shm_info shm_info = {0};
+	struct ve_mapheader header = {0};
+	struct shm_summary s_summary = {0};
+	size_t len = 0;
 
+	pid_t pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
+	len = (((PseudoVeosMessage *)(pti->pseudo_proc_msg))->pseudo_msg).len;
+
+	memcpy(&shm_info, (((PseudoVeosMessage *)(pti->pseudo_proc_msg))->
+				pseudo_msg).data, len);
+
+	switch (shm_info.mode) {
+	case SHMKEY:
+	case SHMID:
+		ret = veos_ipc_op(pid, &shm_info, NULL, NULL);
+		if (ret < 0) {
+			VEOS_ERROR("error while deleting shm segment with %s : %d",
+					(shm_info.mode == SHMKEY) ? "SHMKEY" : "SHMID",
+					shm_info.key_id);
+
+			VEOS_DEBUG("error while deleting shm segment with %s : %d",
+					(shm_info.mode == SHMKEY) ? "SHMKEY" : "SHMID",
+					shm_info.key_id);
+		}
+		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&shm_info,
+			sizeof(struct ve_shm_info), ret);
+		break;
+	case SHM_ALL:
+	case SHM_LS:
+		ret = veos_ipc_op(pid, &shm_info, &header, NULL);
+		if (ret < 0) {
+			VEOS_ERROR("error while %s all shm segments from veos",
+			(shm_info.mode == SHM_ALL) ? "deleting" : "listing");
+			VEOS_DEBUG("error while %s all shm segments from veos",
+			(shm_info.mode == SHM_ALL) ? "deleting" : "listing");
+		} else {
+			if (header.shmid) {
+				ret = change_owner_shm(pti->cred.uid, header.shmid);
+				if (ret < 0) {
+					header.shmid = 0;
+					VEOS_DEBUG("can't change owner of shm segment");
+				}
+			}
+		}
+		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&header,
+			sizeof(struct ve_mapheader), ret);
+		break;
+	case SHMID_INFO:
+		ret = veos_ipc_op(pid, &shm_info, &header, NULL);
+		if (ret < 0) {
+			VEOS_ERROR("error while %s getting info for shm segments shmid(%d)",
+				strerror(-ret), shm_info.key_id);
+			VEOS_DEBUG("error while %s getting info for shm segments shmid(%d)",
+				strerror(-ret), shm_info.key_id);
+		} else {
+			if (header.shmid) {
+				ret = change_owner_shm(pti->cred.uid, header.shmid);
+				if (ret < 0) {
+					header.shmid = 0;
+					VEOS_DEBUG("can't change owner of shm segment");
+				}
+			}
+		}
+		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&header,
+			sizeof(struct ve_mapheader), ret);
+		break;
+	case SHM_SUMMARY:
+		veos_ipc_op(pid, &shm_info, NULL, &s_summary);
+		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&s_summary,
+			sizeof(struct shm_summary), ret);
+		break;
+	case SHMID_QUERY:
+		VEOS_DEBUG("shmid(%d) query", shm_info.key_id);
+		veos_key_id_query(shm_info.key_id, &key_id_valid, false);
+		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&key_id_valid,
+			sizeof(key_id_valid), ret);
+		break;
+	case SHMKEY_QUERY:
+		VEOS_DEBUG("shmkey(%d) query", shm_info.key_id);
+		veos_key_id_query(shm_info.key_id, &key_id_valid, true);
+		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&key_id_valid,
+			sizeof(key_id_valid), ret);
+		break;
+	default:
+		ret = -EINVAL;
+		VEOS_DEBUG("No such option for ipcs/ipcrm");
+		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, NULL, 0, ret);
+	}
+
+	VEOS_TRACE("Exiting");
+	return ret;
+}
 /**
  * @brief Handles "RPM Query" request from RPM commmand.
  *
@@ -1257,6 +1368,14 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 	case VE_CREATE_PROCESS:
 		VEOS_DEBUG("RPM request: CREATE_PROCESS");
 		retval = rpm_handle_create_process_req(pti);
+		if (0 > retval) {
+			VEOS_ERROR("Query request failed");
+			goto hndl_return;
+		}
+		break;
+	case VE_SHM_RMLS:
+		VEOS_DEBUG("RPM request : IPCS/IPCRM");
+		retval = rpm_handle_ipc_rmls_req(pti);
 		if (0 > retval) {
 			VEOS_ERROR("Query request failed");
 			goto hndl_return;

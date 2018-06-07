@@ -74,6 +74,7 @@
 #define FILEINFO_IN_BYTES	64
 #define BUF_2BYTES	2
 #define BUF_3BYTES	3
+#define DEFAULT_DUMP_SIZE	64 * 1024 * 1024
 
 typedef unsigned long elf_greg_t;
 typedef uint64_t reg_t;
