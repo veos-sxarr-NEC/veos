@@ -599,9 +599,15 @@ int veos_alloc_vdso_pcientry(uint8_t pairnum, uint64_t sync)
 
 	/*If PCIATB page size is 64MB then free prev*/
 	if (vnode->pci_bar01_pgsz == PAGE_64MB) {
-			VEOS_DEBUG("Allocating VDSO page 64MB");
+		VEOS_DEBUG("Allocating VDSO page 64MB");
 		/*First Release vdso 2MB page*/
+		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+					LOCK,
+					"Fail to acquire ve page lock");
 		ret = veos_free_page(vdso_pgno);
+		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+					UNLOCK,
+					"Fail to release ve page lock");
 		if (ret < 0) {
 			VEOS_DEBUG("Error(%s) to free old vdso page :%ld",
 			strerror(-ret), vdso_pgno);
@@ -634,7 +640,13 @@ int veos_alloc_vdso_pcientry(uint8_t pairnum, uint64_t sync)
 		if (ret < 0) {
 			VEOS_DEBUG("Error(%s) in inc page(%ld) ref count",
 				strerror(-ret), vdso_pgno);
+			pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+						LOCK,
+						"Fail to acquire ve page lock");
 			veos_free_page(vdso_pgno);
+			pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+						UNLOCK,
+						"Fail to release ve page lock");
 			return ret;
 		}
 
@@ -1031,38 +1043,12 @@ int64_t veos_alloc_pciatb(pid_t pid, uint64_t vaddr,
 	tmp_addr = (uint64_t)buddy_alloc(vnode_info->
 			pci_mempool, size_to_order(buddy_size));
 	if ((void *)tmp_addr == BUDDY_FAILED) {
-		/*check for compac pciatb allocation*/
-		ret = veos_alloc_memory(vnode_info->pci_mempool, size,
-			pg_mode);
-		if (ret < 0) {
-			VEOS_ERROR("error(%s) PCI entries available",
-					strerror(-ret));
-			pthread_mutex_lock_unlock(&vnode_info->pci_mempool->
-					buddy_mempool_lock, UNLOCK,
-					"Failed to release pci buddy lock");
-			goto pci_failed;
-		} else {
-			/*whether allocation is contiguous or not*/
-			if (true == is_contiguos(vnode_info->pci_mempool,
-					size, &pci_entry)) {
-				VEOS_DEBUG("Allocated pciatb entry is : %ld",
-						pci_entry);
-				if (pg_mode == PGMOD_2MB)
-					tmp_addr = pci_entry << LARGE_PSHFT;
-				else
-					tmp_addr = pci_entry << HUGE_PSHFT;
-
-				buddy_size = size;
-			} else {
-				VEOS_DEBUG("PCI entries not contiguous");
-				ret = -ENOMEM;
-				pthread_mutex_lock_unlock(&vnode_info->
-						pci_mempool->buddy_mempool_lock,
-						UNLOCK,
-						"Failed to release pci buddy lock");
-				goto pci_failed;
-			}
-		}
+		VEOS_ERROR("failed to allocate mem blk from mempool for PCI entries");
+		pthread_mutex_lock_unlock(&vnode_info->pci_mempool->buddy_mempool_lock,
+					  UNLOCK,
+					  "Failed to release pci buddy lock");
+		ret = -ENOMEM;
+		goto pci_failed;
 	}
 	pthread_mutex_lock_unlock(&vnode_info->pci_mempool->buddy_mempool_lock,
 			UNLOCK,	"Failed to release pci buddy lock");

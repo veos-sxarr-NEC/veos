@@ -3,16 +3,16 @@
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either version
+ * 2.1 of the License, or (at your option) any later version.
  *
  * The VEOS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public
+ * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
@@ -42,9 +42,8 @@ __thread bool sys_enter_trap = false;
  * @param[in] sicode Signal code to send
  * @param[in] siaddr Memory location which caused fault
  *
- * @return positive value on success, -1 on failure
  */
-int send_sig_to_itself(int signo, int sicode, void *siaddr)
+void send_sig_to_itself(int signo, int sicode, void *siaddr)
 {
 	int retval = -1;
 	siginfo_t siginfo;
@@ -95,9 +94,7 @@ int send_sig_to_itself(int signo, int sicode, void *siaddr)
 		pseudo_abort();
 	}
 
-	retval = 0;
 	PSEUDO_TRACE("Exiting");
-	return retval;
 }
 
 /**
@@ -109,7 +106,6 @@ int send_sig_to_itself(int signo, int sicode, void *siaddr)
  */
 void ve_syscall_trace(veos_handle *handle, bool in)
 {
-	int retval = -1;
 	int trace = 0;
 
 	PSEUDO_TRACE("Entering");
@@ -150,11 +146,7 @@ void ve_syscall_trace(veos_handle *handle, bool in)
 		PSEUDO_DEBUG("PTRACE_O_TRACESYSGOOD is Set");
 	}
 
-	retval = send_sig_to_itself(SIGTRAP, trace, NULL);
-	if (-1 == retval) {
-		PSEUDO_ERROR("Sending signal to itself fails");
-		goto hndl_return;
-	}
+	send_sig_to_itself(SIGTRAP, trace, NULL);
 
 hndl_return:
 	PSEUDO_TRACE("Exiting");
@@ -443,13 +435,8 @@ int prepare_and_send_signal(siginfo_t hw_siginfo, veos_handle *handle)
 	hw_siginfo.si_addr = (void *)ice;
 
 	/* Send h/w exception signal to itself */
-	retval = send_sig_to_itself(hw_siginfo.si_signo,
+	send_sig_to_itself(hw_siginfo.si_signo,
 			hw_siginfo.si_code, hw_siginfo.si_addr);
-	if (-1 == retval) {
-		PSEUDO_ERROR("Sending signal %d to itself fails",
-				hw_siginfo.si_signo);
-		goto hndl_return;
-	}
 
 	retval = 0;
 hndl_return:

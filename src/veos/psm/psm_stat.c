@@ -262,7 +262,7 @@ int psm_rpm_handle_pidstat_req(int pid, struct velib_pidstat *pidstat)
 			      (tsk->start_time.tv_usec / MICRO_SECONDS) -
 		              (VE_NODE(0)->node_boot_time / MICRO_SECONDS);
 
-	VEOS_DEBUG("START TIME %ld BOOT TIME %ld EPOCH TIME %ld\n",
+	VEOS_DEBUG("START TIME %ld BOOT TIME %ld EPOCH TIME %ld",
 			pidstat->start_time,
 			(VE_NODE(0)->node_boot_time / MICRO_SECONDS),
 			(tsk->start_time.tv_sec +
@@ -326,10 +326,11 @@ int psm_rpm_handle_stat_req(struct ve_node_struct *p_ve_node,
 	statinfo->ctxt = nr_switches;
 	statinfo->running = p_ve_node->nr_active;
 
-	/* Assuming VE processes that are performing system call execution
-	 * after MONC are in blocked state.
+	/* As of now, VEOS do not maintain any state which can provide count
+	 * of blocked processes which are waiting specifically for IO.
+	 * So, VE blocked process count will be 0.
 	 */
-	statinfo->blocked = p_ve_node->num_ve_proc - p_ve_node->nr_active;
+	statinfo->blocked = 0;
 	statinfo->processes = p_ve_node->total_forks;
 	statinfo->btime = p_ve_node->node_boot_time;
 	retval = 0;

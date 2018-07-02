@@ -3,16 +3,16 @@
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either version
+ * 2.1 of the License, or (at your option) any later version.
  *
  * The VEOS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public
+ * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
@@ -1325,14 +1325,6 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *v
 
 		vemva_tmp->used_count = 0;
 
-		add_vemva_dir_in_list(vemva_tmp);
-
-		PSEUDO_DEBUG("New VEMVA List %p created with base: 0x%p and type %d",
-				vemva_tmp, vemva_base, vemva_tmp->type);
-
-		PSEUDO_DEBUG("Total VEMVA dir count: %lx",
-				vemva_header.vemva_count);
-
 		/*
 		 * Here we are initializing new ATB directory
 		 * if new vemva chunk is allocatde.
@@ -1345,10 +1337,18 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *v
 					ve_page_info.page_size);
 			if (retval == -1) {
 				PSEUDO_DEBUG("new_vemva_chunk_atn_init failed");
+				free(vemva_tmp);
 				errno = ENOMEM;
 				goto err_exit;
 			}
 		}
+		add_vemva_dir_in_list(vemva_tmp);
+		PSEUDO_DEBUG("New VEMVA List %p created with base: 0x%p and type %d",
+				vemva_tmp, vemva_base, vemva_tmp->type);
+
+		PSEUDO_DEBUG("Total VEMVA dir count: %lx",
+				vemva_header.vemva_count);
+
 		vemva_base += (ve_page_info.chunk_size);
 	} while (--req_dir_count);
 

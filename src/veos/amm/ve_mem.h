@@ -46,7 +46,8 @@
 #define USRCC_OFFSET 0x00000
 #define PMC_OFFSET 0x01000
 #define EDMACTL_OFF     0x22000
-#define EDMADESC_OFF    0x21000
+#define EDMADESC_E_OFF    0x21000
+#define EDMADESC_H_OFF    0x20000
 #define USRCC_OFFSET 0x00000
 #define PMC_OFFSET 0x01000
 
@@ -262,6 +263,9 @@ int amm_rw_check_permission(struct ve_task_struct *tsk,
 int ve_node_page_free_count(int);
 uint64_t ve_node_page_used_count(int);
 int alloc_ve_pages(uint64_t, pgno_t *, int);
+int calc_usable_dirty_page(struct ve_node_struct *vnode,
+			   size_t mem_sz, int pgmod);
+void amm_wake_alloc_page(void);
 void invalidate_atb(atb_reg_t *atb);
 void invalidate_dmaatb(dmaatb_reg_t *atb);
 int amm_copy_atb_private(atb_reg_t *, atb_reg_t *, struct veshm_struct *);
@@ -290,6 +294,10 @@ void calc_addr(struct addr_struct *);
 void amm_copy_mm_data(struct ve_mm_struct *, struct ve_mm_struct *);
 ret_t copy_shm_list(struct ve_mm_struct *, struct ve_mm_struct *);
 void amm_atb_cleanup(atb_reg_t *, int, int);
+int dirty_page_init(struct ve_node_struct *vnode, pthread_t *th);
+int add_dirty_page(pgno_t pgno, size_t pgsz, int pgmod);
+void veos_amm_clear_mem_thread(void);
+int clear_and_dealloc_page(pgno_t pgno, size_t pgsz, int pgmod);
 
 /*VEMVA share*/
 int veos_share_vemva_region(pid_t, vemva_t, pid_t,

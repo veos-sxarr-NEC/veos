@@ -6,7 +6,6 @@ libpseudopsm_la_SOURCES = \
 	signal_comm.c \
 	sys_process_mgmt.h \
 	sys_process_mgmt.c \
-	ve_futex.h \
 	pseudo_ptrace.c \
 	pseudo_ptrace.h \
 	sys_signal.c \

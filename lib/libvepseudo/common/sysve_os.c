@@ -2,17 +2,17 @@
  * Copyright (C) 2017-2018 NEC Corporation
  * This file is part of the VEOS.
  *
- * The VEOS is free software; you can redistribute it and/or 
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * The VEOS is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either version
+ * 2.1 of the License, or (at your option) any later version.
  *
  * The VEOS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public
+ * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
@@ -40,8 +40,8 @@
 
 #define VE_VEHVA_SYS_COM_REG_PAGE0_ADDR       0x000000001000
 #define VE_VEHVA_SYS_COM_REG_PAGE1_ADDR       0x000000002000
-#define VE_VEHVA_DMACTL_ADDR                  0x000000003000
-#define VE_VEHVA_DMADES_ADDR                  0x000000004000
+#define VE_VEHVA_DMACTL_E_ADDR                0x000000003010
+#define VE_VEHVA_DMADES_E_ADDR                0x000000004000
 
 #define REG_MASK_ALL 0xffffffffffffffff
 #define REG_MASK_PSW 0x8000000000000000
@@ -316,11 +316,11 @@ int ve_sys_get_fixed_vehva(veos_handle *handle, uint64_t region,
 	case VE_VEHVA_SYS_COM_REG_PAGE1:
 		mapping = VE_VEHVA_SYS_COM_REG_PAGE1_ADDR;
 		break;
-	case VE_VEHVA_DMACTL:
-		mapping = VE_VEHVA_DMACTL_ADDR;
+	case VE_VEHVA_DMACTL_E:
+		mapping = VE_VEHVA_DMACTL_E_ADDR;
 		break;
-	case VE_VEHVA_DMADES:
-		mapping = VE_VEHVA_DMADES_ADDR;
+	case VE_VEHVA_DMADES_E:
+		mapping = VE_VEHVA_DMADES_E_ADDR;
 		break;
 	default:
 		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
@@ -577,4 +577,210 @@ static int ve_sys_map_reg(uint64_t reg)
 
 	VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
 	return regid;
+}
+
+/**
+ * @brief This function sends a request message to VEOS and 
+ *        receives a response.
+ *
+ * @param[in] handle 	VEOS handle of pseudo process.
+ * @param[in] id 	request command ID
+ * @param[in] data 	data for request command ID
+ * @param[out] msg	a response message
+ *
+ * @return 0 on Success, an negative error number on Failure.
+ *
+ * @retval -EFAULT on Bad address
+ * @retval -EBUSY on DMA descriptor table H has already been mapped.
+ * @retval -ECANCELED on IPC message error.
+ * @retval -ENOMEM on memory allocation error in malloc().
+ *
+ * @author libsysve
+ */
+int ve_request_veos(veos_handle *handle, 
+		enum pseudo_veos_msg_id id,
+		ProtobufCBinaryData *data,
+		PseudoVeosMessage **reply_msg)
+{
+	int ret;
+	PseudoVeosMessage msg = PSEUDO_VEOS_MESSAGE__INIT;
+	PseudoVeosMessage *recv_msg;
+	size_t msg_len;
+	ssize_t recv_len;
+	void *msg_buf;
+	char recv_buf[MAX_PROTO_MSG_SIZE];
+	const char *err_str = "Failed to communicate with VEOS\n";
+
+	assert(handle != NULL);
+	assert(0 <= id && id <= PSEUDO_VEOS_MAX_MSG_NUM);
+
+	PSEUDO_TRACE("Entering");
+
+	msg.pseudo_veos_cmd_id = id;
+	msg.has_pseudo_pid = true;
+	msg.pseudo_pid = syscall(SYS_gettid);
+	if (data != NULL) {
+		msg.has_pseudo_msg = true;
+		msg.pseudo_msg = *data;
+	}
+
+	/* pack a message */
+	msg_len = pseudo_veos_message__get_packed_size(&msg);
+	if (msg_len == 0) {
+		PSEUDO_ERROR("IPC message error(packed size)");
+		fprintf(stderr, err_str);
+		pseudo_abort();
+	}
+	msg_buf = malloc(msg_len);
+	if (msg_buf == NULL) {
+		ret = -errno;
+		PSEUDO_ERROR("Buffer allocation failed: %s", strerror(-ret));
+		goto err_ret_nofree;
+	}
+	memset(msg_buf, 0x0, msg_len);
+	ret = pseudo_veos_message__pack(&msg, msg_buf);
+	if (ret <= 0) {
+		PSEUDO_ERROR("IPC message error(pack)");
+		fprintf(stderr, err_str);
+		pseudo_abort();
+	}
+
+	/* comunicate with Pseudo process */
+	ret = pseudo_veos_send_cmd(handle->veos_sock_fd, msg_buf, msg_len);
+	if (ret < 0) {
+		PSEUDO_ERROR("IPC message error(send cmd)");
+		fprintf(stderr, err_str);
+		pseudo_abort();
+	}
+	recv_len = pseudo_veos_recv_cmd(handle->veos_sock_fd, recv_buf, 
+		MAX_PROTO_MSG_SIZE);
+	if (recv_len < 0) {
+		PSEUDO_ERROR("IPC message error(recv cmd)");
+		fprintf(stderr, err_str);
+		pseudo_abort();
+	}
+	recv_msg = pseudo_veos_message__unpack(NULL, recv_len,
+			(const uint8_t *)recv_buf);
+	if (recv_msg == NULL) {
+		PSEUDO_ERROR("IPC message error(unpack)");
+		fprintf(stderr, err_str);
+		pseudo_abort();
+	}
+
+	/* set results */
+	if (reply_msg != NULL) {
+		*reply_msg = recv_msg;
+		/* The caller function has to free "recv_msg" */
+	} else {
+		pseudo_veos_message__free_unpacked(recv_msg, NULL);
+	}
+	ret = recv_msg->syscall_retval;
+
+	free(msg_buf);
+err_ret_nofree:
+	PSEUDO_TRACE("Exiting");
+	
+	return ret;
+}
+
+/**
+ * @brief This function maps DMA description H to VEHVA.
+ *
+ * @param[in] handle 		VEOS handle of pseudo process.
+ * @param[out] vehva_dmades 	VEHVA which DMA descriptor table H is mapped to
+ * @param[out] vehva_dmactl 	VEHVA which DMA control register H is mapped to
+ *
+ * @return 0 on Success, an negative error number on Failure.
+ *
+ * @retval -EFAULT on Bad address
+ * @retval -EBUSY on DMA descriptor table H has already been mapped.
+ * @retval -ECANCELED on IPC message error.
+ * @retval -ENOMEM on memory allocation error.
+ *
+ * @author libsysve
+ */
+int ve_sys_map_dmades(veos_handle *handle, uint64_t * vehva_dmades,
+			uint64_t * vehva_dmactl)
+{
+	int ret;
+	PseudoVeosMessage *reply_msg = NULL;
+	struct userdma *dma;
+
+	PSEUDO_TRACE("Entering");
+
+	if (handle == NULL || vehva_dmades == NULL || vehva_dmactl == NULL) {
+		ret = -EFAULT;
+		PSEUDO_ERROR("%s",strerror(-ret));
+		goto hndl_return;
+	}
+
+	ret = ve_request_veos(handle, MAP_DMADES, NULL, &reply_msg);
+	if (ret != 0) {
+		PSEUDO_ERROR("Failed to map user DMA: %s", strerror(-ret));
+		goto hndl_return;
+	}
+
+	/* set results */
+	if (reply_msg->has_pseudo_msg != true) {
+		PSEUDO_DEBUG("The replied message from map_dmades() is broken");
+		goto hndl_return;
+	}
+	dma = (struct userdma *)reply_msg->pseudo_msg.data;
+	if (ve_send_data(handle, (uint64_t)vehva_dmades,
+		sizeof(uint64_t), &dma->dmades) != 0) {
+		ret = -EFAULT;
+		PSEUDO_ERROR("Failed to send DMA descriptor"); 
+	} else if (ve_send_data(handle, (uint64_t)vehva_dmactl,
+		sizeof(uint64_t), &dma->dmactl) != 0) {
+		ret = -EFAULT;
+		PSEUDO_ERROR("Failed to send DMA control register"); 
+	}
+
+	pseudo_veos_message__free_unpacked(reply_msg, NULL);
+
+hndl_return:
+	PSEUDO_TRACE("Exiting");
+	return ret;
+}
+
+/**
+ * @brief This function halts usermode DMA corrensponding to DMA descriptor H
+ *        and unmaps it from VEHVA.
+ *
+ * @param[in] handle VEOS handle of pseudo process.
+ * @param[in] vehva_dmades VEHVA which DMA descriptor table H is mapped to
+ *
+ * @return 0 on Success, an negative errornumber on Failure.
+ *
+ * @retval -EINVAL on DMA descriptor table H is not mapped
+ *
+ * @author libsysve
+ */
+int ve_sys_unmap_dmades(veos_handle *handle, uint64_t vehva_dmades)
+{
+	int ret;
+	struct userdma dma;
+	ProtobufCBinaryData data;
+
+	PSEUDO_TRACE("Entering");
+
+	if (handle == NULL) {
+		ret = -EFAULT;
+		PSEUDO_ERROR("%s",strerror(-ret));
+		goto hndl_return;
+	}
+
+	data.len = sizeof(struct userdma);
+	data.data = (uint8_t *)&dma;
+	dma.dmades = vehva_dmades;
+
+	ret = ve_request_veos(handle, UNMAP_DMADES, &data, NULL);
+	if (ret != 0) {
+		PSEUDO_ERROR("Failed to unmap user DMA: %s", strerror(-ret));
+		goto hndl_return;
+	}
+
+hndl_return:
+	PSEUDO_TRACE("Exiting");
+	return ret;
 }

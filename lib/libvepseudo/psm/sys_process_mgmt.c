@@ -3,16 +3,16 @@
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either version
+ * 2.1 of the License, or (at your option) any later version.
  *
  * The VEOS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public
+ * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
@@ -27,12 +27,12 @@
 #include <sys/types.h>
 #include <string.h>
 #include <sys/shm.h>
+#include <linux/futex.h>
 #include "handle.h"
 #include "process_mgmt_comm.h"
 #include "mm_transfer.h"
 #include "sys_process_mgmt.h"
 #include "sys_mm.h"
-#include "ve_futex.h"
 #include "exception.h"
 #include "velayout.h"
 #include "loader.h"
@@ -143,6 +143,12 @@ void process_thread_cleanup(veos_handle *handle, int exit_code)
 	}
 
 	index_local = find_global_array_index(tid);
+	if (index_local == VEOS_MAX_VE_THREADS) {
+		PSEUDO_ERROR("TID %d not found", tid);
+		fprintf(stderr, "Internal resource usage "
+				"error\n");
+		pseudo_abort();
+	}
 
 	PSEUDO_DEBUG("index_local : %d, ctid_address : %lx", index_local,
 		(unsigned long)global_tid_info[index_local].ctid_address);
@@ -452,9 +458,7 @@ static void thread_dummy_func(void *thread_args)
 		pseudo_abort();
 	}
 
-	if (retval == 0) {
-		exception_handler(child_handle, extra_arg);
-	}
+	exception_handler(child_handle, extra_arg);
 
 delete_ve_task_struct:
 	global_tid_info[index].ctid_address = 0;
@@ -520,7 +524,7 @@ ret_t ve__do_clone(int syscall_num, char *syscall_name, veos_handle *handle,
 	if (exception_handler == NULL) {
 		PSEUDO_ERROR("Invalid argument exception handler");
 		retval = -ENOMEM;
-		goto hndl_return;
+		goto hndl_return1;
 	}
 
 	/* Fetch arguments using handle obtained*/
@@ -531,7 +535,7 @@ ret_t ve__do_clone(int syscall_num, char *syscall_name, veos_handle *handle,
 		PSEUDO_DEBUG("Failed to fetch arguments, return value %d, "
 				"mapped value %d", (int)retval, -ENOMEM);
 		retval = -ENOMEM;
-		goto hndl_return;
+		goto hndl_return1;
 	}
 
 	/* Clear the CLONE_DETACHED bit from the thread flag group */
@@ -544,7 +548,7 @@ ret_t ve__do_clone(int syscall_num, char *syscall_name, veos_handle *handle,
 		if (NULL == (uint64_t *)clone_args[4]) {
 			PSEUDO_ERROR("clone() failure: Invalid TLS argument");
 			retval = -EINVAL;
-			goto hndl_return;
+			goto hndl_return1;
 		}
 
 		/* Initialize attributes for new thread to be created */
@@ -556,7 +560,7 @@ ret_t ve__do_clone(int syscall_num, char *syscall_name, veos_handle *handle,
 					"value %d, mapped value %d",
 					-((int)retval), -ENOMEM);
 			retval = -ENOMEM;
-			goto hndl_return;
+			goto hndl_return1;
 		}
 
 		/* Set detach attribute */
@@ -591,7 +595,6 @@ ret_t ve__do_clone(int syscall_num, char *syscall_name, veos_handle *handle,
 				tid_counter, index_local);
 
 		index_local = find_global_array_index(0);
-		global_tid_info[index_local].tid_val = -1;
 		if (index_local == VEOS_MAX_VE_THREADS) {
 			PSEUDO_ERROR("MAX(%d) threads created for VE process"
 					". Cannot create more threads",
@@ -610,6 +613,7 @@ ret_t ve__do_clone(int syscall_num, char *syscall_name, veos_handle *handle,
 			retval = -EAGAIN;
 			goto hndl_return;
 		}
+		global_tid_info[index_local].tid_val = -1;
 		tid_counter++; /* Update tid_counter */
 		PSEUDO_DEBUG("Creating new thread no : %d", tid_counter);
 
@@ -740,15 +744,9 @@ ret_t ve__do_clone(int syscall_num, char *syscall_name, veos_handle *handle,
 				PSEUDO_DEBUG("PID: %ld is traced and "
 						"PTRACE_O_TRACECLONE event is"
 						"Enabled", syscall(SYS_gettid));
-				if (-1 == send_sig_to_itself(SIGTRAP,
+				send_sig_to_itself(SIGTRAP,
 						(SIGTRAP | (PTRACE_EVENT_CLONE<<8)),
-						NULL)) {
-					PSEUDO_ERROR("clone() failure: Failed "
-							"to send signal to "
-							"itself");
-					retval = -ENOMEM;
-					goto cancel_vh_thread;
-				}
+						NULL);
 			} else {
 				PSEUDO_DEBUG("PID: %ld is not traced",
 						syscall(SYS_gettid));
@@ -769,10 +767,9 @@ ret_t ve__do_clone(int syscall_num, char *syscall_name, veos_handle *handle,
 	} else {
 		PSEUDO_INFO("Invalid clone flags, Not supported");
 		retval = -EINVAL;
-		goto hndl_return;
+		goto hndl_return1;
 	}
 
-cancel_vh_thread:
 	ret = pthread_cancel(new_thread);
 	if (ret != 0) {
 		PSEUDO_ERROR("clone() failure: Failed to cancel thread");
@@ -805,6 +802,14 @@ cancel_vh_thread:
 	}
 
 hndl_return:
+	if (retval < 0) {
+		ret = pthread_attr_destroy(&thread_attr);
+		if (ret != 0) {
+			PSEUDO_ERROR("Failed to destroy attr, return value %d",
+					-((int)ret));
+		}
+	}
+hndl_return1:
 	PSEUDO_TRACE("Exiting");
 	/* write return value */
 	return retval;
@@ -1020,13 +1025,7 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 		 * populate ptrace event information in si_code.
 		 */
 		if (trace)
-			if (-1 == send_sig_to_itself(SIGTRAP, trace, NULL)) {
-				PSEUDO_ERROR("%s failure: Failed to send "
-						"signal to itself",
-						syscall_name);
-				retval = -ENOMEM;
-				goto hndl_fail1;
-			}
+			send_sig_to_itself(SIGTRAP, trace, NULL);
 
 	} else if (0 == pid) {
 		/* In Child VH Context */
@@ -1060,18 +1059,16 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 			/* Update global handle */
 			g_handle = handle;
 			PSEUDO_DEBUG("Closing parent's threads fd in vforked child");
-			if (p_handle) {
-				for (index = 0; index < VEOS_MAX_VE_THREADS; index++) {
-					if (global_tid_info[index].tid_val > 0) {
-						PSEUDO_DEBUG("closing fd's for PID %d",
-								global_tid_info[index].tid_val);
-						retval = vedl_close_ve(global_tid_info[index].veos_hndl->ve_handle);
-						if (retval)
-							PSEUDO_ERROR("close VEDL handle failed.");
-						close(global_tid_info[index].veos_hndl->veos_sock_fd);
-						global_tid_info[index].veos_hndl->ve_handle = NULL;
-						veos_handle_free(global_tid_info[index].veos_hndl);
-					}
+			for (index = 0; index < VEOS_MAX_VE_THREADS; index++) {
+				if (global_tid_info[index].tid_val > 0) {
+					PSEUDO_DEBUG("closing fd's for PID %d",
+							global_tid_info[index].tid_val);
+					retval = vedl_close_ve(global_tid_info[index].veos_hndl->ve_handle);
+					if (retval)
+						PSEUDO_ERROR("close VEDL handle failed.");
+					close(global_tid_info[index].veos_hndl->veos_sock_fd);
+					global_tid_info[index].veos_hndl->ve_handle = NULL;
+					veos_handle_free(global_tid_info[index].veos_hndl);
 				}
 			}
 
@@ -1081,18 +1078,15 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 			shmdt(handle->ve_handle->lshm_addr);
 
 			PSEUDO_DEBUG("Closing parent's threads fd in forked child");
-			if (p_handle) {
-				int index;
-				for (index = 0; index < VEOS_MAX_VE_THREADS; index++) {
-					if (global_tid_info[index].tid_val > 0) {
-						PSEUDO_DEBUG("closing fd's for PID %d",
-								global_tid_info[index].tid_val);
-						retval = vedl_close_ve(global_tid_info[index].veos_hndl->ve_handle);
-						if (retval)
-							PSEUDO_ERROR("close VEDL handle failed.");
-						close(global_tid_info[index].veos_hndl->veos_sock_fd);
-						global_tid_info[index].veos_hndl->ve_handle = NULL;
-					}
+			for (index = 0; index < VEOS_MAX_VE_THREADS; index++) {
+				if (global_tid_info[index].tid_val > 0) {
+					PSEUDO_DEBUG("closing fd's for PID %d",
+							global_tid_info[index].tid_val);
+					retval = vedl_close_ve(global_tid_info[index].veos_hndl->ve_handle);
+					if (retval)
+						PSEUDO_ERROR("close VEDL handle failed.");
+					close(global_tid_info[index].veos_hndl->veos_sock_fd);
+					global_tid_info[index].veos_hndl->ve_handle = NULL;
 				}
 			}
 
@@ -1205,7 +1199,6 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 						(int)retval);
 				goto hndl_fail2;
 			}
-			retval = 0;
 		}
 
 		/* Store child thread ID in child memory */
@@ -1846,9 +1839,9 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	if (exe_flag) {
-		retval = execve(execve_vh_arg[0], execve_vh_arg, execve_vh_envp);
+		execve(execve_vh_arg[0], execve_vh_arg, execve_vh_envp);
 	} else {
-		retval = execve(real_exe_name, execve_vh_arg, execve_vh_envp);
+		execve(real_exe_name, execve_vh_arg, execve_vh_envp);
 	}
 	retval = -errno;
 	PSEUDO_ERROR("VH execve failed due to: %d %s", errno, strerror(errno));
@@ -3931,6 +3924,11 @@ ret_t ve_set_tid_address(int syscall_num, char *syscall_name, veos_handle *handl
 				(pthread_cond_t)PTHREAD_COND_INITIALIZER;
 		} else {
 			index = find_global_array_index(tid);
+			if (index == VEOS_MAX_VE_THREADS) {
+				PSEUDO_ERROR("TID %d not found", tid);
+				fprintf(stderr, "Inconsistent thread details\n");
+				pseudo_abort();
+			}
 		}
 
 		PSEUDO_DEBUG("index : %d", index);

@@ -3,16 +3,16 @@
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either version
+ * 2.1 of the License, or (at your option) any later version.
  *
  * The VEOS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public
+ * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
@@ -49,60 +49,10 @@
 #include "velayout.h"
 #include "libvepseudo.h"
 
-#define MAX_TRANS_SIZE  (2*1024*1024)
 
 /* NOTE: The below wrapper functions are designed same way as
  * defined in libved.c file
  */
-/**
- * @brief This function used to send data from VH to VE.
- *
- * @param[in] handle VEOS handle
- * @param[in] address Destination address to hold the data
- * @param[in] datasize size of the data
- * @param[in] data buffer to transfer
- *
- * @return On success returns 0 and negative of errno on failure.
- */
-int _ve_send_data_ipc(veos_handle *handle,
-		uint64_t address, size_t datasize, void *data)
-{
-	int ret = 0;
-	PSEUDO_TRACE("Invoked");
-	PSEUDO_DEBUG("Invoked with address = 0x%lx size 0x%lx data %p",
-			address, datasize, data);
-
-	if (datasize % 8) {
-		PSEUDO_DEBUG("transfer length must be multiple of 8 Byte");
-		return -EINVAL;;
-	}
-	ret =  __ve_send_data(handle, address, datasize, data);
-	if (ret) {
-		PSEUDO_DEBUG("error while tranfering data");
-		goto _ve_send_data_err;
-	}
-	/* success */
-	PSEUDO_DEBUG("Data transfer success between VH and VE");
-
-_ve_send_data_err:
-	PSEUDO_DEBUG("returned with %d", ret);
-	PSEUDO_TRACE("returned");
-	return ret;
-}
-
-/**
- * @brief structure for calculating address offset and datasize.
- */
-struct addr_struct {
-	uint64_t top_address;
-	uint64_t bottom_address;
-	uint64_t aligned_top_address;
-	uint64_t aligned_bottom_address;
-	int top_offset;
-	int bottom_offset;
-	size_t new_datasize;
-};
-
 /**
  * @brief calculate aligned addresses from top_address and bottom_address.
  *
@@ -138,12 +88,11 @@ void calc_address(struct addr_struct *as)
 	 *  high |          |
 	 */
 	PSEUDO_TRACE("Invoked");
-
-	as->aligned_top_address = (as->top_address & ~(8 - 1));
+	as->aligned_top_address = (as->top_address & ~(ALIGN_BUFF_SIZE - 1));
 	as->top_offset = as->top_address - as->aligned_top_address;
-	if (as->bottom_address % 8) {
+	if (as->bottom_address % ALIGN_BUFF_SIZE) {
 		as->aligned_bottom_address =
-		    (as->bottom_address & ~(8 - 1)) + 8;
+		    (as->bottom_address & ~(ALIGN_BUFF_SIZE - 1)) + ALIGN_BUFF_SIZE;
 		as->bottom_offset =
 		    as->aligned_bottom_address - as->bottom_address;
 	} else {
@@ -164,7 +113,57 @@ void calc_address(struct addr_struct *as)
 			 (unsigned long long)(as->aligned_bottom_address));
 	PSEUDO_DEBUG("bottom_offset =          %d", as->bottom_offset);
 	PSEUDO_DEBUG("new_datasize =           %zd", as->new_datasize);
+}
 
+/**
+* @brief This function will transfer/receive data for VE memory when
+*	src, dest and size are aligned.
+*
+* @param[in] handle VEOS handle.
+* @param[in] vemva  Virual address of VE memory.
+* @param[in] vehva  Virtual address of VH memory.
+* @param[in] size size of data to be tranfer/receive.
+* @param[in] is_send whether to send/receive.
+*
+* @return returns zero if success else negative of errno.
+*/
+int direct_send_recv(veos_handle *handle, vemva_t vemva,
+		vehva_t vehva, size_t size, bool is_send)
+{
+	size_t size_remain = size;
+	size_t chunk_sz = 0;
+	int ret = 0;
+
+	PSEUDO_TRACE("Entering");
+
+	while (size_remain) {
+		chunk_sz  = (size_remain >= VE_XFER_BLOCK_SIZE) ?
+			VE_XFER_BLOCK_SIZE : size_remain;
+		if (is_send) {
+			ret = __ve_send_data(handle, vemva, chunk_sz, (void *)vehva);
+			if (ret < 0) {
+				PSEUDO_DEBUG("error(%s) while transfering data to VE memory",
+					strerror(-ret));
+				goto xfer_done;
+			}
+		} else {
+			ret = __ve_recv_data(handle, vemva, chunk_sz, (void *)vehva);
+			if (ret < 0) {
+				PSEUDO_DEBUG("error(%s) while receiving data from VE memory",
+					strerror(-ret));
+				goto xfer_done;
+			}
+		}
+		size_remain -= chunk_sz;
+		vemva += chunk_sz;
+		vehva +=  chunk_sz;
+
+	}
+	PSEUDO_DEBUG("Total Data %s is %ld Bytes",
+			(is_send) ? "send" : "receive", size);
+xfer_done:
+	PSEUDO_TRACE("returned");
+	return ret;
 }
 
 /**
@@ -180,9 +179,15 @@ void calc_address(struct addr_struct *as)
 int ve_send_data(veos_handle *handle, uint64_t address,
 		size_t datasize, void *data)
 {
-	int ret = 0;
+	int ret = 0, tot_offset = 0;
 	struct addr_struct *as = NULL;
-	uint64_t *buff = NULL;
+	uint64_t *buf = NULL, *t_buf = NULL, *b_buf = NULL;
+	vemva_t vemva = 0;
+	uint64_t vehva = (uint64_t)data;
+	void *src = NULL, *dst = NULL;
+	size_t remain_sz = 0, data_xfer_sz = 0;
+	bool one_cycle_xfer = true;
+	bool first_cycle = true, last_cycle = false;
 
 	PSEUDO_TRACE("Invoked");
 	PSEUDO_DEBUG("Invoked with address = 0x%lx size 0x%lx data %p",
@@ -193,58 +198,137 @@ int ve_send_data(veos_handle *handle, uint64_t address,
 		ret = -errno;
 		PSEUDO_DEBUG("Error (%s) while allocating memory",
 				strerror(-ret));
-		return ret;
+		goto exit_func1;
 	}
 
 	as->top_address = address;
 	as->bottom_address = address + datasize;
 
-	/* calc VEMVA addresses */
+	/*Aligned VEMVA address and size*/
 	calc_address(as);
+	remain_sz = as->new_datasize;
+	vemva = as->aligned_top_address;
 
-	/* allocate bigger buffer than data */
-	buff = (uint64_t *)malloc(as->new_datasize);
-	if (buff == NULL) {
+
+	/*If src, dst and size are align then send directly*/
+	if (!as->top_offset && !as->bottom_offset && !(vehva % ALIGN_BUFF_SIZE)) {
+		ret = direct_send_recv(handle, vemva, (vehva_t)vehva, remain_sz, true);
+		goto exit_func2;
+	}
+
+	data_xfer_sz = (remain_sz >= VE_XFER_BLOCK_SIZE) ?
+		VE_XFER_BLOCK_SIZE : remain_sz;
+
+	/*If size is less than VE_XFER_BLOCK_SIZE then memory
+	 *transfer will be done in on cycle*/
+	one_cycle_xfer = (remain_sz <= VE_XFER_BLOCK_SIZE) ? true : false;
+
+	buf = (uint64_t *)malloc(data_xfer_sz);
+	if (buf == NULL) {
 		ret = -errno;
 		PSEUDO_DEBUG("Error (%s) while allocating memory",
 				strerror(-ret));
-		goto ve_send_data_err_;
+		goto exit_func1;
 	}
 
-	/* receive top part of VE memory */
+	/* If top offset, then allocate top buffer and receive data. */
 	if (as->top_offset != 0) {
-		ret = ve_recv_data(handle, as->aligned_top_address, 8, buff);
+		t_buf = (uint64_t *)malloc(ALIGN_BUFF_SIZE);
+		if (t_buf == NULL) {
+			ret = -errno;
+			PSEUDO_DEBUG("Error (%s) while allocating memory",
+					strerror(-ret));
+			goto exit_func2;
+		}
+		/* Receiving top part of VE memory into top buffer */
+		ret = __ve_recv_data(handle, as->aligned_top_address, ALIGN_BUFF_SIZE, t_buf);
 		if (ret) {
 			PSEUDO_DEBUG("error while receiving top part of VE data");
-			goto ve_send_data_err;
+			free(t_buf);
+			goto exit_func2;
 		}
 	}
 
-	/* receive bottom part of VE memory */
+	/* If bottom offset, then allocate bottom buffer and receive data. */
 	if (as->bottom_offset != 0) {
-		ret = ve_recv_data(handle, as->aligned_bottom_address - 8, 8,
-				(uint64_t *)((uint64_t)buff +
-					as->new_datasize - 8));
+		b_buf = (uint64_t *)malloc(ALIGN_BUFF_SIZE);
+		if (b_buf == NULL) {
+			ret = -errno;
+			PSEUDO_DEBUG("Error (%s) while allocating memory",
+					strerror(-ret));
+			free(t_buf);
+			goto exit_func2;
+		}
+		/* receive bottom part of VE memory into bottom buffer */
+		ret = __ve_recv_data(handle, as->aligned_bottom_address - ALIGN_BUFF_SIZE,
+				ALIGN_BUFF_SIZE, b_buf);
 		if (ret) {
 			PSEUDO_DEBUG("error while receiving bottom part of VE data");
-			goto ve_send_data_err;
+			goto exit_func3;
 		}
 	}
 
-	/* copy data to the buffer */
-	memcpy((uint64_t *)((uint64_t)buff + as->top_offset), data, datasize);
+	/* Receiving data in 64MB chunk or less. */
+	while (remain_sz) {
+		data_xfer_sz = (remain_sz >= VE_XFER_BLOCK_SIZE) ?
+			VE_XFER_BLOCK_SIZE : remain_sz;
 
-	/* finally, send buff to VE memory */
-	ret = _ve_send_data_ipc(handle, as->aligned_top_address,
-			as->new_datasize, buff);
-	if (ret) {
-		PSEUDO_DEBUG("error while sending request to data transfer");
+		/* Copying top data into buffer. */
+		if (as->top_offset)
+			memcpy(buf, t_buf, as->top_offset);
+
+		if ((last_cycle || one_cycle_xfer) && as->bottom_offset) {
+			/* Copying bottom data into buffer. */
+			dst = (void *)((uint64_t)buf + (data_xfer_sz - as->bottom_offset));
+			src = (void *)((uint64_t)b_buf + (ALIGN_BUFF_SIZE - as->bottom_offset));
+			memcpy(dst, src, as->bottom_offset);
+		}
+
+		tot_offset = (one_cycle_xfer) ? (as->top_offset + as->bottom_offset) : as->top_offset;
+
+		dst = (uint64_t *)((uint64_t)buf + as->top_offset);
+
+		/* Copying actual data to be into buffer */
+		memcpy(dst, (void*)vehva, (data_xfer_sz - tot_offset));
+
+		/* Sending buffer to VE memory after padding top and bottom data*/
+		ret = __ve_send_data(handle, vemva, data_xfer_sz, buf);
+		if (ret) {
+			PSEUDO_DEBUG("error(%s) while sending data to VE memory",
+				strerror(-ret));
+			goto exit_func3;
+		}
+
+		/* All Data sent in one cycle*/
+		if (one_cycle_xfer) goto exit_func3;
+
+		vemva += data_xfer_sz;
+		vehva += (first_cycle) ? (data_xfer_sz - as->top_offset) : data_xfer_sz;
+
+		/* First cycle of Data sending is done */
+		first_cycle =  false;
+		as->top_offset = 0;
+
+		/* Calculating Remaining size to be Send */
+		remain_sz -= data_xfer_sz;
+
+		/* If remaining size is less than or equal to VE_XFER_BLOCK_SIZE,
+		 * then it is last cycle to send data */
+		if (remain_sz <= VE_XFER_BLOCK_SIZE)
+			last_cycle = true;
+
+
+		PSEUDO_DEBUG("Total[%ld] Data Yet to send to VE", remain_sz);
 	}
 
-ve_send_data_err:
-	free(buff);
-ve_send_data_err_:
-	free(as);
+	PSEUDO_DEBUG("Total[%ld] Data send to VE", datasize);
+exit_func3:
+	if (t_buf) free(t_buf);
+	if (b_buf) free(b_buf);
+exit_func2:
+	if (buf) free(buf);
+exit_func1:
+	if (as) free(as);
 	PSEUDO_DEBUG("returned with %d", ret);
 	PSEUDO_TRACE("returned");
 	return ret;
@@ -263,10 +347,14 @@ ve_send_data_err_:
 int ve_recv_data(veos_handle *handle, uint64_t address,
 		size_t datasize, void *data)
 {
-
 	int ret = 0;
 	struct addr_struct *as = NULL;
-	uint64_t *buff = NULL;
+	void *src = NULL;
+	uint64_t *buf = NULL, vemva = 0, vehva = (uint64_t)data;
+	size_t remain_sz = 0, data_xfer_sz = 0;
+	bool one_cycle_xfer = true;
+	bool first_cycle = true, last_cycle = false;
+	int tot_offset = 0;
 
 	PSEUDO_TRACE("Invoked");
 	PSEUDO_DEBUG("Invoked with address = 0x%lx size 0x%lx data %p",
@@ -277,82 +365,100 @@ int ve_recv_data(veos_handle *handle, uint64_t address,
 		ret = -errno;
 		PSEUDO_DEBUG("Error (%s) while allocating memory",
 				strerror(-ret));
-		return ret;
+		goto exit_func1;
 	}
 
 	as->top_address = address;
 	as->bottom_address = address + datasize;
 
-	/* calc VEMVA addresses */
+	/* Aligning the VEMVA and size */
 	calc_address(as);
 
-	/* allocate bigger buffer than data */
-	buff = (uint64_t *)malloc(as->new_datasize);
-	if (buff == NULL) {
+	remain_sz = as->new_datasize;
+	vemva = as->aligned_top_address;
+
+	/*If src, dst and size are align then receive directly */
+	if (!as->top_offset && !as->bottom_offset && !(vehva % ALIGN_BUFF_SIZE)) {
+		ret = direct_send_recv(handle, vemva, (vehva_t)vehva, remain_sz, false);
+		goto exit_func1;
+	}
+
+	/* If size is less than VE_XFER_BLOCK_SIZE then memory
+	 * transfer will be done in on cycle */
+	one_cycle_xfer = (remain_sz <= VE_XFER_BLOCK_SIZE) ? true : false;
+
+	data_xfer_sz = (remain_sz >= VE_XFER_BLOCK_SIZE) ?
+			VE_XFER_BLOCK_SIZE : remain_sz;
+
+	/* Allocate buffer to receive data from VE,
+	 * is src, dst and size are not aligned */
+	buf = (uint64_t *)malloc(data_xfer_sz);
+	if (buf == NULL) {
 		ret = -errno;
 		PSEUDO_DEBUG("Error (%s) while allcating memory",
 				strerror(-ret));
-		goto ve_recv_data_err1;
+		goto exit_func1;
 	}
 
-	/* Receive buff from VE memory */
-	ret = _ve_recv_data_ipc(handle, as->aligned_top_address,
-			as->new_datasize, buff);
-	if (0 > ret) {
-		PSEUDO_DEBUG("_ve_recv_data_ipc failed");
-		goto ve_recv_data_err1;
+	/* Receiving data in 64MB chunk or less */
+	while (remain_sz) {
+		PSEUDO_DEBUG("sending data to vehva = 0x%lx from vemva = 0x%lx",
+				vehva, vemva);
+
+		/* Calculating size to be receive from VE memory */
+		data_xfer_sz = (remain_sz >= VE_XFER_BLOCK_SIZE) ?
+				VE_XFER_BLOCK_SIZE : remain_sz;
+
+		/* Receive data from VE memory into buffer */
+		ret = __ve_recv_data(handle, vemva, data_xfer_sz, buf);
+		if (0 > ret) {
+			PSEUDO_DEBUG("error(%s) while receiving data from VE",
+				strerror(errno));
+			goto exit_func2;
+		}
+
+		src = (void *)((uint64_t)buf + as->top_offset);
+
+		if (one_cycle_xfer)
+			tot_offset = as->top_offset + as->bottom_offset;
+		else
+			tot_offset = first_cycle ? as->top_offset :
+				     (last_cycle ? as->bottom_offset : 0);
+
+		/* Copying actual data into destination
+		 * after skipping top and bottom data */
+		memcpy((void *)vehva, src, (data_xfer_sz - tot_offset));
+
+
+		/* All Data Receive in one cycle */
+		if (one_cycle_xfer) goto exit_func2;
+
+		vemva += data_xfer_sz;
+		vehva += first_cycle ? (data_xfer_sz - as->top_offset) : data_xfer_sz;
+
+		/* First cycle of Data receiving is done */
+		first_cycle = false;
+		as->top_offset = 0;
+
+		/* Calculating Remaining size to be receive*/
+		remain_sz -= data_xfer_sz;
+
+		/* If remaining size is less than or equal to VE_XFER_BLOCK_SIZE,
+		 * then it is last cycle to Receive data */
+		if (remain_sz <= VE_XFER_BLOCK_SIZE)
+			last_cycle = true;
+		PSEUDO_DEBUG("Total[%ld] Yet to Data Receive From VE", remain_sz);
 	}
+	PSEUDO_DEBUG("Total[%ld] Data Receive From VE", datasize);
 
-	/* copy data to the data buffer */
-	memcpy(data, (uint64_t *)((uint64_t)buff + as->top_offset), datasize);
-
-ve_recv_data_err1:
-	free(buff);
-	free(as);
+exit_func2:
+	if (buf) free(buf);
+exit_func1:
+	if (as) free(as);
 	PSEUDO_DEBUG("returned with %d", ret);
 	PSEUDO_TRACE("returned");
 	return ret;
 }
-
-/**
- * @brief Receive VE memory (internal function)
- *
- * @param[in] handle VEOS handle
- * @param[in] address VE address
- * @param[in] datasize data size to receive
- * @param[out] data data buffer to hold data
- *
- * @return On success returns 0 and negative of errno on failure
- */
-int _ve_recv_data_ipc(veos_handle *handle, uint64_t address,
-		size_t datasize, void *data)
-{
-	int ret = 0;
-	int errsv = 0;
-
-	PSEUDO_TRACE("Invoked");
-	PSEUDO_DEBUG("Invoked with address = 0x%lx size 0x%lx data %p",
-			address, datasize, data);
-
-	if (datasize % 8) {
-		PSEUDO_DEBUG("transfer length must be multiple of 8 Byte");
-		errno = -EINVAL;
-		ret = errno;
-		return ret;
-	}
-	ret = __ve_recv_data(handle, address, datasize, data);
-	if (0 > ret) {
-		PSEUDO_DEBUG("error(%s) while receiving data", strerror(errsv));
-		goto _ve_recv_data_err;
-	}
-	/* success */
-	PSEUDO_DEBUG("memory received");
-_ve_recv_data_err:
-	PSEUDO_DEBUG("returned with %d", ret);
-	PSEUDO_TRACE("returned");
-	return ret;
-}
-
 /**
  * @brief Send data to VE memory via DMA
  *

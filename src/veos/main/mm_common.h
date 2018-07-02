@@ -40,6 +40,10 @@
 #define LEFT(X)         (2*X+1)
 #define RIGHT(X)        (2*X+2)
 
+#define DMA_DESC_E	(uint8_t)0x1
+#define DMA_DESC_H	(uint8_t)0x2
+#define DMA_DESC_E_H	(uint8_t)0x3
+
 /*
  * Data Structures
  */
@@ -53,6 +57,7 @@ typedef struct vehva_header {
 } vehva_header_t;
 
 struct ve_mm_struct {
+	uint8_t udma_desc_bmap;	/* !< Determines DMA Descriptor table E & H */
 	/* ATB structure*/
 	atb_reg_t atb;
 	/* DMAATB structure */

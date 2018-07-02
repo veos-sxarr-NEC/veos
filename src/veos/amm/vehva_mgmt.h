@@ -43,10 +43,12 @@
 
 #define VEHVA_DMA_CNT_REG ((uint64_t)1 << 7)	/*!< vehva for DMA control
 							register */
-#define VEHVA_DMA_DESC_REG ((uint64_t)1 << 8)	/*!< vehva for DMA descriptive
-							table*/
+#define VEHVA_DMA_DESC_E_REG ((uint64_t)1 << 8)	/*!< vehva for DMA descriptive
+							table E*/
 #define VEHVA_SYSCOM_REG	((uint64_t)1 << 9)	/*!< sysstem common reg*/
 #define VEHVA_MAP_FIXED		((uint64_t)1 << 10)	/*!< Overwrite DMAATB entry*/
+#define VEHVA_DMA_DESC_H_REG ((uint64_t)1 << 11)	/*!< vehva for DMA descriptive
+							table H*/
 
 /*VEHVA Layout*/
 #define VEHVA_4K_START		0x000000000000	/*!< Start of 4K region*/
@@ -59,10 +61,14 @@
 							engine region.*/
 #define DMA_CNT_END		0x000000003fff	/*!< End of DMA control
 							engine region.*/
-#define DMA_DESC_START		0x000000004000	/*!< Start of DMA descriptor
-							table region. */
-#define DMA_DESC_END		0x000000004fff	/*!< End of DMA descriptor
-							table region. */
+#define DMA_DESC_E_START	0x000000004000	/*!< Start of DMA descriptor
+							table region of E */
+#define DMA_DESC_E_END		0x000000004fff	/*!< End of DMA descriptor
+							table region of E */
+#define DMA_DESC_H_START	0x000000005000	/*!< Start of DMA descriptor
+							table region of H */
+#define DMA_DESC_H_END		0x000000005fff	/*!< End of DMA descriptor
+							table region of H */
 #define VEHVA_2M_START		0x008800000000	/*!< Start of 2M region*/
 #define VEHVA_2M_END		0x008fffffffff	/*!< End of 2M region*/
 #define VEHVA_64M_START		0x070000000000	/*!< Start of 64M region*/

@@ -215,12 +215,12 @@ int psm_del_sighand_struct(struct ve_task_struct *p_ve_task)
 		pthread_mutex_destroy(&(sighand->siglock));
 		pthread_mutex_destroy(&(sighand->del_lock));
 		shmdt((void *)sighand->lshm_addr);
-		if (sighand->coredumper_thid &&
-				(pthread_self() != sighand->coredumper_thid)) {
-			VEOS_DEBUG("Send cancellation request to the"
-					" core dumper thread");
-			pthread_cancel(sighand->coredumper_thid);
-		}
+		/* One might wonder what will happen when a task dumping core
+		 * has received SIGKILL signal and deleted while dupming core.
+		 * To her surprise we don't do coredumping and deletion of
+		 * same thread parallelly and synchronization is achieved
+		 * using a combination of get_ve_task_struct and delete lock.
+		 */
 		if (p_ve_task->ived_resource != NULL)
 			veos_clean_ived_proc_property(p_ve_task);
 		veos_free_jid(p_ve_task);

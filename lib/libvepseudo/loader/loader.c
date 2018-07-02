@@ -3,16 +3,16 @@
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either version
+ * 2.1 of the License, or (at your option) any later version.
  *
  * The VEOS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public
+ * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
@@ -321,8 +321,10 @@ int pse_load_binary(char *filename, veos_handle *handle,
 				PSEUDO_DEBUG("VE program "
 						"start IC(interpreter) :"
 						"%lx, interp_map_addr : %lx",
-						(((Elf_Ehdr *)head_interp)->e_entry),
-						(uint64_t)load_elf.ve_interp_map);
+						(Elf_Ehdr *)head_interp ?
+						(((Elf_Ehdr *)head_interp)->e_entry)
+						: 0, (uint64_t)load_elf
+						.ve_interp_map);
 
 				*instr_cntr = (reg_t)((char *)
 						(((Elf_Ehdr *)head_interp)->e_entry) +
@@ -364,6 +366,9 @@ void ve_bss_info(Elf_Ehdr *ehdr, uint64_t p_vaddr, char *name)
 		sec_string = load_elf.stat.start_string_dyn;
 		load_elf.stat.start_bss_dyn = 0;
 	}
+
+	if (!shdr)
+		return;
 
 	for (i = 0; i < ehdr->e_shnum; i++) {
 		if (0 == (strcmp((char *)sec_string + shdr->sh_name,
@@ -1089,7 +1094,7 @@ char *vh_map_elf_dyn(char *filename)
 	char *head = NULL;
 	int fd = -1;
 	int ret = 0;
-	int map_size = -1;
+	size_t map_size = -1;
 	Elf64_Ehdr *ehdr = NULL;
 	Elf64_Shdr *nhdr = NULL;
 
@@ -1109,8 +1114,8 @@ char *vh_map_elf_dyn(char *filename)
 				strerror(-ret));
 		goto err_ret1;
 	}
-	if (buf)
-		free(buf);
+
+	free(buf);
 
 	buf = (char *)calloc(1, map_size);
 	if(!buf) {
@@ -1219,12 +1224,14 @@ void *vh_map_elf(char *filename)
 	char *buf = NULL;
 	int fd = -1;
 	int ret = 0;
-	int map_size = -1;
-	int size = -1;
+	size_t map_size = -1;
+	size_t size = -1;
 	void *map_addr = NULL;
 	void *head = NULL;
 	Elf64_Ehdr *ehdr = NULL;
 	Elf64_Shdr *nhdr = NULL;
+
+	PSEUDO_DEBUG("For mapping the ELF file: %s", filename);
 
 	buf = open_bin_file(filename, &fd);
 	if (!buf) {
@@ -1244,8 +1251,7 @@ void *vh_map_elf(char *filename)
 				" mapping", strerror(-ret));
 		goto err_ret1;
 	}
-	PSEUDO_DEBUG("For mapping the ELF file: %s, Map address: %p",
-			filename, (void *)map_addr);
+	PSEUDO_DEBUG("For mapping the ELF file: %p", (void *)map_addr);
 
 	/* Saving fd to get reference of INTERP*/
 	load_elf.stat.file_interp = map_addr + map_size;
@@ -1256,7 +1262,7 @@ void *vh_map_elf(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to reposition file offset",
 				strerror(-ret));
-		munmap(map_addr, map_size);
+		(void)munmap(map_addr, map_size);
 		goto err_ret1;
 	}
 	size = ((ehdr->e_shentsize) * (ehdr->e_shnum));
@@ -1267,7 +1273,7 @@ void *vh_map_elf(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to create buffer to read start"
 				" section", strerror(-ret));
-		munmap(map_addr, map_size);
+		(void)munmap(map_addr, map_size);
 		goto err_ret1;
 	}
 	if (0 > (read(fd, load_elf.stat.start_section, size))) {
@@ -1275,7 +1281,7 @@ void *vh_map_elf(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to read start section",
 				strerror(-ret));
-		munmap(map_addr, map_size);
+		(void)munmap(map_addr, map_size);
 		free(load_elf.stat.start_section);
 		goto err_ret1;
 	}
@@ -1291,7 +1297,7 @@ void *vh_map_elf(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to reposition file offset",
 				strerror(-ret));
-		munmap(map_addr, map_size);
+		(void)munmap(map_addr, map_size);
 		free(load_elf.stat.start_section);
 		goto err_ret1;
 	}
@@ -1302,7 +1308,7 @@ void *vh_map_elf(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to create buffer to read start"
 				" string", strerror(-ret));
-		munmap(map_addr, map_size);
+		(void)munmap(map_addr, map_size);
 		free(load_elf.stat.start_section);
 		goto err_ret1;
 	}
@@ -1310,7 +1316,7 @@ void *vh_map_elf(char *filename)
 		ret = -errno;
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to read start string", strerror(-ret));
-		munmap(map_addr, map_size);
+		(void)munmap(map_addr, map_size);
 		free(load_elf.stat.start_section);
 		free(load_elf.stat.start_string);
 		goto err_ret1;

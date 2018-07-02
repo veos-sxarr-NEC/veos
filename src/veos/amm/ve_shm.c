@@ -914,11 +914,11 @@ int rm_or_ls_segment(pid_t pid, bool is_ipcs, struct ve_mapheader *header)
 	/*Get node specific shm memory information*/
 	ve_shm_summary(&summary);
 
-	VEOS_DEBUG("Total Number of shm segment on VE[%d]\n",
+	VEOS_DEBUG("Total Number of shm segment on VE[%d]",
 			summary.used_ids);
 
 	if (!summary.used_ids) {
-		VEOS_DEBUG("Total Number of shm segment on VE[%d]\n",
+		VEOS_DEBUG("Total Number of shm segment on VE[%d]",
 				summary.used_ids);
 		header->shmid = 0;
 		goto f_return;
@@ -1196,7 +1196,7 @@ int veos_ipc_op(pid_t pid,
 		break;
 	default:
 		ret = -EINVAL;
-		VEOS_DEBUG("No Such Option for IPCS/IPCRM\n");
+		VEOS_DEBUG("No Such Option for IPCS/IPCRM");
 	}
 
 	return ret;

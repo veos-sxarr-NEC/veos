@@ -3,16 +3,16 @@
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either version
+ * 2.1 of the License, or (at your option) any later version.
  *
  * The VEOS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public
+ * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
@@ -31,13 +31,27 @@
 #define NULLNTFND	-2
 #define FAIL2RCV	-3
 #define DSTSMLL		-4
+#define VE_XFER_BLOCK_SIZE      (64 * 1024 * 1024UL) // 64MB
+#define ALIGN_BUFF_SIZE		(8UL) // 8 byte
+
+/**
+ *@brief structure for calculating address offset and datasize.
+ */
+struct addr_struct {
+        uint64_t top_address;
+        uint64_t bottom_address;
+        uint64_t aligned_top_address;
+        uint64_t aligned_bottom_address;
+        int top_offset;
+        int bottom_offset;
+        size_t new_datasize;
+};
+
 
 int amm_dma_xfer_req(uint8_t *, veos_handle *);
 int ve_send_data(veos_handle *, uint64_t, size_t, void *);
 int ve_recv_data(veos_handle *, uint64_t, size_t, void *);
 int ve_recv_string(veos_handle *, uint64_t, char *, size_t);
-int _ve_recv_data_ipc(veos_handle *, uint64_t, size_t, void *);
-int _ve_send_data_ipc(veos_handle *, uint64_t, size_t, void *);
 int __ve_send_data(veos_handle *, uint64_t, size_t, void *);
 int __ve_recv_data(veos_handle *, uint64_t, size_t, void *);
 #endif

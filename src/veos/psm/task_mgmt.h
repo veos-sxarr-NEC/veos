@@ -287,7 +287,6 @@ struct sighand_struct {
 	pthread_mutex_t del_lock; /*!< Delete lock to synchronize thread deletion */
 	struct rlimit rlim[RLIM_NLIMITS]; /*!< VE process resource limit */
 	uint64_t lshm_addr;	/*!< Shared page address */
-	pthread_t coredumper_thid; /*!< thread_id of coredumper thread */
 	int got_sigint; /*!< used to trace sigint to turn off coredumping*/
 	int ve_sigpending; /*!< No. of pending signals */
 	uint64_t cexec_time; /*!< VE process execution time on VE core of its children */
@@ -317,8 +316,8 @@ struct ve_sigqueue {
 * @brief User DMA structure
 */
 struct ve_udma {
-	dma_desc_t dmades[DMA_DSCR_ENTRY_SIZE];	 /*!< DMA descriptor table */
-	dma_control_t dmactl;	/*!< DMA control register */
+	dma_desc_t dmades[2][DMA_DSCR_ENTRY_SIZE];	 /*!< DMA descriptor table */
+	dma_control_t dmactl[2];	/*!< DMA control register */
 };
 
 

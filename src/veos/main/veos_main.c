@@ -873,6 +873,9 @@ int main(int argc, char *argv[])
 		retval = 1;
 	}
 
+	/* Wake up all threads of waiting to allocate memory */
+	amm_wake_alloc_page();
+
 	/* wait termination of in-progress IPC request and
 	 * in-progress state change of process
 	 */

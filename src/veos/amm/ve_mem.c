@@ -44,6 +44,29 @@ static bool mean_heap;
 heap heap_min_array[MAX_JID_PROCESS];
 int hash[MAX_JID_PROCESS];
 struct jid_data jid_globl = {.mtx = PTHREAD_MUTEX_INITIALIZER};
+static struct ve_dirty_page dirty_page;
+static pthread_t clear_mem_th;
+
+/**
+ * @brief structure for dirty pages
+ */
+struct ve_dirty_pg_list {
+	struct list_head head;	/*!< list head for dirty page */
+	pgno_t pgno;		/*!< page number of dirty page */
+	int pgmod;		/*!< page mode of dirty page */
+	size_t pgsz;		/*!< page size of dirty page */
+};
+
+/**
+ * @brief contain ve dirty page details
+ */
+struct ve_dirty_page {
+	struct ve_dirty_pg_list dirty_pg_list;	/*!< list head for dirty page */
+	pthread_mutex_t ve_dirty_pg_lock;	/*!< mutex lock for dirty_pg_list */
+	pthread_cond_t ve_dirty_pg_cond;	/*!< Conditional lock for clearing dirty pages */
+						/* protected by ve_dirty_pg_lock */
+};
+
 /**
 * @brief coredump creation
 * Function writes the coredump in elf format.
@@ -658,6 +681,14 @@ int veos_amm_init(vedl_handle *handle)
 	if (0 > ret) {
 		VEOS_DEBUG("Error (%s) in PCIATB invalidate",
 				strerror(-ret));
+		goto error;
+	}
+
+	/*Initialise dirty page struct and create thread*/
+	ret = dirty_page_init(vnode, &clear_mem_th);
+	if (0 > ret) {
+		VEOS_DEBUG("Error (%s) in initializing for dirty page",
+			strerror(-ret));
 		goto error;
 	}
 
@@ -1425,7 +1456,7 @@ mprot_error:
 *
 * @param[in] count Number of free pages.
 * @param[out] map Holds page number that is allocated.
-* @param[in] pgsz page used for the memory allocation.
+* @param[in] pgmod page mode for the memory allocation.
 *
 * @return On success retrun 0 and negative value on failure.
 */
@@ -1435,6 +1466,7 @@ int alloc_ve_pages(uint64_t count, pgno_t *map, int pgmod)
 	size_t mem_sz = 0;
 	struct block *curr_blk = NULL, *tmp_blk = NULL;
 	struct ve_node_struct *vnode = VE_NODE(0);
+	int is_wait = 0;
 
 	VEOS_TRACE("invoked");
 	VEOS_DEBUG("allocate %lu %s to map(%p)",
@@ -1453,10 +1485,27 @@ int alloc_ve_pages(uint64_t count, pgno_t *map, int pgmod)
 	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
 			"Failed to acquire ve_page lock");
 
-	ret = veos_alloc_memory(vnode->mp, mem_sz, pgmod);
-	if (0 > ret) {
+	while (is_wait != -1) {
+		if (terminate_flag) {
+			pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+					UNLOCK,
+					"Failed to acquire ve_page lock");
+			return -ENOMEM;
+		}
+		ret = veos_alloc_memory(vnode->mp, mem_sz, pgmod);
+		if (ret == 0)
+			break;
+		else if (ret != -ENOMEM) {
+			VEOS_DEBUG("Error (%s) while allocating %lx size VE memory",
+				   strerror(-ret), mem_sz);
+			pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+						  UNLOCK,
+						  "Failed to release ve_page lock");
+			return ret;
+		}
 		VEOS_DEBUG("Error (%s) while allocating %lx size VE memory",
 				strerror(-ret), mem_sz);
+
 		/*clear all allocated block*/
 		list_for_each_entry_safe(curr_blk, tmp_blk,
 			vnode->mp->alloc_req_list, link) {
@@ -1464,14 +1513,21 @@ int alloc_ve_pages(uint64_t count, pgno_t *map, int pgmod)
 			/*returning allocated block to buddy mempool*/
 			buddy_free(vnode->mp, curr_blk);
 		}
-		if (list_empty(vnode->mp->alloc_req_list)) {
-			VEOS_DEBUG("REQ List is emptied after "
-					"allocation failure");
-			INIT_LIST_HEAD(vnode->mp->alloc_req_list);
+		for (;;) {
+			is_wait = calc_usable_dirty_page(vnode, mem_sz, pgmod);
+			if (is_wait == 1)
+				break; /* enough free block */
+			else if (is_wait == -1) {
+				VEOS_DEBUG("no enough memory");
+				pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+						UNLOCK,
+						"Failed to release ve_page lock");
+				return ret;
+			}
+			VEOS_DEBUG("wait to clearing dirty page");
+			pthread_cond_wait(&vnode->pg_allc_cond,
+					&vnode->ve_pages_node_lock);
 		}
-		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
-				"Failed to release ve_page lock");
-		return ret;
 	}
 
 	/*make entries in ve page array*/
@@ -1496,20 +1552,69 @@ int alloc_ve_pages(uint64_t count, pgno_t *map, int pgmod)
 }
 
 /**
-* @brief This function will free the physical page and
-*	return freed page to buddy allocator.
-*
-* @param[in] pgno Page number whose status needs to be marked as free.
-*
-* @return On success returns 0 and negative of errno on failure.
-*/
+ * @brief This function will calculate usable memory size.
+ *
+ * @param[in] vnode struct of ve node.
+ * @param[in] mem_sz requested memory size.
+ * @param[in] pgmod page mode for the memory allocation.
+ *
+ * @return If usable page size more than requested size
+ *         returns 0, else -1.
+ */
+int calc_usable_dirty_page(struct ve_node_struct *vnode,
+			   size_t mem_sz, int pgmod)
+{
+	size_t usable_buddy_sz = 0;
+	size_t usable_dirt_pgsz = 0;
+	size_t usable_sz = 0;
+
+	/*dirty page num*/
+	usable_dirt_pgsz = vnode->dirty_pg_num_64M * PAGE_SIZE_64MB
+		+ vnode->dirty_pg_num_2M * PAGE_SIZE_2MB;
+
+	usable_buddy_sz = calc_free_sz(vnode->mp, pgmod);
+	/*usable page size*/
+	usable_sz = usable_dirt_pgsz + usable_buddy_sz;
+	VEOS_DEBUG("usable size:%ld (buddy:%ld dirty:%ld)",
+		   usable_sz, usable_buddy_sz, usable_dirt_pgsz);
+
+	if (usable_sz < mem_sz)
+		return -1;
+
+	if (usable_buddy_sz >= mem_sz)
+		return 1;
+
+	return 0;
+}
+
+/**
+ * @brief This function will wake up threads that are waiting
+ * to allocate memory.
+ */
+void amm_wake_alloc_page(void)
+{
+	struct ve_node_struct *vnode = VE_NODE(0);
+
+	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+			LOCK, "Fail to acquire ve page lock");
+	pthread_cond_broadcast(&vnode->pg_allc_cond);
+	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+			UNLOCK, "Fail to release ve page lock");
+}
+
+/**
+ * @brief This function will entry dirty page list and
+ *	wake up memory clearing thread.
+ *
+ * @param[in] pgno Page number whose status needs to be marked as free.
+ *
+ * @return On success returns 0 and negative of errno on failure.
+ */
 int veos_free_page(pgno_t pgno)
 {
 	ret_t ret = 0;
-	int pgmod = 0, idx = 0;
+	int pgmod = 0;
 	size_t pgsz = 0;
-	uint64_t perm = 0;
-	uint64_t flag = 0;
 
 	struct ve_node_struct *vnode = VE_NODE(0);
 
@@ -1523,58 +1628,249 @@ int veos_free_page(pgno_t pgno)
 	}
 	pgsz = VE_PAGE(vnode, pgno)->pgsz;
 	pgmod = pgsz_to_pgmod(pgsz);
-	flag = VE_PAGE(vnode, pgno)->flag;
-	perm = VE_PAGE(vnode, pgno)->perm;
 
-	if (!(flag & MAP_ANON) &&
-			((flag & MAP_SHARED) ||
-			 !(perm & PROT_WRITE))) {
-		/* update page_array entry = NULL
-		 * in map_descriptor as well*/
-
-		clear_page_array_entry(VE_PAGE(vnode, pgno)->
-				private_data, pgno);
-		/*
-		 * Check if split of mapping_descriptor is required
-		 * or not
-		 * */
+	/* Add entry to dirty page list. */
+	ret = add_dirty_page(pgno, pgsz, pgmod);
+	if (ret == 0) {
+		if (pgmod == PG_2M)
+			++vnode->dirty_pg_num_2M;
+		else
+			++vnode->dirty_pg_num_64M;
 	}
+	VEOS_TRACE("returned");
+	return ret;
+}
+
+/**
+ * @brief This function will initialize dirty page list and create
+ *	thread for clear memories.
+ *
+ * @param[in,out] vnode ve node struct.
+ * @param[in,out] th thread ID will be stored in pointed by this.
+ *
+ * @return On success returns 0 and negative of errno on failure.
+ */
+int dirty_page_init(struct ve_node_struct *vnode, pthread_t *th)
+{
+	pthread_attr_t attr;
+	int ret = 0;
+
+	if ((vnode == NULL) || (th == NULL)) {
+		VEOS_CRIT("Failed to init dirty page due to invalid argument.");
+		return -EINVAL;
+	}
+
+	pthread_mutex_init(&dirty_page.ve_dirty_pg_lock, NULL);
+	pthread_cond_init(&dirty_page.ve_dirty_pg_cond, NULL);
+	pthread_cond_init(&vnode->pg_allc_cond, NULL);
+
+	INIT_LIST_HEAD(&dirty_page.dirty_pg_list.head);
+
+	ret = pthread_attr_init(&attr);
+	if (ret != 0) {
+		VEOS_CRIT("Faild to initialize pthread attribute: %s",
+			strerror(ret));
+		goto error;
+	}
+	ret = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	if (ret != 0) {
+		VEOS_CRIT("Faild to set detach state of pthread attribute: %s",
+			strerror(ret));
+		goto error;
+	}
+	ret = pthread_create(th, &attr,
+			(void *)&veos_amm_clear_mem_thread, NULL);
+	if (ret != 0) {
+		VEOS_CRIT("Failed to create thread. %s", strerror(ret));
+		goto error;
+	}
+	return 0;
+
+error:
+	pthread_mutex_destroy(&dirty_page.ve_dirty_pg_lock);
+	pthread_cond_destroy(&dirty_page.ve_dirty_pg_cond);
+	pthread_cond_destroy(&vnode->pg_allc_cond);
+	return -ret;
+}
+
+/**
+ * @brief This function will add to tail of dirty page list and
+ *	wake up thread of clearing memory.
+ *
+ * @param[in] pgno Page number. This will be registered as dirty
+ *		list and will be need when the thread of clearing
+ *		memory clear.
+ * @param[in] pgsz Size of the page. This will be registered as
+ *		dirty list and will be need to clear physical page.
+ * @param[in] pgmod page mode(huge or large). This will be registerd as
+ *		dirty list and will be need to free buddy.
+ *
+ * @return On success returns 0 and negative of errno on failure.
+ */
+int add_dirty_page(pgno_t pgno, size_t pgsz, int pgmod)
+{
+	struct ve_dirty_pg_list *dirty_pg_tmp;
+
+	/*create entry data*/
+	dirty_pg_tmp = calloc(1, sizeof(struct ve_dirty_pg_list));
+	if (dirty_pg_tmp == NULL) {
+		VEOS_CRIT("Failed to calloc() for dirty page entry");
+		return -ENOMEM;
+	}
+
+	dirty_pg_tmp->pgno = pgno;
+	dirty_pg_tmp->pgsz = pgsz;
+	dirty_pg_tmp->pgmod = pgmod;
+
+	pthread_mutex_lock_unlock(&dirty_page.ve_dirty_pg_lock, LOCK,
+				  "Failed to acquire dirty_page lock");
+	/*add to tail of list*/
+	VEOS_DEBUG("Add to tail of dirty list: pgno=%ld", pgno);
+	list_add_tail(&dirty_pg_tmp->head, &dirty_page.dirty_pg_list.head);
+	pthread_cond_signal(&dirty_page.ve_dirty_pg_cond);
+	pthread_mutex_lock_unlock(&dirty_page.ve_dirty_pg_lock, UNLOCK,
+				  "Failed to release dirty_page lock");
+	return 0;
+}
+
+/**
+ * @brief This function will free the physical page and
+ *	return freed page to buddy allocator and wake up
+ *	threads are wating clearing memories.
+ *
+ * @author AMM
+ */
+void veos_amm_clear_mem_thread(void)
+{
+	int ret;
+	pgno_t pgno;
+	int pgmod = 0;
+	size_t pgsz = 0;
+	struct ve_dirty_pg_list *dirt_pg_head = NULL;
+
+	VEOS_TRACE("invoked");
+	pthread_mutex_lock_unlock(&dirty_page.ve_dirty_pg_lock, LOCK,
+				  "Failed to qcuire dirty_page lock");
+	while (terminate_flag == 0) {
+		if (list_empty(&dirty_page.dirty_pg_list.head)) {
+			VEOS_DEBUG("dirty list is empty, wait.");
+			pthread_cond_wait(&dirty_page.ve_dirty_pg_cond,
+					&dirty_page.ve_dirty_pg_lock);
+			continue;
+		}
+
+		/* ve_dirty_pg_lock is locked in pthread_cond_wait()*/
+		/* get info from dirty page list */
+		dirt_pg_head = list_next_entry(&dirty_page.dirty_pg_list, head);
+		pgno = dirt_pg_head->pgno;
+		pgsz = dirt_pg_head->pgsz;
+		pgmod = dirt_pg_head->pgmod;
+		VEOS_DEBUG("Cleaning dirty page: pgno=%ld, pgsz=%ld, pgmod=%d",
+			   pgno, pgsz, pgmod);
+		/* delete entry */
+		list_del(&dirt_pg_head->head);
+		free(dirt_pg_head);
+
+		pthread_mutex_lock_unlock(&dirty_page.ve_dirty_pg_lock, UNLOCK,
+					  "Failed to release dirty_page lock");
+
+		ret = pthread_rwlock_tryrdlock(&handling_request_lock);
+		if (ret) {
+			VEOS_ERROR("failed to acquire request lock");
+			goto hndl_exit;
+		}
+
+		/* free page and wake up threads that waiting clearing
+		 * dirty page.
+		 * This thread ignore fail of clear_and_dealloc_page(),
+		 * because this thread should continue to clear next
+		 * dirty pages.
+		 */
+		clear_and_dealloc_page(pgno, pgsz, pgmod);
+
+		pthread_rwlock_lock_unlock(&handling_request_lock, UNLOCK,
+				"failed to release handling_request_lock");
+
+		/*get lock for pthread_cond_wait()*/
+		pthread_mutex_lock_unlock(&dirty_page.ve_dirty_pg_lock, LOCK,
+				"Failed to qcuire dirty_page lock");
+	}
+	pthread_mutex_lock_unlock(&dirty_page.ve_dirty_pg_lock, UNLOCK,
+				  "Failed to release dirty_page lock");
+hndl_exit:
+	VEOS_TRACE("Exiting");
+	pthread_exit(NULL);
+}
+
+/**
+ * @brief This function will free the physical page and
+ *	return freed page to buddy allocator.
+ *	If this function fail to free the page, abort to free
+ *	this page, because dirty page should not be sent buddy
+ *	allocator.
+ *	This function wakes up all threads that waiting to free
+ *	dirty page.
+ *
+ * @param[in] pgno Page nuber. This is need to clear memory.
+ * @param[in] pgsz Size of the page. This is need to clear physical page.
+ * @param[in] pgmod page mode(huge or large). This is need to free buddy.
+ *
+ * @return On success returns 0 and negative of errno on failure.
+ */
+int clear_and_dealloc_page(pgno_t pgno, size_t pgsz, int pgmod)
+{
+	int ret = 0, idx = 0;
+	struct ve_node_struct *vnode = VE_NODE(0);
 
 	ret = amm_clear_page(pgno, pgsz);
-	if (0 > ret) {
-		VEOS_DEBUG("Error (%s) in clearing VE page %ld",
-			strerror(-ret), pgno);
-		return ret;
+	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
+				  "Failed to acquire ve_page lock");
+	if (ret < 0) {
+		VEOS_CRIT("Error (%s) in clearing VE page %ld",
+			  strerror(-ret), pgno);
+		goto hndl_ret;
 	}
+
 	ret = veos_delloc_memory(pgno, pgmod);
-	if (0 > ret) {
-		VEOS_DEBUG("Error (%s) in deallocating VE page %ld",
-				strerror(-ret), pgno);
-		return ret;
+	if (ret < 0) {
+		VEOS_CRIT("Error (%s) in deallocating VE page %ld",
+			  strerror(-ret), pgno);
+		goto hndl_ret;
 	}
 
-	VE_PAGE(vnode, pgno)->flag |= PG_VE;
-	VE_PAGE(vnode, pgno)->flag &= (~PG_SHM);
-	VE_PAGE(vnode, pgno)->private_data = NULL;
-
+	free(VE_PAGE(vnode, pgno));
 	if (pgmod == PG_2M) {
 		--vnode->mp->small_page_used;
-		free(VE_PAGE(vnode, pgno));
 		vnode->ve_pages[pgno] = NULL;
 	} else {
 		--vnode->mp->huge_page_used;
-		free(VE_PAGE(vnode, pgno));
 		for (idx = pgno; idx < (pgno + HUGE_PAGE_IDX); idx++)
 			vnode->ve_pages[idx] = NULL;
 	}
 
+hndl_ret:
+	/* The number of dirty page is decremented regardless of
+	 * success or failure, because the this page was deleted from
+	 * dirty list and never will be used.
+	 */
+	if (pgmod == PG_2M)
+		--vnode->dirty_pg_num_2M;
+	else
+		--vnode->dirty_pg_num_64M;
 
+	VEOS_DEBUG("dirty page num: 2M=%ld 64M=%ld",
+		   vnode->dirty_pg_num_2M, vnode->dirty_pg_num_64M);
 	VEOS_DEBUG("================ AMM BUDDY DUMP =================");
 	buddy_dump_mempool(vnode->mp);
 
-	VEOS_TRACE("returned");
+	/* wake up threads that waiting clearing dirty page*/
+	pthread_cond_broadcast(&vnode->pg_allc_cond);
+	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
+				  "Failed to release ve_page lock");
+
 	return ret;
 }
+
 
 /**
 * @brief This function will return total number of VE physical
@@ -2155,7 +2451,6 @@ int common_get_put_page(vemaa_t pb, uint8_t atomic_op, bool is_amm)
 				pgnum, VE_PAGE(vnode, pgnum)->
 				dma_ref_count);
 		}
-
 	} else {
 		/*Decreament the ref count of page*/
 		if (is_amm) {
@@ -2174,7 +2469,14 @@ int common_get_put_page(vemaa_t pb, uint8_t atomic_op, bool is_amm)
 			VEOS_DEBUG("VE page %ld refcnt after dec is %ld",
 				pgnum, VE_PAGE(vnode, pgnum)->
 				ref_count);
-
+			if ((0 == VE_PAGE(vnode, pgnum)->ref_count)
+			    && !(VE_PAGE(vnode, pgnum)->flag & PG_SHM)
+			    && !(VE_PAGE(vnode, pgnum)->flag & MAP_ANON)
+			    && ((VE_PAGE(vnode, pgnum)->flag & MAP_SHARED)
+				|| !(VE_PAGE(vnode, pgnum)->perm & PROT_WRITE))) {
+				clear_page_array_entry(VE_PAGE(vnode, pgnum)->
+						       private_data, pgnum);
+			}
 		} else {
 			VEOS_DEBUG("VE page %ld dma refcnt before dec is %ld",
 				pgnum, VE_PAGE(vnode, pgnum)->
@@ -3011,10 +3313,13 @@ err:
 	for (idx = 0; idx < count; idx++) {
 		VEOS_DEBUG("free page number 0x%lx", pg_no[idx]);
 		if (0 < pg_no[idx]) {
+			pthread_mutex_lock_unlock(&vnode_info->ve_pages_node_lock,
+				LOCK, "Fail to acquire ve page lock");
 			if (veos_free_page (pg_no[idx]))
 				VEOS_DEBUG("fail to free page number 0x%lx",
 						pg_no[idx]);
-
+			pthread_mutex_lock_unlock(&vnode_info->ve_pages_node_lock,
+				UNLOCK, "Fail to release ve page lock");
 			if (file->in_mem_pages)
 				file->in_mem_pages--;
 		}
@@ -4700,6 +5005,11 @@ int __amm_alloc_mm_struct(struct ve_mm_struct **mm)
 
 	VEOS_TRACE("invoked");
 	VEOS_DEBUG("mm struct(%p) allocated", *mm);
+
+	/* While allocating ve_mm_struct we will set
+	 * udma_desc_bmap field for DMA_DESC_E.
+	 */
+	(*mm)->udma_desc_bmap = DMA_DESC_E;
 
 	/*Allocate cr data for newly allocated mm_struct*/
 	/*allocating cr data to newly created process*/

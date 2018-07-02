@@ -11,7 +11,8 @@ libpseudocommon_la_SOURCES = \
 	sys_common.c \
 	syscall_impl.h \
 	sysve_os.c \
-	sysve_os.h
+	sysve_os.h \
+	list.h
 
 BUILT_SOURCES = \
 	ve_syscall_no.h \

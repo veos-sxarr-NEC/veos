@@ -636,6 +636,9 @@ void amm_copy_atb_vfork(atb_reg_t *old_atb,
 				if (pg_isvalid(&new_pte[ent]) || pg_getpb(&new_pte[ent], PG_2M)) {
 					/*Get page number from new ATB entry*/
 					pgno = pg_getpb(&new_pte[ent], PG_2M);
+
+					if (pgno == PG_BUS)
+						continue;
 					op_flg = VE_PAGE(vnode, pgno)->flag;
 					if (op_flg & PG_SHM) {
 						VEOS_DEBUG("copying page of shared memory segment");

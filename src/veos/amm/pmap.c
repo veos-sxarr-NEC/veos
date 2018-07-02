@@ -746,6 +746,7 @@ int fill_maps(struct _psuedo_pmap **pmap,
 	int ret = 0;
 	int nentry = 1, nfields = 0;
 	psuedo_map *head = NULL;
+	psuedo_map *free_pmap = NULL;
 	char buf[PATH_MAX] = {0};
 
 	VEOS_DEBUG("Func: fill_maps() From /proc/pid/maps");
@@ -767,10 +768,15 @@ int fill_maps(struct _psuedo_pmap **pmap,
 		 * 'i-1' is used to write the data in the start of a block.
 		 * Data read from file is written in allocated block.
 		 * */
+		free_pmap = *pmap;
 		head = (*pmap) = (psuedo_map *)(void *)realloc(*pmap,
 				sizeof(psuedo_map) * nentry);
 		if (NULL == head) {
 			ret = -errno;
+            if (free_pmap) {
+                free(free_pmap);
+                free_pmap = NULL;
+            }
 			VEOS_DEBUG("%s: %s",
 					"Realloc fail: Parsing pmap file",
 					strerror(-ret));
@@ -806,9 +812,14 @@ int fill_maps(struct _psuedo_pmap **pmap,
 		memset(buf, 0, sizeof buf);
 	}
 	/* To get the end of list, Last block is marked as zero */
+	free_pmap = *pmap;
 	(*pmap) = (psuedo_map *)realloc((*pmap), sizeof(psuedo_map)*nentry);
 	if (!*pmap) {
-		ret = -errno;
+        ret = -errno;
+        if (free_pmap) {
+            free(free_pmap);
+            free_pmap = NULL;
+        }
 		VEOS_DEBUG("%s: %s", "Realloc fail: Parsing pmap file",
 				strerror(-ret));
 		nentry = ret;

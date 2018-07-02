@@ -93,7 +93,10 @@
 		ve_rt_sigmask(SIGILL)	|  ve_rt_sigmask(SIGTRAP) | \
 		ve_rt_sigmask(SIGFPE)	| ve_rt_sigmask(SIGSYS))
 
-#define VE_EXCEPTION 0xF0FC7E0000000000ULL
+/* VE_EXCEPTION is a mask of exception/interrupts handled in VE
+ * architecture, it must be in sync with exception/interrupts
+ * handled in VE architecture to avoid unexpected behavior */
+#define VE_EXCEPTION 0xF0FC7FF800800000ULL
 
 /* Macro specifying size of LSHM area of a thread in bytes */
 #define LSHM_SZ 64
@@ -118,8 +121,9 @@ static inline void ve_sigandnsets(sigset_t *dest, const sigset_t *left
 	unsigned long i = 0, *d = (void *) dest, *l = (void *) left;
 	unsigned long *r = (void *) right;
 
-	if ((NULL == right) || (NULL == left) || (NULL == dest))
+	if ((dest == NULL) || (left == NULL))
 		return;
+
 	for (; i < SST_SIZE; i++)
 		d[i] = ((l[i]) & ~(r[i]));
 }
@@ -161,6 +165,7 @@ struct dump_info {
 	struct ve_task_struct *ve_task; /*!< pointer to ve task struct */
 	int flag; /*!< flag denote signal generated from h/w exception */
 	int signum; /*!< signal number generating dump */
+	volatile bool dumper_ready; /*!< to secure coredumper thread */
 };
 
 /**

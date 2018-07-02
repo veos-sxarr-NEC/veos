@@ -23,6 +23,7 @@
  */
 #ifndef __VE_VHCALL_H
 #define __VE_VHCALL_H
+#include <stdint.h>
 
 #define VHCALL_SYMNAME_MAX (1023)
 

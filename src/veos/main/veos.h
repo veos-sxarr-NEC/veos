@@ -154,6 +154,9 @@ struct ve_node_struct {
 					* of task lists */
 	pthread_rwlock_t ve_relocate_lock; /*! Global lock for synchronizing task relocation */
 	pthread_cond_t stop_cond;/*!< Conditional lock for SIGSTOP signal */
+	pthread_cond_t pg_allc_cond;/*!< Conditional lock for allocating ve pages protected by ve_node_lock*/
+	uint64_t dirty_pg_num_2M;
+	uint64_t dirty_pg_num_64M;
 	struct ve_mem_info mem; /*!< VE memory data , mem START and its SIZE */
 	uint64_t zeroed_page_address; /*!< VE Memory Zeroed Page address */
 	vedl_handle *handle; /*!< VEDL handle */

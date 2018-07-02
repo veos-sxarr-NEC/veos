@@ -3,16 +3,16 @@
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either version
+ * 2.1 of the License, or (at your option) any later version.
  *
  * The VEOS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public
+ * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
@@ -3112,8 +3112,10 @@ ret_t ve_sendto(int syscall_num, char *syscall_name, veos_handle *handle)
 	}
 
 	addr_len = args[5];
-	if (addr_len < 0 || addr_len > sizeof(struct sockaddr_storage))
-		return -EINVAL;
+	if (addr_len < 0 || addr_len > sizeof(struct sockaddr_storage)) {
+		retval = -EINVAL;
+		goto hndl_return1;
+	}
 
 	if (args[4] && addr_len) {
 		if (0 > ve_recv_data(handle, args[4], addr_len, &addr)) {
@@ -3153,7 +3155,10 @@ ret_t ve_sendto(int syscall_num, char *syscall_name, veos_handle *handle)
 			SYSCALL_NAME, (int)retval);
 
 hndl_return1:
-	free(send_buff);
+	if (send_buff != NULL) {
+		free(send_buff);
+		send_buff = NULL;
+	}
 hndl_return:
 	/* write return value */
 	PSEUDO_TRACE("Exiting");
@@ -3345,8 +3350,6 @@ ret_t ve_sendmsg(int syscall_num, char *syscall_name, veos_handle *handle)
 	struct iovec *ve_iov = NULL, *vh_iov = NULL;
 	sigset_t signal_mask = { {0} };
 
-	char *dummy_buf = (char *)malloc(sizeof(char));
-
 	PSEUDO_DEBUG("%s syscall is called", SYSCALL_NAME);
 
 	/* get system call arguments */
@@ -3417,8 +3420,9 @@ ret_t ve_sendmsg(int syscall_num, char *syscall_name, veos_handle *handle)
 		if (NULL == (void *)ve_msg.msg_control) {
 			msg_ctl = NULL;
 		} else if (ctl_len < INT_MAX) {
-			if (ctl_len == 0)
-				msg_ctl = dummy_buf;
+			if (ctl_len == 0) {
+				msg_ctl = (char *)malloc(sizeof(char));
+			}
 			ctl_len = ctl_len;
 		} else {
 			retval = -ENOBUFS;
@@ -3438,7 +3442,6 @@ ret_t ve_sendmsg(int syscall_num, char *syscall_name, veos_handle *handle)
 	}
 
 	if (ve_msg.msg_name) {
-		ve_msg_namelen = ve_msg.msg_namelen;
 		msg_name = (char *)calloc(ve_msg_namelen, sizeof(char));
 		if (msg_name == NULL) {
 			retval = -errno;
@@ -3585,8 +3588,6 @@ hndl_return:
 	}
 	if (ve_iov != NULL)
 		free(ve_iov);
-	if (dummy_buf != NULL)
-		free(dummy_buf);
 	/* write return value */
 	PSEUDO_TRACE("Exiting");
 	return retval;
@@ -4618,6 +4619,7 @@ ret_t ve_generic_semop(int syscall_num, char *syscall_name, veos_handle *handle)
 					" semopm = %d", semopm);
 				if (args[2] > semopm) {
 					retval = -E2BIG;
+					fclose(file);
 					goto hndl_return;
 				}
 			}
@@ -5091,7 +5093,8 @@ ret_t ve_msgsnd(int syscall_num, char *syscall_name, veos_handle *handle)
 			retval = -VE_ENORESTART;
 	} else {
 		PSEUDO_DEBUG("syscall = %s send buf = %s\n retval %lu",
-				SYSCALL_NAME, msgp->mtext, retval);
+				SYSCALL_NAME,
+				msgp ? msgp->mtext : "msgp is NULL", retval);
 	}
 	PSEUDO_DEBUG("Blocked signals for post-processing");
 
@@ -5196,8 +5199,9 @@ ret_t ve_msgrcv(int syscall_num, char *syscall_name, veos_handle *handle)
 			goto hndl_return1;
 		}
 	}
-	PSEUDO_DEBUG("syscall = %s read_buf= %s\n read %lu bytes",
-			SYSCALL_NAME, msgp->mtext, retval);
+	PSEUDO_DEBUG("syscall = %s read_buf= %s read %lu bytes",
+			SYSCALL_NAME, msgp ? msgp->mtext : "Null message",
+			retval);
 hndl_return1:
 	free(msgp);
 hndl_return:
@@ -5265,6 +5269,7 @@ ret_t ve_msgctl(int syscall_num, char *syscall_name, veos_handle *handle)
 			retval = -errno;
 			PSEUDO_ERROR("syscall %s failed %s",
 					SYSCALL_NAME, strerror(errno));
+			goto hndl_return;
 		} else if (MSG_STAT == args[1] || IPC_STAT == args[1]) {
 			if (args[2]) {
 				if (0 > ve_send_data(handle, args[2],
@@ -11973,7 +11978,7 @@ ret_t ve_vmsplice(int syscall_num, char *syscall_name, veos_handle *handle)
 		goto hndl_return1;
 	}
 
-	if (fd == 0) {
+	if (fd == 0 && (void *)args[1]) {
 		for (i = 0; i < nr_segs; i++) {
 			if (0 > ve_send_data(handle, (uint64_t)ve_iov[i].iov_base,
 					vh_iov[i].iov_len, vh_iov[i].iov_base)) {
@@ -11996,9 +12001,15 @@ hndl_return1:
 				free(vh_iov[i].iov_base);
 
 	        free(vh_iov);
+		vh_iov = NULL;
 	}
 	free(ve_iov);
+	ve_iov = NULL;
 hndl_return:
+	if (vh_iov != NULL)
+		free(vh_iov);
+	if (NULL != ve_iov)
+		free(ve_iov);
 	/* write return value */
 	PSEUDO_TRACE("Exiting");
 	return retval;
@@ -13273,10 +13284,13 @@ ret_t ve_name_to_handle_at(int syscall_num, char *syscall_name, veos_handle *han
 	}
 
 	if ((fh.handle_bytes == 0)
-			|| (fh.handle_bytes < f_handle->handle_bytes))
+			|| ((void *)args[2] && (fh.handle_bytes
+				< f_handle->handle_bytes)))
 		hb = 0;
-	else
+	else if ((void *)args[2])
 		hb = f_handle->handle_bytes;
+	else // do nothing
+		;
 
 	if ((void *)args[2] != NULL) {
 		if (0 > ve_send_data(handle, args[2],
@@ -13571,7 +13585,7 @@ ret_t ve_sendmmsg(int syscall_num, char *syscall_name, veos_handle *handle)
 			if ((name_len > 0) && first_msghdr_msgname &&
 				ve_is_valid_address(handle, first_msghdr_msgname)) {
 				retval = -EFAULT;
-				goto hndl_return;
+				goto hndl_return1;
 			}
 
 			if ((NULL != (void *)vh_msgvec[len].msg_hdr.msg_name)

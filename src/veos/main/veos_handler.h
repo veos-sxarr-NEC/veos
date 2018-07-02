@@ -121,4 +121,7 @@ int veos_handle_stop_proc_req(struct veos_thread_arg *);
 
 /* VEOS <--------------> PSEUDO */
 int veos_handle_get_pci_sync_req(veos_thread_arg_t *);
+extern int veos_handle_map_dmades(veos_thread_arg_t *);
+extern int veos_handle_unmap_dmades(veos_thread_arg_t *);
+
 #endif

@@ -106,19 +106,16 @@ int __veos_init_small_page_entry(struct buddy_mempool *mp,
 int __veos_init_huge_page_entry(struct buddy_mempool *mp,
 			struct block *block, pgno_t *map);
 int veos_page_entry(struct buddy_mempool *mp, uint64_t flag, pgno_t *map);
-void *buddy_compac_alloc(struct buddy_mempool *mp,
-	struct compac_pattern *alloc_pattern);
 void *buddy_non_compac_alloc(struct buddy_mempool *mp, int order);
-int __veos_alloc_memory(struct buddy_mempool *mp, int order, uint64_t pgmod);
 int veos_alloc_memory(struct buddy_mempool *mp,
 	size_t mem_size, uint64_t pgmod);
 int veos_delloc_memory(uint64_t page_num, uint64_t pgmod);
 int size_to_order(size_t x);
-bool is_alloc_compac(struct buddy_mempool *, int, struct compac_pattern*, int);
 void dump_free_count(struct buddy_mempool *);
 bool is_pow_two(uint64_t);
 uint64_t roundown_pow_of_two(uint64_t);
 uint64_t roundup_pow_of_two(uint64_t);
 void veos_dump_ve_pages(void);
 size_t get_size_to_be_free(size_t extra_sz, int order, int count);
+size_t calc_free_sz(struct buddy_mempool *mp, int pgmod);
 #endif

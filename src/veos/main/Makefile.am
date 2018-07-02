@@ -7,7 +7,8 @@ libvemain_a_SOURCES = \
 	veos_handler.c \
 	veos_handler.h \
 	veos_main.c \
-	sysve.c
+	sysve.c \
+	userdma.c
 
 libvemain_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 \

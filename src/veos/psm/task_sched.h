@@ -41,6 +41,7 @@
 #define VE_UDMA_CTL_PERM_START	(1)
 #define VE_UDMA_CTL_PERM_STOP	(0)
 #define VE_UDMA_EENTRY		(1)
+#define VE_UDMA_HENTRY		(0)
 #define CHECK_BIT(var,pos) ((var) & (1<<(pos)))
 #define CLEAR_BIT(bitmap, bit) (bitmap &= ~(1 << bit))
 
@@ -82,10 +83,11 @@ int psm_free_udma_context_region(struct ve_task_struct *);
 bool psm_compare_jid(struct ve_task_struct *, struct ve_task_struct *);
 bool psm_check_sched_jid_core(uint64_t *, struct ve_task_struct *, regs_t, reg_t *);
 bool psm_check_udma_desc(struct ve_task_struct *);
-int psm_stop_udma(int);
+int psm_stop_udma(int, uint8_t);
 int psm_save_udma_context(struct ve_task_struct *, int);
 int psm_restore_udma_context(struct ve_task_struct *ve_task, int);
-int psm_start_udma(int);
+int __psm_restore_udma_context(struct ve_task_struct *, int, bool);
+int psm_start_udma(int, uint8_t);
 void psm_wake_up_scheduler(struct ve_core_struct *, bool);
 int psm_set_jdid(struct ve_task_struct *);
 int psm_halt_ve_core(int, int, reg_t *, bool);

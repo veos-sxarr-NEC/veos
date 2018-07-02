@@ -727,8 +727,6 @@ int ve_ptrace_pokedata(pid_t pid, void *addr, void *data)
 		goto hndl_return1;
 	}
 
-	memset(&pt_req, 0, sizeof(pt_req));
-
 	/* Get the response from VEOS */
 	retval = recv_and_unpack_cmd(veos_sock_fd, NULL);
 	if (0 > retval) {

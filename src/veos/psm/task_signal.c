@@ -1074,9 +1074,7 @@ int ve_getframe(struct ve_task_struct *p_ve_task,
 		ret = -1;
 		goto error_return;
 	}
-
 	aligned_addr = ALIGN(frame_vir_addrs, pgmod_to_pgsz(pgmod));
-
 	if (aligned_addr - frame_vir_addrs < sizeof(struct sigframe)) {
 		frame_phy_addrs[1] = __veos_virt_to_phy(aligned_addr,
 				&(p_ve_task->p_ve_mm->atb), NULL, &pgmod);
@@ -1506,7 +1504,7 @@ int ve_format_core_filename(struct ve_corename *ve_corefname,
 		retval = ve_vsnprintf(ve_corefname, "%s/%s",
 				p_ve_task->ve_exec_path, "core");
 		if (retval) {
-			VEOS_ERROR("[%d] failed to create Core Pattern(pipe)\n",
+			VEOS_ERROR("[%d] failed to create Core Pattern(pipe)",
 					p_ve_task->pid);
 			goto free_pattern;
 		}
@@ -1716,26 +1714,31 @@ void *do_ve_coredump(void *ve_dump_info)
 	int retval = -1;
 	int needed;
 	char *sockfd = NULL;
-
-	int signum = ((struct dump_info *)ve_dump_info)->signum;
-	struct ve_task_struct *p_ve_task =
-		(((struct dump_info *)ve_dump_info)->ve_task);
-	struct dump_params ve_cprm = {
-		.siginfo = ((struct dump_info *)ve_dump_info)->siginfo,
-		.tsk = ((struct dump_info *)ve_dump_info)->ve_task,
-		.limit = ((struct dump_info *)ve_dump_info)
-			->ve_task->sighand->rlim[RLIMIT_CORE],
-	};
+	int signum = -1;
+	struct ve_task_struct *p_ve_task
+		= ((struct dump_info *)ve_dump_info)->ve_task;
+	struct dump_params ve_cprm = { {0} };
 
 	VEOS_TRACE("Entering");
+	if (0 != get_ve_task_struct(p_ve_task)) {
+		VEOS_ERROR("Failed to get reference: %d",
+				p_ve_task->pid);
+		((struct dump_info *)ve_dump_info)->dumper_ready = true;
+		free(ve_dump_info);
+		goto ve_get_failed;
+	}
+
+	((struct dump_info *)ve_dump_info)->dumper_ready = true;
+	signum = ((struct dump_info *)ve_dump_info)->signum;
+	ve_cprm.siginfo = ((struct dump_info *)ve_dump_info)->siginfo;
+	ve_cprm.tsk = ((struct dump_info *)ve_dump_info)->ve_task;
+	ve_cprm.limit = ((struct dump_info *)ve_dump_info)
+				->ve_task->sighand->rlim[RLIMIT_CORE];
+
 
 	VEOS_DEBUG("Coredumper thread[%ld] Initiating Coredump for PID"
 			" %d, TGID: %d", syscall(186), p_ve_task->pid,
 			p_ve_task->tgid);
-
-	p_ve_task->sighand->coredumper_thid = pthread_self();
-
-	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
 	pthread_mutex_lock_unlock(&(p_ve_task->sighand->del_lock), LOCK,
 			"Failed to acquire thread group delete lock");
@@ -1790,7 +1793,6 @@ void *do_ve_coredump(void *ve_dump_info)
 	if (NULL == sockfd) {
 		VEOS_CRIT("[%d] Failed to allocate buffer to store"
 				" socket fd", p_ve_task->pid );
-		retval = -1;
 		close(socket_fd[0]);
 		goto free_corefname;
 	}
@@ -1802,7 +1804,6 @@ void *do_ve_coredump(void *ve_dump_info)
 		VEOS_ERROR("[%d] Failed to create coredump helper process",
 				p_ve_task->pid);
 		close(socket_fd[0]);
-		retval = -1;
 		goto free_sock;
 	} else if (0 == helper_pid) {
 		if (-1 == setgid(p_ve_task->gid)) {
@@ -1827,7 +1828,6 @@ void *do_ve_coredump(void *ve_dump_info)
 	close(socket_fd[0]);
 	ve_cprm.fd = get_ve_corefile_fd(socket_fd[1]);
 	if (-1 == ve_cprm.fd) {
-		retval = -1;
 		VEOS_ERROR("[%d] Failed to receive ve core file"
 				" descriptor", p_ve_task->pid);
 		goto free_sock;
@@ -1839,11 +1839,9 @@ void *do_ve_coredump(void *ve_dump_info)
 	 * */
 	if (false == ve_elf_core_dump(&ve_cprm)) {
 		VEOS_ERROR("[%d] ELF dumping failed",  p_ve_task->pid);
-		retval = -1;
 		goto close_fd;
 	}
 
-	retval = 0;
 close_fd:
 	close(ve_cprm.fd);
 free_sock:
@@ -1870,6 +1868,7 @@ hndl_err:
 	pthread_mutex_lock_unlock(&(p_ve_task->sighand->del_lock), UNLOCK,
 			"Failed to release thread group delete lock");
 	put_ve_task_struct(p_ve_task);
+ve_get_failed:
 	VEOS_TRACE("Exiting");
 	pthread_exit(NULL);
 }
@@ -1928,7 +1927,9 @@ int ve_get_signal(struct ve_task_struct *p_ve_task, int *flag,
 {
 	int signum = 0;
 	pthread_t dump_tid;
+	int retval;
 	struct dump_info *ve_dump_info;
+	pthread_attr_t attr;
 
 	VEOS_TRACE("Entering");
 
@@ -2009,25 +2010,42 @@ int ve_get_signal(struct ve_task_struct *p_ve_task, int *flag,
 			ve_dump_info->ve_task = p_ve_task;
 			ve_dump_info->flag = *flag;
 			ve_dump_info->signum = signum;
+			ve_dump_info->dumper_ready = false;
 
-			if (0 != get_ve_task_struct(p_ve_task)) {
-				VEOS_ERROR("Failed to get reference: %d",
-						p_ve_task->pid);
+			retval = pthread_attr_init(&attr);
+			if (0 != retval) {
+				VEOS_FATAL("Faild to initialize pthread "
+					"attribute: %s", strerror(retval));
+				free(ve_dump_info);
 				goto hndl_terminate;
+			}
+			retval = pthread_attr_setdetachstate(&attr,
+					PTHREAD_CREATE_DETACHED);
+			if (0 != retval) {
+				VEOS_FATAL("Faild to get pthread attribute "
+					"detachable: %s", strerror(retval));
+				free(ve_dump_info);
+				goto destroy_attribute;
 			}
 
 			/* Creating a detached coredumper thread */
-			if (0 != pthread_create(&dump_tid, NULL,
+			if (0 != pthread_create(&dump_tid, &attr,
 						&do_ve_coredump,
 						(void *)ve_dump_info)) {
-				VEOS_DEBUG("Failed to create"
+				VEOS_ERROR("Failed to create"
 						" Coredumping"
 						" thread");
 				free(ve_dump_info);
-				put_ve_task_struct(p_ve_task);
-				goto hndl_terminate;
+				goto destroy_attribute;
 			}
+			while (!ve_dump_info->dumper_ready);
+			if (0 != pthread_attr_destroy(&attr))
+				VEOS_ERROR("Failed to destroy detached"
+						" attribute[coredump]");
 			goto hndl_exit;
+destroy_attribute:
+	if (0 != pthread_attr_destroy(&attr))
+		VEOS_ERROR("Failed to destroy detached attribute[coredump]");
 		}
 hndl_terminate:
 		/* Terminate the process */
@@ -2046,8 +2064,8 @@ hndl_exit:
 		goto hndl_ret;
 	}
 hndl_ret:
-	pthread_mutex_lock_unlock(&(p_ve_task->sighand->siglock), UNLOCK
-			, "failed to release task's signal lock");
+		pthread_mutex_lock_unlock(&(p_ve_task->sighand->siglock), UNLOCK
+				, "failed to release task's signal lock");
 	VEOS_TRACE("Exiting");
 	return signum;
 }
@@ -2559,7 +2577,6 @@ void psm_do_sigsuspend(struct ve_task_struct *p_ve_task, sigset_t *mask_set)
  * */
 void veos_stopping_thread(void)
 {
-	char path[PATH_MAX];
 	struct list_head *p, *n;
 	struct ve_task_struct *tmp = NULL;
 	int retval = 0;
@@ -2570,8 +2587,6 @@ void veos_stopping_thread(void)
 
 	req.tv_sec = 0;
 	req.tv_nsec = 1000000;
-
-	memset(path, 0, sizeof(path));
 
 	while (!terminate_flag) {
 		/* wait until awaken */
@@ -2611,7 +2626,7 @@ void veos_stopping_thread(void)
 		}
 		pthread_rwlock_lock_unlock(
 			&(VE_NODE(0)->ve_relocate_lock), RDLOCK,
-			 "Failed to release ve_relocate_lock read lock");
+			 "Failed to acquire ve_relocate_lock read lock");
 		pthread_rwlock_lock_unlock(&init_task_lock, RDLOCK,
 				"failed to acquire init task lock");
 		/* Set VE processes state to STOP VE if corresponding pseudo
@@ -2666,7 +2681,7 @@ void veos_stopping_thread(void)
 	}
 terminate:
 	VEOS_DEBUG("Termination flag SET,"
-			" VEOS STOPPING thread exiting\n");
+			" VEOS STOPPING thread exiting");
 	VEOS_TRACE("Exiting");
 	return;
 abort:

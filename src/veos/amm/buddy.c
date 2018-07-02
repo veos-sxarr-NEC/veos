@@ -98,7 +98,7 @@ uint64_t roundown_pow_of_two(uint64_t x)
 * @param[in] order order of block
 * @param[in] count number of block.
 *
-* @return This fuction will return size to be free .
+* @return This fuction will return size to be free.
 */
 size_t get_size_to_be_free(size_t extra_sz, int order, int count)
 {
@@ -133,108 +133,6 @@ uint64_t roundup_pow_of_two(uint64_t x)
 	}
 	++mx_msb_set;
 	return ((uint64_t)1 << mx_msb_set);
-}
-
-/**
-* @brief  This function will check for compac allocation.
-*
-* @param[in] mp Buddy mempool;
-* @param[in] order size in the form of order(size = 2^order)
-* @param[out] compac_pattern This will filled with at
-*	which place compac allocation possible.
-*
-* @return  return true if compac allocation is possible else false.
-*/
-bool is_alloc_compac(struct buddy_mempool *mp, int order,
-		struct compac_pattern *alloc_pattern, int pgmod)
-{
-	int ord = 0;
-	int idx = 0;
-	size_t req_size = 0, act_size = 0, ext_size = 0, free_size = 0;
-
-	VEOS_TRACE("invoked");
-
-	VEOS_DEBUG("compact allocation for %s of order %d from mempool(%p)",
-		 pgmod_to_pgstr(pgmod), order, mp);
-
-	if (!alloc_pattern) {
-		VEOS_DEBUG("Invalid argument for compact allocation");
-		return false;
-	}
-
-	if (order == mp->min_order)
-		return false;
-
-	req_size = (1UL << order);
-	VEOS_DEBUG("%lx size is requested from compact allocator", req_size);
-
-	/*check from lowest order*/
-	if (pgmod == PG_2M)
-		ord = mp->min_order;
-	else
-		ord = size_to_order(PAGE_SIZE_64MB);
-
-	VEOS_TRACE("iteration starts from order %d to order %d", ord, order);
-	for (; ord < order; ord++) {
-		if (mp->frb->fr_cnt[ord]) {
-			VEOS_TRACE("%d blocks are free for order %d",
-					mp->frb->fr_cnt[ord], ord);
-			act_size = act_size +
-				(mp->frb->fr_cnt[ord] * (1UL << ord));
-			alloc_pattern[idx].ord = ord;
-			alloc_pattern[idx].blk_cnt = mp->frb->fr_cnt[ord];
-
-			if (act_size >= req_size)
-				break;
-
-			++idx;
-		}
-	}
-
-	VEOS_DEBUG("actual allocated size %ld and requested size is %ld",
-			act_size, req_size);
-	/*Removing extra size*/
-	if (act_size > req_size) {
-		ext_size = act_size - req_size;
-		VEOS_DEBUG("%ld size is extra allocated", ext_size);
-		VEOS_DEBUG("iteration starts to free %ld extra rsvd size", ext_size);
-		while (ext_size) {
-			VEOS_TRACE("index(%d): order(%d): extra size(%ld): actual size(%ld): free size(%ld)",
-					idx, alloc_pattern[idx].ord, ext_size, act_size, free_size);
-			if ((1UL << alloc_pattern[idx].ord) > ext_size) {
-				--idx;
-				continue;
-			}
-			free_size = get_size_to_be_free(ext_size, alloc_pattern[idx].ord,
-					alloc_pattern[idx].blk_cnt);
-			VEOS_TRACE("size to be free(0x%lx)", free_size);
-			alloc_pattern[idx].blk_cnt -= free_size/(1UL << alloc_pattern[idx].ord);
-			ext_size -= free_size;
-			act_size -= free_size;
-			VEOS_TRACE("blk count(%ld): free size(%ld): actual size(%ld)",
-					alloc_pattern[idx].blk_cnt, free_size, act_size);
-			--idx;
-		}
-		VEOS_DEBUG("iteration ends to free extra rsvd size");
-	}
-
-	/* If actual size is greater than
-	 * required size then bring it down*/
-
-	VEOS_DEBUG("actual allocated size %ld and request size is %ld after iteration",
-			act_size, req_size);
-
-	idx = 0;
-	VEOS_DEBUG("iteration starts for dumping compact pattern");
-	for (; alloc_pattern[idx].ord != 0; idx++) {
-		VEOS_TRACE("free block count(%ld) for order(%d)",
-				alloc_pattern[idx].blk_cnt,
-				alloc_pattern[idx].ord);
-	}
-
-	VEOS_DEBUG("iteration ends to dump compact pattern");
-	VEOS_TRACE("returned");
-	return (act_size == req_size) ? true : false;
 }
 
 /**
@@ -458,67 +356,6 @@ int veos_page_entry(struct buddy_mempool *mp,
 }
 
 /**
-* @brief This function will allocate memory by compac allocation.
-*
-* @param[in] mp memory pool.
-* @param[in] blk allocation pattern.
-*
-* @return return 0 if allocation done or BUDDY_FAILED on failure.
-*/
-void *buddy_compac_alloc(struct buddy_mempool *mp,
-		struct compac_pattern *alloc_pattern)
-{
-	int rq_cnt = 0, t_req = 0;
-	struct block *alloc_block = NULL;
-	vemaa_t *vemaa = NULL;
-
-	VEOS_TRACE("invoked");
-
-	VEOS_DEBUG("compact allocation req(%p) from mempool(%p)", alloc_pattern, mp);
-	if (NULL == mp) {
-		VEOS_DEBUG("Invalid mempool");
-		return BUDDY_FAILED;
-	}
-	if (NULL == alloc_pattern) {
-		VEOS_DEBUG("Invalid alloc pattern");
-		return BUDDY_FAILED;
-	}
-	VEOS_DEBUG("iteration starts to allocate blocks of order");
-	for (; alloc_pattern[rq_cnt].ord != 0; rq_cnt++) {
-		VEOS_DEBUG("allocating mem blk rq_cnt(%d) of order %d from mempool(%p)",
-			rq_cnt, alloc_pattern[rq_cnt].ord, mp);
-		for (; t_req < alloc_pattern[rq_cnt].blk_cnt; t_req++) {
-			VEOS_TRACE("allocating %ld mem blk of order %d from mempool(%p)",
-				alloc_pattern[rq_cnt].blk_cnt,
-				alloc_pattern[rq_cnt].ord, mp);
-			vemaa = buddy_alloc(mp, alloc_pattern[rq_cnt].ord);
-			if (BUDDY_FAILED == vemaa) {
-				VEOS_DEBUG("failed to allocate mem blk from mempool");
-				return BUDDY_FAILED;
-			} else {
-				mp->frb->resv_compac[alloc_pattern
-					[rq_cnt].ord] = false;
-				alloc_block = (struct block *)calloc(1, sizeof(struct block));
-				if (NULL == alloc_block) {
-					VEOS_CRIT("calloc error while allocating buddy block");
-					return BUDDY_FAILED;
-				}
-				alloc_block->order = alloc_pattern[rq_cnt].ord;
-				alloc_block->start = (uint64_t)vemaa;
-				VEOS_TRACE("block allocated start %lx and order %ld",
-					alloc_block->start, alloc_block->order);
-				list_add_tail(&alloc_block->link, mp->alloc_req_list);
-			}
-		}
-		t_req = 0;
-		VEOS_DEBUG("iteration ends");
-	}
-	VEOS_DEBUG("iteration ends");
-	VEOS_TRACE("returned");
-	return vemaa;
-}
-
-/**
 * @brief  This function will allocate buddy for non compac allocation.
 *
 * @param[in] mp buddy mempool.
@@ -554,59 +391,6 @@ void *buddy_non_compac_alloc(struct buddy_mempool *mp, int order)
 
 	VEOS_TRACE("returned");
 	return vemaa;
-}
-
-/**
-* @brief  This function will make request to be send to buddy allocator.
-*
-* @param[in] mp VE memory buddy mempool.
-* @param[in] order requested buddy order.
-* @param[in] pgmod page mode.
-*
-* @return  return 0 on success and negative of errno on failure.
-*/
-int __veos_alloc_memory(struct buddy_mempool *mp,
-		int order, uint64_t pgmod)
-{
-	bool possible = 0;
-	struct compac_pattern *alloc_pattern = NULL;
-
-	VEOS_TRACE("invoked");
-
-	/* allocating memory to get
-	 * the pattern of compac allocation*/
-	VEOS_DEBUG("%s of order %d requested from mempool(%p)",
-			pgmod_to_pgstr(pgmod), order, mp);
-
-	VEOS_DEBUG("mempool has max %ld order and min %ld order",
-			mp->pool_order, mp->min_order);
-
-	alloc_pattern = calloc(((mp->pool_order - mp->min_order) + 1),
-				sizeof(struct compac_pattern));
-	if (NULL == alloc_pattern) {
-		VEOS_CRIT("calloc error while allocating compact pattern obj");
-		return -ENOMEM;
-	}
-
-	VEOS_DEBUG("Check whether allocation can be done in split pattern");
-	possible = is_alloc_compac(mp, order, alloc_pattern, pgmod);
-	if (possible) {
-		if (BUDDY_FAILED == buddy_compac_alloc(mp, alloc_pattern)) {
-			VEOS_DEBUG("Error in compact allocation policy");
-			free(alloc_pattern);
-			return -ENOMEM;
-		}
-	} else {
-		if (BUDDY_FAILED == buddy_non_compac_alloc(mp, order)) {
-			VEOS_DEBUG("Error in compact allocation policy");
-			free(alloc_pattern);
-			return -ENOMEM;
-		}
-	}
-
-	VEOS_TRACE("returned");
-	free(alloc_pattern);
-	return 0;
 }
 
 /**
@@ -646,11 +430,12 @@ int veos_delloc_memory(uint64_t page_num, uint64_t pgmod)
 }
 
 /**
-* @brief  This function will devide request according to size
-*	(whether it is power of two or multiple of two).
+* @brief  This function will allocate memories per page size
+*	till reach aquired size.
 *
 * @param[in] mp VE buddy mempool.
 * @param[in] mem_size memory size to be requested.
+*		This is expected multiple of page size.
 * @param[in] pgmod page mode.
 *
 * @return  return 0 on success and negative of errno on failure.
@@ -659,8 +444,8 @@ int veos_alloc_memory(struct buddy_mempool *mp,
 	size_t mem_size, uint64_t pgmod)
 {
 	size_t r_size = 0;
-	int ret = 0;
 	int order = 0;
+	size_t pgsz = 0;
 
 	VEOS_TRACE("invoked");
 
@@ -676,46 +461,34 @@ int veos_alloc_memory(struct buddy_mempool *mp,
 		return -EINVAL;
 	}
 
+	if (pgmod == PG_2M)
+		pgsz = PAGE_SIZE_2MB;
+	else
+		pgsz = PAGE_SIZE_64MB;
 
-	/*If size is power of two*/
-	if (mem_size == roundown_pow_of_two(mem_size)) {
-		order = size_to_order(mem_size);
-		VEOS_DEBUG("size %lx mapped to order %d", mem_size, order);
-
-		ret = __veos_alloc_memory(mp, order, pgmod);
-		if (0 > ret) {
-			VEOS_DEBUG("Error (%s) when allocating memory block",
-					strerror(-ret));
-			return ret;
-		}
-	} else {
-		r_size = mem_size;
-		VEOS_DEBUG("iteration starts till remaining size becomes zero");
-		while (r_size > 0) {
-			order = size_to_order(roundown_pow_of_two(r_size));
-
-			VEOS_DEBUG("remaining size %lx mapped to order %d", r_size, order);
-
-			ret = __veos_alloc_memory(mp, order, pgmod);
-			if (0 > ret) {
-				VEOS_DEBUG("Error (%s) when allocating memory block",
-					strerror(-ret));
-				return ret;
-			}
-			r_size = (size_t)(r_size - roundown_pow_of_two(r_size));
-
-			/* If size is less than min page size
-			 * make it equal to min mape size */
-			if ((r_size < (1UL << mp->min_order)) && (r_size))
-				r_size = (1UL << mp->min_order);
-
-		}
-		VEOS_DEBUG("iteration ends");
+	if ((mem_size % pgsz) != 0) {
+		VEOS_DEBUG("memory size is not multipule of page size");
+		return -EINVAL;
 	}
 
+	r_size = mem_size;
+	order = size_to_order(pgsz);
+	VEOS_DEBUG("iteration starts till remaining size becomes zero");
+	while (r_size > 0) {
+		VEOS_TRACE("remaining size %lx mapped to order %d",
+			   r_size, order);
+		if (BUDDY_FAILED == buddy_non_compac_alloc(mp, order)) {
+			VEOS_DEBUG("Error allocate memory");
+			return -ENOMEM;
+		}
+		r_size -= pgsz;
+	}
+	VEOS_DEBUG("iteration ends");
 	VEOS_TRACE("returned");
-	return ret;
+
+	return 0;
 }
+
 /**
 * @brief This function will check whether this block is free or not.
 *
@@ -1272,4 +1045,42 @@ void veos_dump_ve_pages(void)
 		}
 	}
 	VEOS_DEBUG("--------------------------------------------------------------------------------------");
+}
+
+/**
+ * @brief This function will calculate total size of free block.
+ *
+ * @param[in] mp VE Buddy mempool.
+ * @param[in] pgmod page mode.
+ *
+ * @return return total size of free block.
+ */
+size_t calc_free_sz(struct buddy_mempool *mp, int pgmod)
+{
+	int j = 0;
+	int order = 0;
+	size_t sz = 0;
+	struct list_head *list = NULL;
+	struct block *curr_blk = NULL, *tmp_blk = NULL;
+
+	if (mp == NULL) {
+		VEOS_DEBUG("Invalid mempool.");
+		return 0;
+	}
+
+	if (pgmod == PG_2M)
+		order = size_to_order(PAGE_SIZE_2MB);
+	else
+		order = size_to_order(PAGE_SIZE_64MB);
+
+	for (j = order; j <= mp->pool_order; j++) {
+		list = &mp->frb->free[j];
+		if (list_empty(list))
+			continue;
+		VEOS_TRACE("calc:fr_cnt[%d]=%d", j, mp->frb->fr_cnt[j]);
+		list_for_each_entry_safe(curr_blk, tmp_blk, list, link) {
+			sz += (1UL << curr_blk->order);
+		}
+	}
+	return sz;
 }

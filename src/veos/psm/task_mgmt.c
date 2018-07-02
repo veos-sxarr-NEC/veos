@@ -112,35 +112,36 @@ void psm_set_task_state(struct ve_task_struct *task_struct,
 	 * 3. return in case of P_INVAL*/
 	if (new_state == curr_state || curr_state == EXIT_DEAD
 			|| new_state == P_INVAL || curr_state == P_INVAL)
-		goto hndl_return;
+		goto hndl_return1;
 
 	if (curr_state == ZOMBIE) {
 		if (new_state == EXIT_DEAD)
 			task_struct->ve_task_state = new_state;
-		goto hndl_return;
+		goto hndl_return1;
 	}
 
 	/* If state is changing from RUNNING to any other */
 	if (curr_state == RUNNING) {
 		task_struct->ve_task_state = new_state;
 		ve_atomic_dec(&(p_ve_core->nr_active));
-		goto hndl_return;
+		goto hndl_return1;
 	}
 	/* If state is changing from any other to RUNNING */
 	if (new_state == RUNNING) {
 		task_struct->ve_task_state = new_state;
 		ve_atomic_inc(&(p_ve_core->nr_active));
-		goto hndl_return;
+		goto hndl_return1;
 	}
 
 	task_struct->ve_task_state = new_state;
 
-hndl_return:
+hndl_return1:
 	VEOS_DEBUG("Core:%d nr_active:%d Task state for PID: %d set to %d",
 						p_ve_core->core_num,
 						p_ve_core->nr_active,
 						task_struct->pid,
 						task_struct->ve_task_state);
+hndl_return:
 	VEOS_TRACE("Exiting");
 	return;
 }
@@ -252,8 +253,8 @@ int calc_last_1_5_15_load(struct ve_node_struct *p_ve_node,
 	else
 		*sys_load_15 = 0;
 
-	VEOS_DEBUG("\nLoad in last (1min %f itr %d) (5min %f itr %d)"
-			" (15min %f itr %d)\n",
+	VEOS_DEBUG("Load in last (1min %f itr %d) (5min %f itr %d)"
+			" (15min %f itr %d)",
 			*sys_load_1, itr_1,
 			*sys_load_5, itr_5,
 			*sys_load_5, itr_15);
@@ -313,7 +314,6 @@ void populate_1_5_15_sys_load(struct ve_node_struct *p_ve_node,
 	ve_load->time_slice = time;
 	p_ve_node->total_sys_load_time += time;
 	list_add_tail(&(ve_load->list), &(p_ve_node->ve_sys_load_head));
-
 hndl_return:
 	VEOS_TRACE("Exiting");
 }
@@ -552,7 +552,7 @@ int psm_terminate_all(int node_id)
 			goto err_handle;
 		}
 
-		retval = psm_stop_udma(core_id);
+		retval = psm_stop_udma(core_id, DMA_DESC_E_H);
 		if (0 != retval) {
 			VEOS_ERROR("Stopping UDMA failed for core : %d",
 					core_id);
@@ -798,6 +798,11 @@ struct sighand_struct *alloc_ve_sighand_struct_node()
 
 	if (pthread_mutex_init(&(p->del_lock), NULL) != 0) {
 		VEOS_ERROR("Failed to initialize thread group delete lock");
+		retval = pthread_mutex_destroy(&(p->siglock));
+		if (retval != 0) {
+			VEOS_ERROR("Failed to destroy siglock,"
+					" return value %d", retval);
+		}
 		errno = ENOMEM;
 		free(p);
 		p = NULL;
@@ -1195,9 +1200,7 @@ void put_ve_task_struct(struct ve_task_struct *task)
 
 	if (deleting_flag && task->exit_status == DELETING) {
 		if (0 > psm_handle_delete_ve_process(task)) {
-			VEOS_DEBUG("Terminating process : %d failed, may be "
-				"process entry has already been removed from "
-				"driver", task->pid);
+			VEOS_DEBUG("Terminating process failed");
 		}
 	}
 
@@ -3126,6 +3129,8 @@ int64_t psm_handle_setaffinity_request(pid_t caller, pid_t pid, cpu_set_t mask)
 	int64_t retval = -1;
 	proc_t ve_proc_info = {0};
 	proc_t caller_proc_info = {0};
+	cpu_set_t old_mask;
+	CPU_ZERO(&old_mask);
 
 	VEOS_TRACE("Entering");
 	VEOS_DEBUG("Handling set affinity request for PID %d", pid);
@@ -3194,6 +3199,7 @@ int64_t psm_handle_setaffinity_request(pid_t caller, pid_t pid, cpu_set_t mask)
 set_affinity:
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
 			"Failed to acquire task lock");
+	old_mask = tsk->cpus_allowed;
 	tsk->cpus_allowed = mask;
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
 			"Failed to release task lock");
@@ -3208,6 +3214,11 @@ set_affinity:
 			VEOS_ERROR("Failed to get Core/Node id");
 			VEOS_DEBUG("Getting VE Node and Core returned %ld", retval);
 			retval = -EINVAL;
+			pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
+					"Failed to acquire task lock");
+			tsk->cpus_allowed = old_mask;
+			pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
+					"Failed to release task lock");
 			goto hndl_return1;
 		}
 		psm_relocate_ve_task(tsk->node_id, tsk->core_id, node_id,

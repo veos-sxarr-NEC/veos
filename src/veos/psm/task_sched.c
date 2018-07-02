@@ -820,7 +820,8 @@ int psm_udma_no_migration(struct ve_task_struct *curr_ve_task)
 		*(curr_ve_task->core_dma_desc) = -1;
 
 		/* Stop udma */
-		if (psm_stop_udma(curr_ve_task->core_id)) {
+		if (psm_stop_udma(curr_ve_task->core_id,
+					curr_ve_task->p_ve_mm->udma_desc_bmap)) {
 			VEOS_ERROR("Stopping user DMA failed");
 			goto save_context_fail;
 		}
@@ -884,7 +885,8 @@ int psm_udma_do_migration(struct ve_task_struct *curr_ve_task,
 	VEOS_DEBUG("Migrate core ID %d",
 			migrate_core_id);
 	/* Stop udma on current core*/
-	if (psm_stop_udma(curr_ve_task->core_id)) {
+	if (psm_stop_udma(curr_ve_task->core_id,
+				curr_ve_task->p_ve_mm->udma_desc_bmap)) {
 		VEOS_ERROR("Stopping UDMA failed");
 		goto udma_migration_fail;
 	}
@@ -916,7 +918,8 @@ int psm_udma_do_migration(struct ve_task_struct *curr_ve_task,
 	}
 	VEOS_DEBUG("UDMA restored successfully on new core");
 
-	if (psm_start_udma(migrate_core_id)) {
+	if (psm_start_udma(migrate_core_id,
+				curr_ve_task->p_ve_mm->udma_desc_bmap)) {
 		VEOS_ERROR("Start UDMA failed");
 		goto udma_migration_fail;
 	}
@@ -1297,7 +1300,8 @@ int psm_restore_context_for_new_thread(struct ve_task_struct *tts)
 
 	/* Start UDMA */
 	VEOS_DEBUG("Start UDMA");
-	retval = psm_start_udma(tts->core_id);
+	retval = psm_start_udma(tts->core_id,
+			tts->p_ve_mm->udma_desc_bmap);
 	if (retval) {
 		VEOS_DEBUG("Start UDMA failed");
 		goto restore_context_failed;
@@ -1308,53 +1312,95 @@ restore_context_failed:
 	return retval;
 }
 
-
 /**
  * @brief Stop User level DMA
  *
- * Function unsets the permission bit of DMACTL register of core.
- * Function then waits for raising of halt bit of DMACTL register
- * of core.
+ * Function stops the operation status of DMA descriptor table H and E
+ * depending on the argument "udma_desc_bmap" received
  *
  * @param[in] core_id VE core ID
+ * @param[in] udma_desc_bmap Specifies DMA corresponding to which DMA
+ * descriptor table needs to be stopped
  *
  * @return 0 on success and -1 on failure
  */
-int psm_stop_udma(int core_id)
+int psm_stop_udma(int core_id, uint8_t udma_desc_bmap)
 {
 	int retval = -1;
 	reg_t regdata = 0;
 
 	VEOS_TRACE("Entering");
-	VEOS_DEBUG("Stopping UDMA");
-	/* Unset permission bit */
+
 	regdata = VE_UDMA_CTL_PERM_STOP;
-	VEOS_DEBUG("DMACTL permission bit unset");
-	retval = vedl_set_sys_reg_words(VE_HANDLE(0),
-			VE_CORE_SYS_REG_ADDR(0, core_id),
-			VE_UDMA_OFFSET_OF_DMACTL(VE_UDMA_EENTRY),
-			&regdata, sizeof(reg_t));
-	if (0 > retval) {
-		VEOS_ERROR("Unsetting permission bit failed");
-		retval = -1;
-		goto stop_udma_fail;
+
+	if (udma_desc_bmap & DMA_DESC_H) {
+		/* Stop DMA operation on DMA decriptor H */
+		VEOS_DEBUG("Unset H DMACTL permission bit");
+		retval = vedl_set_sys_reg_words(VE_HANDLE(0),
+				VE_CORE_SYS_REG_ADDR(0, core_id),
+				VE_UDMA_OFFSET_OF_DMACTL(VE_UDMA_HENTRY),
+				&regdata, sizeof(reg_t));
+		if (0 > retval) {
+			VEOS_ERROR("Unsetting H DMACTL permission bit failed");
+			goto stop_udma_fail;
+		}
 	}
-	do {
-		VEOS_DEBUG("Waiting for DMA to stop");
-		retval = vedl_get_sys_reg_words(VE_HANDLE(0),
+
+	if (udma_desc_bmap & DMA_DESC_E) {
+		/* Stop DMA operation on DMA decriptor E */
+		VEOS_DEBUG("Unset E DMACTL permission bit");
+		retval = vedl_set_sys_reg_words(VE_HANDLE(0),
 				VE_CORE_SYS_REG_ADDR(0, core_id),
 				VE_UDMA_OFFSET_OF_DMACTL(VE_UDMA_EENTRY),
 				&regdata, sizeof(reg_t));
 		if (0 > retval) {
-			VEOS_ERROR("Getting system register failed"
-					" for Core %d", core_id);
-			retval = -1;
+			VEOS_ERROR("Unsetting permission bit failed");
 			goto stop_udma_fail;
 		}
-	} while (!(regdata & 0x2));
+	}
 
-	VEOS_DEBUG("UDMA stopped for core %d", core_id);
+	regdata = 0;
+
+	if (udma_desc_bmap & DMA_DESC_H) {
+		/* Wait for raising halt bit of DMA control reg
+		 * corresponding to DMA descriptor table H
+		 * */
+		do {
+			VEOS_DEBUG("Waiting for DMA to stop: DMA_DESC_H");
+			retval = vedl_get_sys_reg_words(VE_HANDLE(0),
+					VE_CORE_SYS_REG_ADDR(0, core_id),
+					VE_UDMA_OFFSET_OF_DMACTL(VE_UDMA_HENTRY),
+					&regdata, sizeof(reg_t));
+			if (0 > retval) {
+				VEOS_ERROR("Getting system register failed"
+						" for Core %d", core_id);
+				goto stop_udma_fail;
+			}
+		} while (!(regdata & 0x2));
+	}
+
+	regdata = 0;
+
+	if (udma_desc_bmap & DMA_DESC_E) {
+		/* Wait for raising halt bit of DMA control reg
+		 * corresponding to DMA descriptor table E
+		 * */
+		do {
+			VEOS_DEBUG("Waiting for DMA to stop: DMA_DESC_E");
+			retval = vedl_get_sys_reg_words(VE_HANDLE(0),
+					VE_CORE_SYS_REG_ADDR(0, core_id),
+					VE_UDMA_OFFSET_OF_DMACTL(VE_UDMA_EENTRY),
+					&regdata, sizeof(reg_t));
+			if (0 > retval) {
+				VEOS_ERROR("Getting system register failed"
+						" for Core %d", core_id);
+				goto stop_udma_fail;
+			}
+		} while (!(regdata & 0x2));
+	}
+
 	retval = 0;
+	VEOS_DEBUG("UDMA stopped for core %d", core_id);
 stop_udma_fail:
 	VEOS_TRACE("Exiting");
 	return retval;
@@ -1366,36 +1412,97 @@ stop_udma_fail:
 * Function sets the permission bit of DMA control register
 *
 * @param[in] core_id VE core ID
+* @param[in] udma_desc_bmap Specifies DMA corresponding to which DMA
+* descriptor table needs to be started
 *
 * @return 0 on success and -1 on failure.
 */
-int psm_start_udma(int core_id)
+int psm_start_udma(int core_id, uint8_t udma_desc_bmap)
 {
 	int retval = -1;
 	reg_t regdata = 0;
 
 	VEOS_TRACE("Entering");
-	/* Set permission bit */
 	regdata = VE_UDMA_CTL_PERM_START;
-	if (vedl_set_sys_reg_words(VE_HANDLE(0),
-				VE_CORE_SYS_REG_ADDR(0, core_id),
-				VE_UDMA_OFFSET_OF_DMACTL(VE_UDMA_EENTRY),
-				&regdata, sizeof(reg_t))) {
-		VEOS_ERROR("Setting permission bit failed");
-	} else {
-		VEOS_DEBUG("DMACTL permission bit set");
-		retval = 0;
+
+	if (udma_desc_bmap & DMA_DESC_E) {
+		/* Set permission bit to start operation on
+		 * DMA descriptor table E */
+		if (vedl_set_sys_reg_words(VE_HANDLE(0),
+					VE_CORE_SYS_REG_ADDR(0, core_id),
+					VE_UDMA_OFFSET_OF_DMACTL(VE_UDMA_EENTRY),
+					&regdata, sizeof(reg_t))) {
+			VEOS_ERROR("Setting permission bit failed for E entry");
+			goto start_udma_fail;
+		} else {
+			VEOS_DEBUG("Started UDMA for E entry");
+		}
 	}
+	if (udma_desc_bmap & DMA_DESC_H) {
+		/* Set permission bit to start operation on
+		 * DMA descriptor table H */
+		if (vedl_set_sys_reg_words(VE_HANDLE(0),
+					VE_CORE_SYS_REG_ADDR(0, core_id),
+					VE_UDMA_OFFSET_OF_DMACTL(VE_UDMA_HENTRY),
+					&regdata, sizeof(reg_t))) {
+			VEOS_ERROR("Setting permission bit failed for H entry");
+			goto start_udma_fail;
+		} else {
+			VEOS_DEBUG("Started UDMA for H entry");
+		}
+	}
+	retval = 0;
+start_udma_fail:
 	VEOS_TRACE("Exiting");
 	return retval;
 }
 
 /**
-* @brief Saves core's user DMA descriptor tables and control register to
-* ve_task_struct
+* @brief Saves core's user DMA descriptor tables and DMA control register
+* corresponding to H or E depending upon the argument received.
 *
-* @param ve_task Pointer to VE task struct
-* @param core_id VE core ID
+* @param[in] ve_task Pointer to VE task struct
+* @param[in] core_id VE core ID
+* @param[in] dma_entry_type Identifier for type of DMA descriptor table
+*
+* @return 0 on sucess and -1 on failure
+*/
+int __psm_save_udma_context(struct ve_task_struct *ve_task,
+		int core_id, bool dma_entry_type)
+{
+	int retval = -1;
+	VEOS_TRACE("Entering");
+
+	/* Save DMA descriptor table */
+	if (vedl_get_sys_reg_words(VE_HANDLE(ve_task->node_id),
+			VE_CORE_SYS_REG_ADDR(ve_task->node_id, core_id),
+			VE_UDMA_OFFSET_OF_DMADESC(dma_entry_type),
+			&(ve_task->udma_context->dmades[dma_entry_type]),
+			sizeof(dma_desc_t)*DMA_DSCR_ENTRY_SIZE)) {
+		VEOS_ERROR("Saving DMA descriptor table failed");
+		goto __save_udma_fail;
+	}
+
+	/* Save DMA control register */
+	if (vedl_get_sys_reg_words(VE_HANDLE(0),
+			VE_CORE_SYS_REG_ADDR(0, core_id),
+			VE_UDMA_OFFSET_OF_DMACTL(dma_entry_type),
+			&(ve_task->udma_context->dmactl[dma_entry_type]),
+			sizeof(dma_control_t))) {
+		VEOS_ERROR("Saving DMA control register failed");
+		goto __save_udma_fail;
+	}
+	retval = 0;
+__save_udma_fail:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+/**
+* @brief Saves core's user DMA descriptor tables and DMA control register
+* corresponding to H and E.
+*
+* @param[in] ve_task Pointer to VE task struct
+* @param[in] core_id VE core ID
 *
 * @return 0 on success and -1 on failure.
 */
@@ -1403,27 +1510,29 @@ int psm_save_udma_context(struct ve_task_struct *ve_task, int core_id)
 {
 	int retval = -1;
 	VEOS_TRACE("Entering");
-	VEOS_DEBUG("Saving UDMA context");
 
-	/* Save DMA descriptor table */
-	if (vedl_get_sys_reg_words(VE_HANDLE(ve_task->node_id),
-			VE_CORE_SYS_REG_ADDR(ve_task->node_id, core_id),
-			VE_UDMA_OFFSET_OF_DMADESC(VE_UDMA_EENTRY),
-			&(ve_task->udma_context->dmades),
-			sizeof(dma_desc_t)*DMA_DSCR_ENTRY_SIZE)) {
-		VEOS_ERROR("Saving DMA descriptor table failed");
-		goto save_udma_fail;
+	/* If the bit corresponding to DMA descriptor table E is set in the
+	 * bitmap then save the udma context corresponding to DMA decriptor
+	 * table E */
+	if (ve_task->p_ve_mm->udma_desc_bmap & DMA_DESC_E) {
+		VEOS_DEBUG("Saving UDMA context corresponding to E");
+		if (__psm_save_udma_context(ve_task, core_id, VE_UDMA_EENTRY)) {
+			VEOS_ERROR("Failed to Save UDMA context corresponding to E");
+			goto save_udma_fail;
+		}
 	}
 
-	/* Save DMA control register */
-	if (vedl_get_sys_reg_words(VE_HANDLE(0),
-			VE_CORE_SYS_REG_ADDR(0, core_id),
-			VE_UDMA_OFFSET_OF_DMACTL(VE_UDMA_EENTRY),
-			&(ve_task->udma_context->dmactl),
-			sizeof(dma_control_t))) {
-		VEOS_ERROR("Saving DMA control register failed");
-		goto save_udma_fail;
+	/* If the bit corresponding to DMA descriptor table H is set in the
+	 * bitmap then save the udma context corresponding to DMA decriptor
+	 * table H */
+	if (ve_task->p_ve_mm->udma_desc_bmap & DMA_DESC_H) {
+		VEOS_DEBUG("Saving UDMA context corresponding to H");
+		if(__psm_save_udma_context(ve_task, core_id, VE_UDMA_HENTRY)) {
+			VEOS_ERROR("Failed to Save UDMA context corresponding to H");
+			goto save_udma_fail;
+		}
 	}
+
 	VEOS_DEBUG("Successfully saved DMA descriptors/control reg");
 	retval = 0;
 save_udma_fail:
@@ -1433,7 +1542,48 @@ save_udma_fail:
 
 /**
 * @brief Restores user DMA descriptor tables and control register
-*	which are saved in ve_task_struct to specified core's register.
+* saved in ve_task_struct to specified core's register.
+*
+* @param[in] ve_task Pointer to VE task struct
+* @param[in] core_id VE core ID
+* @param[in] dma_entry_type Identifier for type of DMA descriptor table
+*
+* @return 0 on success and -1 on failure
+*/
+int __psm_restore_udma_context(struct ve_task_struct *ve_task,
+		int core_id, bool dma_entry_type)
+{
+	int retval = -1;
+	VEOS_TRACE("Entering");
+	/* Set the UDMA descriptors table to core */
+	if (vedl_set_sys_reg_words(VE_HANDLE(0),
+				VE_CORE_SYS_REG_ADDR(0, core_id),
+				VE_UDMA_OFFSET_OF_DMADESC(dma_entry_type),
+				&(ve_task->udma_context->dmades[dma_entry_type]),
+				sizeof(dma_desc_t)*DMA_DSCR_ENTRY_SIZE)) {
+		VEOS_ERROR("Restoring DMA descriptor table failed");
+		goto __restore_dma_fail;
+	}
+
+	/* Set the UDMA control register to core */
+	if (vedl_set_sys_reg_words(VE_HANDLE(0),
+				VE_CORE_SYS_REG_ADDR(0, core_id),
+				VE_UDMA_OFFSET_OF_DMACTL(dma_entry_type),
+				&(ve_task->udma_context->dmactl[dma_entry_type]),
+				sizeof(dma_control_t))) {
+		VEOS_ERROR("Restoring DMA control registers failed");
+		goto __restore_dma_fail;
+	}
+	VEOS_DEBUG("Successfully restored DMA descriptors/control registers");
+	retval = 0;
+__restore_dma_fail:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+/**
+* @brief Restores user DMA descriptor tables and control register
+* corresponding to H and E entry which are saved in ve_task_struct
+* to specified core's register.
 *
 * @param[in] ve_task Pointer to VE task struct
 * @param[in] core_id VE core ID
@@ -1444,25 +1594,25 @@ int psm_restore_udma_context(struct ve_task_struct *ve_task, int core_id)
 {
 	int retval = -1;
 	VEOS_TRACE("Entering");
-	/* Set the UDMA descriptors table to core */
-	if (vedl_set_sys_reg_words(VE_HANDLE(0),
-				VE_CORE_SYS_REG_ADDR(0, core_id),
-				VE_UDMA_OFFSET_OF_DMADESC(VE_UDMA_EENTRY),
-				&(ve_task->udma_context->dmades),
-				sizeof(dma_desc_t)*DMA_DSCR_ENTRY_SIZE)) {
-		VEOS_ERROR("Restoring DMA descriptor table failed");
-		goto restore_dma_fail;
+
+	/* If the bit corresponding to DMA descriptor table E is set in the
+	 * bitmap then restore the udma context corresponding to DMA decriptor
+	 * table E */
+	if (ve_task->p_ve_mm->udma_desc_bmap & DMA_DESC_E) {
+		VEOS_DEBUG("Restore UDMA context corresponding to E");
+		if (__psm_restore_udma_context(ve_task, core_id, VE_UDMA_EENTRY))
+			goto restore_dma_fail;
 	}
 
-	/* Set the UDMA control register to core */
-	if (vedl_set_sys_reg_words(VE_HANDLE(0),
-				VE_CORE_SYS_REG_ADDR(0, core_id),
-				VE_UDMA_OFFSET_OF_DMACTL(VE_UDMA_EENTRY),
-				&(ve_task->udma_context->dmactl),
-				sizeof(dma_control_t))) {
-		VEOS_ERROR("Restoring DMA control registers failed");
-		goto restore_dma_fail;
+	/* If the bit corresponding to DMA descriptor table H is set in the
+	 * bitmap then restore the udma context corresponding to DMA decriptor
+	 * table H */
+	if (ve_task->p_ve_mm->udma_desc_bmap & DMA_DESC_H) {
+		VEOS_DEBUG("Restore UDMA context corresponding to H");
+		if(__psm_restore_udma_context(ve_task, core_id, VE_UDMA_HENTRY))
+			goto restore_dma_fail;
 	}
+
 	VEOS_DEBUG("Successfully restored DMA descriptors/control registers");
 	retval = 0;
 restore_dma_fail:
@@ -1926,7 +2076,8 @@ int veos_update_dmaatb(uint64_t core_set, void *reg_sw, int dir_num,
 		if (CHECK_BIT(core_set, core_loop)) {
 			/* Stop UDMA */
 			if (*(ve_task->core_dma_desc) == core_loop)
-				psm_stop_udma(core_loop);
+				psm_stop_udma(core_loop,
+						ve_task->p_ve_mm->udma_desc_bmap);
 			VEOS_DEBUG("Update DMAATB for Core %d",
 					core_loop);
 			for (loop_cnt = dir_num; loop_cnt < dir_num + count ; loop_cnt++) {
@@ -1945,11 +2096,12 @@ int veos_update_dmaatb(uint64_t core_set, void *reg_sw, int dir_num,
 	/* Start all core */
 	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores; core_loop++) {
 		if (CHECK_BIT(core_set, core_loop)) {
+			curr_ve_task = VE_CORE(0, core_loop)->curr_ve_task;
 			/* Start UDMA */
 			if (*(ve_task->core_dma_desc) == core_loop)
-				psm_start_udma(core_loop);
+				psm_start_udma(core_loop,
+						curr_ve_task->p_ve_mm->udma_desc_bmap);
 
-			curr_ve_task = VE_CORE(0, core_loop)->curr_ve_task;
 			if (curr_ve_task && curr_ve_task->ve_task_state ==
 					RUNNING &&
 					!(*(arr_exs + core_loop) & VE_EXCEPTION)) {

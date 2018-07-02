@@ -11,7 +11,8 @@ ve_include_HEADERS = \
 	veshm_defs.h \
 	vecr_defs.h \
 	sysve.h \
-	vhcall.h
+	vhcall.h \
+	vhshm_defs.h
 
 noinst_HEADERS = \
 	comm_request.h \

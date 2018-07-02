@@ -84,4 +84,6 @@ struct veos_cmd_entry pseudo_veos_cmd[PSEUDO_VEOS_MAX_MSG_NUM] = {
 	{"CMD_VEMM", veos_handle_vemmctl},
 	{"VHVA_SYNC", amm_handle_vhva_sync_req},
 	{"CMD_VHSHM", veos_vhshm},
+	{"MAP_DMADES", veos_handle_map_dmades},
+	{"UNMAP_DMADES", veos_handle_unmap_dmades},
 };

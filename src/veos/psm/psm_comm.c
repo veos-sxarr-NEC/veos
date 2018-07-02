@@ -95,7 +95,7 @@ ssize_t psm_pseudo_send_cmd(int socket_fd, void *buff, ssize_t max_len)
 		transferred += sent_byte;
 		if (transferred == max_len)
 			break;
-		VEOS_DEBUG("transferred = %ld, sent_byte = %ld\n",
+		VEOS_DEBUG("transferred = %ld, sent_byte = %ld",
 				transferred, sent_byte);
 	}
 
@@ -2209,7 +2209,7 @@ int psm_handle_setnew_sas_req(struct veos_thread_arg *pti)
 	}
 
 	pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
-	VEOS_DEBUG("Received NEW SAS request from Pseudo with pid :%d\n", pid);
+	VEOS_DEBUG("Received NEW SAS request from Pseudo with pid :%d", pid);
 
 	length = (((PseudoVeosMessage *)(pti->pseudo_proc_msg))->
 			pseudo_msg).len;

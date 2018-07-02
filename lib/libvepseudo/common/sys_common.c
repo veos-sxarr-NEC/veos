@@ -3,16 +3,16 @@
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either version
+ * 2.1 of the License, or (at your option) any later version.
  *
  * The VEOS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public
+ * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
@@ -61,9 +61,10 @@ void ve_syscall_handler(veos_handle *handle, int syscall_num)
 
 	PSEUDO_TRACE("Entering");
 
-	if (syscall_num > NR_ve_syscalls) {
+	if (syscall_num >= NR_ve_syscalls) {
 		PSEUDO_ERROR("INVALID SYSCALL %d", syscall_num);
-		return;
+		retval = -ENOSYS;
+		goto SET_REGVAL_REQ;
 	}
 
 	PSEUDO_DEBUG("received request for syscall_num = %d", syscall_num);
@@ -83,6 +84,7 @@ void ve_syscall_handler(veos_handle *handle, int syscall_num)
 		retval = -ENOTSUP;
 	}
 
+SET_REGVAL_REQ:
 	/* Send UN BLOCK and set REGVAL request to veos */
 	un_block_and_retval_req(handle, syscall_num, retval, blocking_syscall);
 	PSEUDO_TRACE("Exiting");
@@ -1434,6 +1436,13 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 		break;
 	case VE_SYSVE_VHSHM_CTL:
 		retval = sys_vhshm(handle, &args[1]);
+		break;
+	case VE_SYSVE_MAP_DMADES:
+		retval = ve_sys_map_dmades(handle,(uint64_t *)args[1],
+						(uint64_t *)args[2]);
+		break;
+	case VE_SYSVE_UNMAP_DMADES:
+		retval = ve_sys_unmap_dmades(handle,(uint64_t)args[1]);
 		break;
 	default:
 		/* write return value */

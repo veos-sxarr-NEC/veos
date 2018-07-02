@@ -3,16 +3,16 @@
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either version
+ * 2.1 of the License, or (at your option) any later version.
  *
  * The VEOS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public
+ * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
@@ -50,7 +50,7 @@ extern __thread bool sys_enter_trap;
 				vedl_get_syscall_area_offset(X) +\
 				PTRACE_OPTION_OFFSET))
 
-int send_sig_to_itself(int, int, void *);
+void send_sig_to_itself(int, int, void *);
 void ve_syscall_trace(veos_handle *, bool);
 int pseudo_psm_send_ptrace_event_req(int, uint64_t);
 int pseudo_psm_recv_ptrace_event_ack(int);

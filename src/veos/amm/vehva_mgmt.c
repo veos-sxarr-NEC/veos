@@ -153,9 +153,13 @@ int64_t veos_vehva_alloc(int flag, uint64_t size, struct ve_task_struct *tsk)
 			VEOS_DEBUG("VEHVA request for DMA control register");
 			vehva_addr = DMA_CNT_START;
 			goto mape;
-		} else if (flag & VEHVA_DMA_DESC_REG) {
-			VEOS_DEBUG("VEHVA request for VEHVA DMA descriptor");
-			vehva_addr = DMA_DESC_START;
+		} else if (flag & VEHVA_DMA_DESC_E_REG) {
+			VEOS_DEBUG("VEHVA request for VEHVA DMA descriptor E");
+			vehva_addr = DMA_DESC_E_START;
+			goto mape;
+		} else if (flag & VEHVA_DMA_DESC_H_REG) {
+			VEOS_DEBUG("VEHVA request for VEHVA DMA descriptor H");
+			vehva_addr = DMA_DESC_H_START;
 			goto mape;
 		} else if (flag & VEHVA_SYSCOM_REG) {
 			VEOS_DEBUG("VEHVA request for VEHVA DMA descriptor");

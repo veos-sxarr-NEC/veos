@@ -3,16 +3,16 @@
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either version
+ * 2.1 of the License, or (at your option) any later version.
  *
  * The VEOS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public
+ * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
@@ -45,7 +45,7 @@
 #include "config.h"
 #include "libved.h"
 #include "loader.h"
-#include "ve_list.h"
+#include "list.h"
 #include "process_mgmt_comm.h"
 #include "exception.h"
 #include "sys_mm.h"
@@ -295,7 +295,6 @@ int main(int argc, char *argv[], char *envp[])
 	if (NULL == app_pseudo_core) {
 		fprintf(stderr, "VE process setup failed, failure getting "
 				"log4c appender\n");
-		free(app_file_name);
 		pseudo_abort();
 	}
 
@@ -310,10 +309,12 @@ int main(int argc, char *argv[], char *envp[])
 	/* fetching the log4c file */
 	snprintf(log4c_file_path, sizeof(log4c_file_path) - 1, "%s/log4crc",
 			getenv("LOG4C_RCPATH"));
-	snprintf(log4c_home_file_path, sizeof(log4c_home_file_path) - 1, "%s/.log4crc",
-			getenv("HOME"));
-	snprintf(log4c_curr_file_path, sizeof(log4c_curr_file_path) - 1, "%s/log4crc",
-			getenv("PWD"));
+
+	snprintf(log4c_home_file_path, sizeof(log4c_home_file_path) - 1,
+			"%s/.log4crc", getenv("HOME"));
+
+	snprintf(log4c_curr_file_path, sizeof(log4c_curr_file_path) - 1,
+			"%s/log4crc", getenv("PWD"));
 
 	/* Create file only when configuration file is present
 	 * && also log path is valid */
@@ -373,8 +374,14 @@ int main(int argc, char *argv[], char *envp[])
 	}
 
 	/* Copy arguments for ve program */
+	if ((argc * sizeof(char*)) > UINT_MAX) {
+		PSEUDO_ERROR("To many command line arguments");
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
+
 	ve_argv = (char **)malloc(argc * sizeof(char *));
-	if ((NULL == ve_argv) || ((argc * sizeof(char*)) > UINT_MAX)) {
+	if (NULL == ve_argv) {
 		PSEUDO_DEBUG("failed to create buffer to copy arguments"
 				" of VE program");
 		PSEUDO_ERROR("failed to create internal buffer");
@@ -477,11 +484,16 @@ int main(int argc, char *argv[], char *envp[])
 		snprintf(exe_name, NAME_MAX + PATH_MAX, "%s", argv[optind]);
 		optind++;
 		for (i = 0, ve_argc = 1; optind < argc; i++, optind++) {
+			if (((strlen(argv[optind]) + 1) * sizeof(char)) > UINT_MAX) {
+				PSEUDO_ERROR("input string is too long\n");
+				fprintf(stderr, "VE process setup failed\n");
+				pseudo_abort();
+			}
+
 			ve_argv[ve_argc] =
-				(char *)malloc((strlen(argv[optind]) + 1) *
-						sizeof(char));
-			if (ve_argv[ve_argc] == NULL ||
-				(((strlen(argv[optind]) + 1) * sizeof(char)) > UINT_MAX)) {
+				(char *)malloc((strlen(argv[optind]) + 1)
+					* sizeof(char));
+			if (ve_argv[ve_argc] == NULL) {
 				PSEUDO_ERROR("failed to create internal buffer");
 				fprintf(stderr, "VE process setup failed\n");
 				pseudo_abort();
@@ -502,7 +514,13 @@ int main(int argc, char *argv[], char *envp[])
 	}
 
 	/* Copy ve executable file path/name to ve arguments */
-	ve_argv[0] = (char *)malloc((strlen(exe_name) + 1) * sizeof(char));
+	if (((strlen(exe_name) + 1)*sizeof(char)) > UINT_MAX) {
+		PSEUDO_ERROR("Executable file path is to big");
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
+	ve_argv[0] = (char *)malloc((strlen(exe_name) + 1) *
+				sizeof(char));
 	if (NULL == ve_argv[0]) {
 		PSEUDO_DEBUG("Failed to create buffer to copy VE"
 				" executable name");
@@ -539,8 +557,6 @@ int main(int argc, char *argv[], char *envp[])
 		munmap(ptrace_private, 4096);
 		pseudo_abort();
 	}
-
-	memset(ptrace_private, 0, 4096);
 
 	/* Obtain ve driver fd which was maintained earlier in
 	 * VE task struct during the processing of ve_execve()

@@ -195,7 +195,7 @@ int create_phdr(struct dump_params *cprm,
 				}
 			}
 			VEOS_DEBUG("GOING TO DUMP: pos: %p, begin: %p,"
-					" memsize: %p perm: %d\n",
+					" memsize: %p perm: %d",
 					(void *)cprm->f_post, (void *)start,
 					(void *)buffer_size,
 					(ve_pmap->prmsn));

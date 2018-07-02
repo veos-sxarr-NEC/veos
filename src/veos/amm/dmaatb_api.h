@@ -69,4 +69,6 @@ void amm_dump_dmaatb(struct ve_task_struct *, bool);
 void __dump_dmaatb(FILE*, dmaatb_reg_t *);
 int64_t veos_aa_to_vehva(pid_t, vemaa_t, int);
 int sync_node_dmaatb_dir(vehva_t, struct ve_mm_struct *, dir_t, jid_t);
+int veos_map_dmades(pid_t, uint64_t *, uint64_t *);
+int veos_unmap_dmades(pid_t, uint64_t);
 #endif

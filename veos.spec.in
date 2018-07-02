@@ -3,7 +3,7 @@ Version:	@VERSION@
 Release:	@RELEASE@%{?dist}
 Summary:	VE Operating System
 Group:		System Environment/Daemons
-License:	GPL
+License:	GPLv2+ and (LGPLv2+ and BSD and MIT)
 #URL:		
 Source0:	@PACKAGE@-@VERSION@.tar.gz
 Vendor:		NEC Corporation
@@ -28,6 +28,7 @@ functionality to VE programs.
 
 %package	libveptrace
 Summary:	VE ptrace library
+License:	GPLv2+
 
 %description	libveptrace
 This package contains the VE ptrace library.
@@ -114,17 +115,21 @@ done
 /sbin/ldconfig
 
 %files
-%{_libexecdir}/*
-%{_libdir}/libvepseudo.so.*
-%{_sbindir}/*
-@ve_libexecdir@/*
-@ve_bindir@/*
 %config %{_sysconfdir}/log4crc
 %config @binfmtdir@/ve.conf
 @ve_os_launcher_confdir@/ve-ived.options
 @ve_os_launcher_confdir@/veos_timer.options
+@ve_bindir@/*
+# GPLv2+
+%{_sbindir}/*
+@ve_libexecdir@/*
 %{_prefix}/lib/python2.7/site-packages/*
 %{_prefix}/lib/python2.7/site-packages/*/*
+%{_libexecdir}/ve_coredump_helper
+%{_libexecdir}/ve_release_resource
+# LGPLv2+ and BSD and MIT
+%{_libdir}/libvepseudo.so.*
+%{_libexecdir}/ve_exec
 %doc
 
 %files libveptrace

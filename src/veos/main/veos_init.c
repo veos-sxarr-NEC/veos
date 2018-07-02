@@ -563,7 +563,7 @@ int veos_init_ve_node(void)
 		}
 
 		/* Ensure user mode DMA is halt state. */
-		if (psm_stop_udma(core_loop) != 0) {
+		if (psm_stop_udma(core_loop, DMA_DESC_E_H) != 0) {
 			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 				"Failed to stop udma %d",
 				core_loop);

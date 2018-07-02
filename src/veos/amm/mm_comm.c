@@ -394,12 +394,6 @@ int amm_handle_shmget(veos_thread_arg_t *pti)
 		goto send_ack;
 	}
 
-	if (req.flag & SHM_HUGETLB) {
-		ret = -EINVAL;
-		VEOS_DEBUG("SHM_HUGETLB not supported");
-		goto send_ack;
-	}
-
 	/* Get the information of /proc/## for the given remote pid */
 	ret = psm_get_ve_proc_info(tsk->pid, &ve_proc_info);
 	if (-1 == ret) {
@@ -655,13 +649,6 @@ int amm_handle_shmctl(veos_thread_arg_t *pti)
 		ret = -ESRCH;
 		VEOS_DEBUG("Error (%s) while getting task structure for pid %d",
 			strerror(-ret), pid);
-		goto send_ack;
-	}
-
-	if (req.flag) {
-		ret = -EINVAL;
-		VEOS_DEBUG("Error (%s) for pid %d",
-				strerror(-ret), pid);
 		goto send_ack;
 	}
 

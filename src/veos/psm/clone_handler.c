@@ -994,7 +994,7 @@ int do_ve_fork(unsigned long clone_flags,
 				&(new_task->pid));
 		if (0 != retval) {
 			VEOS_ERROR("Failed to store child PID in "
-					"parent memory\n");
+					"parent memory");
 			retval = -ENOMEM;
 			goto hndl_return1;
 		}

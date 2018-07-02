@@ -3,16 +3,16 @@
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either version
+ * 2.1 of the License, or (at your option) any later version.
  *
  * The VEOS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public
+ * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
@@ -88,7 +88,7 @@ void ve_sa_sigaction_handler(int signum,
 		retval = pseudo_deliver_exception(signal_info, g_handle);
 		if (0 > retval) {
 			WRITE(2, "failed to deliver hardware"
-					" exception request", 46);
+					" exception request", 45);
 			pseudo_abort();
 		}
 		pending_hw_signal = false;
@@ -148,7 +148,7 @@ void ve_send_signal_req(pid_t tid, int signum, siginfo_t *signal_info
 	retval = pseudo_psm_recv_signal_ack(g_handle->veos_sock_fd);
 	if (0 > retval) {
 		WRITE(2, "failed to receive signal acknowledgement"
-				" from veos", 52);
+				" from veos\n", 52);
 		pseudo_abort();
 	}
 

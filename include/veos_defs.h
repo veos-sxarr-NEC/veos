@@ -40,10 +40,11 @@
 #define VE_CR_THREAD	((uint64_t)1 << 36)
 #define VE_CR_MPI	((uint64_t)1 << 37)
 
+/* missing number 2 and 3 */
 #define VE_VEHVA_SYS_COM_REG_PAGE0		0
 #define VE_VEHVA_SYS_COM_REG_PAGE1		1
-#define VE_VEHVA_DMACTL				2
-#define VE_VEHVA_DMADES				3
+#define VE_VEHVA_DMACTL_E			4
+#define VE_VEHVA_DMADES_E			5
 
 #define VE_REGID_PSW	 0
 #define VE_REGID_PMMR	 1

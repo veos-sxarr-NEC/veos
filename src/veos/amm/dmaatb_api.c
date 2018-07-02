@@ -660,6 +660,7 @@ int64_t veos_free_dmaatb_entry_tsk(struct ve_task_struct *req_tsk,
 	 * Use veos_get_pgmod instead of returning pgmod from veos_vehva_free*/
 	pgmod = veos_vehva_free(vehva, size, req_tsk);
 	if (0 > pgmod) {
+		ret = pgmod;
 		VEOS_DEBUG("Error (%s) while freeing vehva",
 				strerror(-ret));
 		goto err_handle;
@@ -916,12 +917,13 @@ err:
  */
 int64_t veos_update_dmaatb_context(struct ve_task_struct *tsk, int core_num)
 {
-	int64_t ret = 0;
+	int64_t ret = 0, err_ret = 0;
 	int phys_core = 0;
 	struct ve_core_struct *p_ve_core = NULL;
 	veraa_t paddr[2] =  {0, 0};
 
 	VEOS_TRACE("Invoked");
+
 	if (!tsk || (-1 == core_num))
 		return -1;
 
@@ -945,36 +947,64 @@ int64_t veos_update_dmaatb_context(struct ve_task_struct *tsk, int core_num)
 		return ret;
 	}
 	amm_dump_dmaatb(tsk, true);
-	paddr[0] = VERAA(phys_core) + SYSPROT_OFF + EDMADESC_OFF;
+	paddr[0] = VERAA(phys_core) + SYSPROT_OFF + EDMADESC_E_OFF;
 
 	ret = veos_alloc_dmaatb_entry_for_aa_tsk(tsk, paddr,
 			PROT_READ|PROT_WRITE,
 			VE_ADDR_VERAA,
-			VEHVA_DMA_DESC_REG|VEHVA_4K|VEHVA_MAP_FIXED,
+			VEHVA_DMA_DESC_E_REG|VEHVA_4K|VEHVA_MAP_FIXED,
 			false);
 	if (0 > ret) {
 		VEOS_DEBUG("veos_alloc_dmaatb_entry_for_aa failed");
+		err_ret = ret;
 		goto hndl_err;
 	}
+	amm_dump_dmaatb(tsk, true);
+
+	/* If DMA Descriptor table H is enabled then allocate dmaatb
+	 * entry.
+	 */
+	if (!(tsk->p_ve_mm->udma_desc_bmap & DMA_DESC_H))
+		goto done;
+
+	paddr[0] = VERAA(phys_core) + SYSPROT_OFF + EDMADESC_H_OFF;
+
+	ret = veos_alloc_dmaatb_entry_for_aa_tsk(tsk, paddr,
+			PROT_READ|PROT_WRITE,
+			VE_ADDR_VERAA,
+			VEHVA_DMA_DESC_H_REG|VEHVA_4K|VEHVA_MAP_FIXED,
+			false);
+	if (0 > ret) {
+		VEOS_DEBUG("veos_alloc_dmaatb_entry_for_aa failed");
+		err_ret = ret;
+		goto hndl_err1;
+	}
+	amm_dump_dmaatb(tsk, true);
+
+done:
 	VEOS_DEBUG("updated dmaatb_context for pid %d on"
 			" logical core %d physical core %d",
 			tsk->pid, core_num, phys_core);
-	amm_dump_dmaatb(tsk, true);
 	ret = 0;
 	VEOS_TRACE("returned");
 	return ret;
+
+hndl_err1:
+	paddr[0] = VERAA(phys_core) + SYSPROT_OFF + EDMADESC_E_OFF;
+	ret = veos_free_dmaatb_entry_tsk(tsk, paddr[0],
+			VEHVA_4K);
+	if (0 > ret)
+		VEOS_DEBUG("veos_free_dmaatb_fail");
 hndl_err:
 	paddr[0] = VERAA(phys_core) + SYSPROT_OFF + EDMACTL_OFF;
 	ret = veos_free_dmaatb_entry_tsk(tsk, paddr[0],
 			VEHVA_4K);
-	if (0 > ret) {
+	if (0 > ret)
 		VEOS_DEBUG("veos_free_dmaatb_fail");
-		return -1;
-	}
 
-	VEOS_DEBUG("returned with 0x%lx", ret);
+	VEOS_DEBUG("returned with 0x%lx", err_ret);
 	VEOS_TRACE("returned");
-	return ret;
+	return err_ret;
 }
 /**
  * @brief Release DMAATB directorty.
@@ -1013,7 +1043,7 @@ int veos_release_dmaatb_entry(struct ve_task_struct *tsk)
 		pg_invalid(&(vnode->dmaatb.entry[dir_num][ps_entry]));
 	}
 
-	for (ps_entry = 3; ps_entry < 5; ps_entry++) {
+	for (ps_entry = 3; ps_entry < 6; ps_entry++) {
 		pg_unsetprot(&(dmaatb->entry[0][ps_entry]));
 		pg_unsettype(&(dmaatb->entry[0][ps_entry]));
 		pg_clearpfn(&(dmaatb->entry[0][ps_entry]));
@@ -1074,4 +1104,206 @@ int sync_node_dmaatb_dir(vehva_t vehva, struct ve_mm_struct *mm, dir_t dir_idx, 
 			sizeof(uint64_t)*ATB_ENTRY_MAX_SIZE);
 
 	return dir_num;
+}
+
+/**
+ * @brief  This function will allocate the DMAATB entry for DMA Descriptor
+ * table H for the given PID.
+ *
+ * @param[in] pid PID of VE process
+ * @param[out] vehva_dmades VEHVA of DMA descriptor table H
+ * @param[out] vehva_dmactl VEHVA of DMA control registor for H
+ *
+ * @return 0 on success, -errno on failure
+ */
+int veos_map_dmades(pid_t pid, uint64_t *vehva_dmades, uint64_t *vehva_dmactl)
+{
+	int retval = -1, phys_core = -1;
+	struct ve_task_struct *tsk = NULL;
+	struct ve_core_struct *p_ve_core = NULL;
+	veraa_t paddr[2] = {0, 0};
+	bool set_permission_bit = true;
+
+	VEOS_TRACE("Entering");
+
+	/* Checking for valid arguments received or not */
+	if (vehva_dmades == NULL || vehva_dmactl == NULL) {
+		VEOS_DEBUG("NULL args, vehva_dmades: %p vehva_dmactl: %p",
+				vehva_dmades, vehva_dmactl);
+		retval = -EINVAL;
+		goto err_return1;
+	}
+
+	/* Find the task struct corresponding to the given PID */
+	tsk = find_ve_task_struct(pid);
+	if (NULL == tsk) {
+		retval = -ESRCH;
+		VEOS_DEBUG("Error (%s) while searching for pid %d",
+				strerror(-retval), pid);
+		goto err_return1;
+	}
+
+	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, LOCK,
+			"Failed to acquire thread-group-mm-lock");
+
+	/* Check if DMA descriptor table H is already enabled or not */
+	if (tsk->p_ve_mm->udma_desc_bmap & DMA_DESC_H) {
+		VEOS_DEBUG("DMAATB for DMA descriptor table H"
+				" is already allocated of PID: %d", pid);
+		retval = -EBUSY;
+		goto err_return2;
+	}
+
+	/* Currently VE task is not scheduled on any of the core.
+	 * So we will just update the field "DMA_DESC_H" and
+	 * during scheduling DMAATB entry will get allocated.
+	 */
+	if (-1 == *tsk->core_dma_desc || false == tsk->p_ve_mm->is_sched) {
+		VEOS_DEBUG("PID: %d is not scheduled.", tsk->pid);
+
+		/* Currently task is scheduled out so there is no need
+		 * to set the permission bit of DMA control register H.
+		 */
+		set_permission_bit = false;
+		goto update_field;
+	}
+
+	p_ve_core = VE_CORE(0, *tsk->core_dma_desc);
+	phys_core = p_ve_core->phys_core_num;
+	VEOS_DEBUG("PID %d DMA DESC logical core %d physical core: %d",
+			tsk->pid, *tsk->core_dma_desc, phys_core);
+
+	paddr[0] = VERAA(phys_core) + SYSPROT_OFF + EDMADESC_H_OFF;
+	amm_dump_dmaatb(tsk, true);
+	retval = veos_alloc_dmaatb_entry_for_aa_tsk(tsk, paddr,
+			PROT_READ|PROT_WRITE,
+			VE_ADDR_VERAA,
+			VEHVA_DMA_DESC_H_REG|VEHVA_4K|VEHVA_MAP_FIXED,
+			true);
+	if (0 > retval) {
+		VEOS_DEBUG("veos_alloc_dmaatb_entry_for_aa failed");
+		goto err_return2;
+	}
+
+	amm_dump_dmaatb(tsk, true);
+
+update_field:
+	/* Zero-clear DMA descriptor table H and DMA control register corresponding
+	 * to DMA descriptor table H.
+	 */
+	memset(&(tsk->udma_context->dmades[VE_UDMA_HENTRY]), 0,
+				sizeof(dma_desc_t)*DMA_DSCR_ENTRY_SIZE);
+	memset(&(tsk->udma_context->dmactl[VE_UDMA_HENTRY]), 0,
+				sizeof(dma_control_t));
+
+	/* If any threads of the process are running on VE cores, then sync the
+	 * soft copy of DMA descriptor table H and DMA control register
+	 * corresponding to DMA descriptor table H to actual registers, and set
+	 * permission bit in the DMA control register of H.
+	 */
+	if (true == set_permission_bit) {
+		VEOS_DEBUG("Restore UDMA context corresponding to H");
+		if (__psm_restore_udma_context(tsk,
+					*(tsk->core_dma_desc), VE_UDMA_HENTRY))
+			veos_abort("Fail to Restore DMA H context of core: %d",
+					*tsk->core_dma_desc);
+
+		if (psm_start_udma(*(tsk->core_dma_desc), DMA_DESC_H))
+			veos_abort("Fail to START DMA H of core: %d",
+					*tsk->core_dma_desc);
+	}
+
+	*vehva_dmades = DMA_DESC_H_START;
+	*vehva_dmactl = DMA_CNT_START;
+	tsk->p_ve_mm->udma_desc_bmap = DMA_DESC_E_H;
+	VEOS_DEBUG("DMA descriptor table H is now enabled of PID: %d", pid);
+	retval = 0;
+err_return2:
+	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, UNLOCK,
+			"Failed to release thread-group-mm-lock");
+	put_ve_task_struct(tsk);
+err_return1:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Free VEHVA region update the DMAATB entries register.
+ *
+ * @param[in] requester PID of the requesting process
+ * @param[in] vehva_dmades VEHVA which DMA descriptor is mapped
+ *
+ * @return 0 on success, -errno on failure
+ */
+int veos_unmap_dmades(pid_t pid, uint64_t vehva_dmades)
+{
+	struct ve_task_struct *tsk = NULL;
+	int retval = 0;
+
+	VEOS_TRACE("Entering");
+
+	/* Check if vehva_dmades received is not a valid VEHVA of
+	 * DMA descriptor table H.
+	 */
+	if (vehva_dmades != DMA_DESC_H_START) {
+		VEOS_DEBUG("Invalid VEHVA received : %lx", vehva_dmades);
+		retval = -EINVAL;
+		goto err_return1;
+	}
+
+	tsk = find_ve_task_struct(pid);
+	if (NULL == tsk) {
+		retval = -ESRCH;
+		VEOS_DEBUG("Error (%s) while searching for pid %d",
+				strerror(-retval), pid);
+		goto err_return1;
+	}
+
+	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, LOCK,
+			"Failed to acquire thread-group-mm-lock");
+
+	if (!(tsk->p_ve_mm->udma_desc_bmap & DMA_DESC_H)) {
+		retval = -EINVAL;
+		VEOS_DEBUG("Error (%s) dmadesc is not enable for %d",
+				strerror(-retval), pid);
+		goto err_return2;
+	}
+
+	tsk->p_ve_mm->udma_desc_bmap = DMA_DESC_E;
+
+	/* If we VE task is scheduled on core then we will invoke
+	 * veos_free_dmaatb_entry_tsk() else DMAATB was already released
+	 * from function veos_release_dmaatb_entry() during schedule out.
+	 */
+	if (true == tsk->p_ve_mm->is_sched && *tsk->core_dma_desc != -1) {
+		/* Stop the user mode DMA corresponding to DMA
+		 * descriptor table H.
+		 */
+		if (psm_stop_udma(*tsk->core_dma_desc, DMA_DESC_H))
+			veos_abort("Fail to STOP DMA H of core: %d",
+					*tsk->core_dma_desc);
+
+		retval = veos_free_dmaatb_entry_tsk(tsk, vehva_dmades,
+				PAGE_SIZE_4KB);
+		if (0 > retval) {
+			VEOS_DEBUG("Error (%s) while freeing the dmaatb",
+					strerror(-retval));
+
+			/* Revert the bitmap in case of failure */
+			tsk->p_ve_mm->udma_desc_bmap = DMA_DESC_E_H;
+			goto err_return2;
+		}
+	} else {
+		VEOS_DEBUG("PID: %d is not scheduled on core", tsk->pid);
+	}
+
+	VEOS_DEBUG("DMA descriptor table H is now disabled of PID: %d", pid);
+	retval = 0;
+err_return2:
+	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, UNLOCK,
+			"Failed to release thread-group-mm-lock");
+	put_ve_task_struct(tsk);
+err_return1:
+	VEOS_TRACE("Exiting");
+	return retval;
 }

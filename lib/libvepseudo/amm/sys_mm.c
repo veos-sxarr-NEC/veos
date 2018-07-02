@@ -3,16 +3,16 @@
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either version
+ * 2.1 of the License, or (at your option) any later version.
  *
  * The VEOS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public
+ * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
@@ -832,10 +832,9 @@ int64_t __ve_munmap(veos_handle *handle, vemva_t vemva,
 		ret = pseudo_msg->syscall_retval;
 		PSEUDO_DEBUG("Error(%s) occurred on VE OS while unmapping vemva(0x%lx)",
 				strerror(-ret), vemva);
-	} else {
+	} else
 		PSEUDO_DEBUG("vemva(0x%lx) unmapping operation successfully done on VE", vemva);
-		ret = pseudo_msg->syscall_retval;
-	}
+
 	pseudo_veos_message__free_unpacked(pseudo_msg, NULL);
 
 	/*Freeing vemva*/
@@ -1139,6 +1138,14 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 
 	/* Finding guard address from global array*/
 	idx = find_global_array_index(tid);
+	if (VEOS_MAX_VE_THREADS == idx) {
+		PSEUDO_ERROR("Failed to get thread index");
+		fprintf(stderr, "Internal thread resource usage "
+				"error\n");
+		/* FATAL ERROR: abort current process */
+		pseudo_abort();
+	}
+
 
 	/*Check pid and tid, update guard_addr accordingly*/
 
@@ -1706,7 +1713,7 @@ int64_t __ve_msync(veos_handle *handle, vemva_t vemva, size_t size, int flag)
 		 */
 		if (vemva_mapped((void *)vemva, pgsize, MARK_FILE|MARK_USED)) {
 			/* receive the data from VE memory*/
-			ret = _ve_recv_data_ipc(handle, (uint64_t)vemva_ve, pgsize, (void *)vemva_vh);
+			ret = __ve_recv_data(handle, (uint64_t)vemva_ve, pgsize, (void *)vemva_vh);
 			if (0 > ret) {
 				PSEUDO_TRACE("Error(%s) while receiving date from VE",
 						strerror(-ret));
