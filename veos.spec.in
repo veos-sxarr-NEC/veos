@@ -59,6 +59,17 @@ Summary:	Headers for VEOS
 This package contains the header files of definitions of VEOS.
 VE programs or libraries include them if required.
 
+%package	libvepseudo-headers
+License:	LGPLv2+ and BSD
+Summary:	Headers for libvepseudo
+Requires:	%{name} = %{version}-%{release}
+Requires:	libved-devel velayout-devel
+
+%description	libvepseudo-headers
+This package contains the header files of definition of libvepseudo.
+VH programs or libraries using internal functions in libvepseudo
+include them.
+
 %define _prefix @prefix@
 %define _sysconfdir @sysconfdir@
 %define _localstatedir @localstatedir@
@@ -147,3 +158,15 @@ done
 
 %files musl-headers
 @ve_musl_includedir@/*.h
+
+%files libvepseudo-headers
+# LGPLv2+
+%{_includedir}/libvepseudo/*.h
+%{_includedir}/libvepseudo/amm/*.h
+%{_includedir}/libvepseudo/common/handle.h
+%{_includedir}/libvepseudo/common/sys_common.h
+%{_includedir}/libvepseudo/common/ve_syscall_no.h
+%{_includedir}/libvepseudo/loader/loader.h
+%{_includedir}/libvepseudo/psm/*.h
+# BSD
+%{_includedir}/libvepseudo/common/list.h

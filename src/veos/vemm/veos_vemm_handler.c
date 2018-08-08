@@ -40,6 +40,9 @@
 #include "veos_vemm_log.h"
 #include "veos_vemm_handler.h"
 
+#define VADDR(va) ((va) & 0xffffffffffffUL)
+#define USE_PCISYNC(va) (((va) & 0x4000000000000000UL) != 0)
+#define SYNCNUM(va) (((va) & 0x3000000000000000UL) >> 60)
 /**
  * @brief Check process ID
  *
@@ -104,21 +107,22 @@ static int veos_vemm_get_page_size(pid_t pid, uint64_t vaddr)
  * Check a VE memory area as acquire operation of VEMM agent.
  *
  * @param pid process ID
- * @param start_vaddr start address of VE memory area to check
+ * @param encoded_vaddr start address of VE memory area to check
  * @param size size of the area in bytes
  *
  * @return PCIATB page size upon success;
  *         zero if one or more virtual pages are not mapped or
  *              if the area cannot be mapped due to page size.
  */
-int veos_vemm_acquire(pid_t pid, uint64_t start_vaddr, size_t size)
+int veos_vemm_acquire(pid_t pid, uint64_t encoded_vaddr, size_t size)
 {
 	VEMM_AGENT_TRACE("%s(%d, %p, %lu)", __func__, (int)pid,
-		(void *)start_vaddr, size);
+		(void *)encoded_vaddr, size);
 	VEMM_AGENT_DEBUG("acquire: pid=%d, addr=%p, size=%lu", (int)pid,
-		(void *)start_vaddr, size);
+		(void *)encoded_vaddr, size);
 
 	/* check the first page */
+	uint64_t start_vaddr = VADDR(encoded_vaddr);
 	int page_size = veos_vemm_get_page_size(pid, start_vaddr);
 	int min_page_size = page_size;
 
@@ -169,7 +173,7 @@ int veos_vemm_acquire(pid_t pid, uint64_t start_vaddr, size_t size)
  *
  * @param euid effective user ID of process
  * @param pid process ID
- * @param vaddr start address of VE memory area to map from PCI space
+ * @param encoded_vaddr start address of VE memory area to map from PCI space
  * @param size size of the area in bytes
  * @param writable 1 if write permission is required; 0 if unnecessary.
  * @param[out] arrayp pointer to an array storing VHSAAs mapped to the area
@@ -178,13 +182,15 @@ int veos_vemm_acquire(pid_t pid, uint64_t start_vaddr, size_t size)
  *
  * @return the number of elements of *arrayp, addresses in BAR01 window.
  */
-int veos_vemm_get_pages(uid_t euid, pid_t pid, uint64_t vaddr, size_t size,
-			int writable, uint64_t **arrayp, size_t *sizep,
+int veos_vemm_get_pages(uid_t euid, pid_t pid, uint64_t encoded_vaddr,
+			size_t size, int writable,
+			uint64_t **arrayp, size_t *sizep,
 			unsigned char veshm_id[16])
 {
 	VEMM_AGENT_TRACE("%s(%d, %d, %p, %lu, %d, ...)", __func__,
-		(int)euid, (int)pid, (void *)vaddr, size, writable);
+		(int)euid, (int)pid, (void *)encoded_vaddr, size, writable);
 
+	uint64_t vaddr = VADDR(encoded_vaddr);
 	int pciatb_page_size = veos_ived_get_pciatb_pgmode(pid);
 	uint64_t *pci_address = NULL;
 
@@ -208,12 +214,14 @@ int veos_vemm_get_pages(uid_t euid, pid_t pid, uint64_t vaddr, size_t size,
 		return -EINVAL;
 	}
 
-	uint64_t mode_flag = (writable ? 0 : VE_SHM_RO) | VE_REGISTER_PCI;
+	uint64_t mode_flag = (writable ? 0 : VE_SHM_RO) |
+		(USE_PCISYNC(encoded_vaddr) ? VE_PCISYNC : 0) | VE_REGISTER_PCI;
+	int syncnum = SYNCNUM(encoded_vaddr);
 
-	VEMM_AGENT_TRACE("veshm_open_internal(%d, %d, %p, %ld, 0, 0x%lx, ..)",
-		(int)euid, (int)pid, (void *)vaddr, size, mode_flag);
+	VEMM_AGENT_TRACE("veshm_open_internal(%d, %d, %p, %ld, %d, 0x%lx, ..)",
+		(int)euid, (int)pid, (void *)vaddr, size, syncnum, mode_flag);
 
-	uint64_t len = veshm_open_internal(euid, pid, vaddr, size, 0,
+	uint64_t len = veshm_open_internal(euid, pid, vaddr, size, syncnum,
 				mode_flag, (unsigned char (*)[16])veshm_id,
 				&pci_address);
 	if (len == (uint64_t)-1) {

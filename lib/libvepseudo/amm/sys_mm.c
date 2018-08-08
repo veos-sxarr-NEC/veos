@@ -45,11 +45,6 @@
 #include "sys_process_mgmt.h"
 #include "exception.h"
 
-__thread struct _ve_page_info ve_page_info;		/*!< VE page size info*/
-extern uint64_t default_page_size;
-extern struct tid_info global_tid_info[VEOS_MAX_VE_THREADS];
-extern pthread_mutex_t tid_counter_mutex;
-
 /**
  * @brief This interface will send request to veos to sync vhva.
  *
@@ -413,12 +408,6 @@ void *__ve_mmap(veos_handle *handle, vemva_t addr, size_t size,
 	if (!(flag & MAP_ANON)) {
 		prot |= PROT_READ;
 	}
-	/* Is size zero or less than zero*/
-	if ((int64_t)size <= 0) {
-		PSEUDO_DEBUG("Error(%s) size(0x%lx)", strerror(EINVAL), size);
-		errno = EINVAL;
-		return MAP_FAILED;
-	}
 
 	/* Check for the validity of flag */
 	if (flag & (MAP_GROWSDOWN | MAP_HUGETLB | MAP_LOCKED | MAP_NONBLOCK
@@ -431,13 +420,6 @@ void *__ve_mmap(veos_handle *handle, vemva_t addr, size_t size,
 	/* Update ve page info*/
 	update_ve_page_info(&flag);
 
-	/*align size with page size*/
-	if (!IS_ALIGNED(size, ve_page_info.page_size)) {
-		aligned_sz = ALIGN(size, ve_page_info.page_size);
-		PSEUDO_DEBUG("Given size aligned to (0x%lx)", aligned_sz);
-	} else {
-		aligned_sz = size;
-	}
 
 	/*
 	 * Check for alignment (VE_PAGE_SIZE Alignment) of
@@ -449,30 +431,6 @@ void *__ve_mmap(veos_handle *handle, vemva_t addr, size_t size,
 			errno = EINVAL;
 			return MAP_FAILED;
 		}
-		off_s = (off_t)(offset / ve_page_info.page_size);
-		off_e = (off_t)(((offset + aligned_sz) / ve_page_info.page_size) - 1);
-	} else {
-		off_s = 0;
-		off_e = (off_t)((aligned_sz / ve_page_info.page_size) - 1);
-	}
-
-	/* Check whether mapping is not related to heap/stack  */
-	if ((flag & MAP_SHARED) && ((flag & MAP_STACK) ||
-				(flag & MAP_ADDR_SPACE))) {
-		PSEUDO_DEBUG("Error(%s) flag(0x%lx)", strerror(EINVAL), flag);
-		errno = EINVAL;
-		return MAP_FAILED;
-	}
-	/*addr should not be null if MAP_ADDR_SPACE flag is set*/
-	if ((NULL == (void *)addr) && (flag & MAP_ADDR_SPACE)) {
-		PSEUDO_DEBUG("Error(%s) addr should not(0x%lx)"
-				"if MAP_ADDR_SPACE flag is set", strerror(EINVAL), addr);
-		errno = EINVAL;
-		return MAP_FAILED;
-	}
-
-	/*If File Backed*/
-	if (!(MAP_ANON & flag)) {
 		f_stat = (struct file_stat *)calloc(1, sizeof(struct file_stat));
 		if (f_stat == NULL) {
 			ret = errno;
@@ -487,12 +445,57 @@ void *__ve_mmap(veos_handle *handle, vemva_t addr, size_t size,
 			free(f_stat);
 			return MAP_FAILED;
 		}
+
+	}
+
+	/* Is size zero ?*/
+	if (!size) {
+		PSEUDO_DEBUG("Error(%s) size(0x%lx)", strerror(EINVAL), size);
+		free(f_stat);
+		errno = EINVAL;
+		return MAP_FAILED;
+	}
+
+	/*align size with page size*/
+	aligned_sz = size;
+	if (!IS_ALIGNED(size, ve_page_info.page_size)) {
+		aligned_sz = ALIGN(size, ve_page_info.page_size);
+		PSEUDO_DEBUG("Given size aligned to (0x%lx)", aligned_sz);
+		if (!aligned_sz) {
+			free(f_stat);
+			errno = ENOMEM;
+			return MAP_FAILED;
+		}
+	}
+	/*calculate start and end offset*/
+	if (!(MAP_ANON & flag)) {
+		off_s = (off_t)(offset / ve_page_info.page_size);
+		off_e = (off_t)(((offset + aligned_sz) / ve_page_info.page_size) - 1);
+
 		f_stat->offset_start = off_s;
 		f_stat->offset_end = off_e;
 		f_stat->pgsz = ve_page_info.page_size;
 		PSEUDO_DEBUG("file backed mmap request off_s(0x%lx) "
 				"to off_e(0x%lx) with (%s) page", off_s, off_e,
 				pgsz_to_pgstr(f_stat->pgsz));
+
+	}
+
+	/* Check whether mapping is not related to heap/stack  */
+	if ((flag & MAP_SHARED) && ((flag & MAP_STACK) ||
+				(flag & MAP_ADDR_SPACE))) {
+		PSEUDO_DEBUG("Error(%s) flag(0x%lx)", strerror(EINVAL), flag);
+		errno = EINVAL;
+		free(f_stat);
+		return MAP_FAILED;
+	}
+	/*addr should not be null if MAP_ADDR_SPACE flag is set*/
+	if ((NULL == (void *)addr) && (flag & MAP_ADDR_SPACE)) {
+		PSEUDO_DEBUG("Error(%s) addr should not(0x%lx)"
+				"if MAP_ADDR_SPACE flag is set", strerror(EINVAL), addr);
+		errno = EINVAL;
+		free(f_stat);
+		return MAP_FAILED;
 	}
 
 	ret_addr = ve_get_vemva(handle, addr, aligned_sz,
@@ -903,14 +906,13 @@ error_return:
 }
 
 /**
-* @brief This function is used to handle
-* Heap space extension/reduction request.
+* @brief This function is used to handle Heap space extension/reduction request.
 *
-* @param[in] syscall_num System call number
-* @param[in] syscall_name System call name
-* @param[in] handle VEOS handle
+* @param[in] syscall_num System call number.
+* @param[in] syscall_name System call name.
+* @param[in] handle VEOS handle.
 *
-* @return positive value on success, returns negative of errno on failure.
+* @return returns new program break on success else old program break.
 */
 ret_t ve_brk(int syscall_num, char *syscall_name, veos_handle *handle)
 {
@@ -923,20 +925,20 @@ ret_t ve_brk(int syscall_num, char *syscall_name, veos_handle *handle)
 	uint64_t flag = 0;
 
 	PSEUDO_TRACE("invoked");
+	/* Get the previous heap top */
+	old_top = ve_info.heap_top;
+	PSEUDO_DEBUG("current unaligned heap top(0x%lx)", old_top);
 
 	/*Fetching syscall argument from shared memory*/
 	ret = vedl_get_syscall_args(handle->ve_handle, args, 1);
 	if (ret < 0) {
 		PSEUDO_DEBUG("Error(%s) while fetching syscall(%s) argument",
 				strerror(-ret), syscall_name);
+        ret = old_top;
 		goto error_return;
 	}
 
 	PSEUDO_DEBUG("syscall(%s) args heap top(0x%lx)", syscall_name, args[0]);
-
-	/* Get the previous heap top */
-	old_top = ve_info.heap_top;
-	PSEUDO_DEBUG("current unaligned heap top(0x%lx)", old_top);
 
 	/*Updating ve page info with default page*/
 	flag = 0;
@@ -983,14 +985,14 @@ ret_t ve_brk(int syscall_num, char *syscall_name, veos_handle *handle)
 			PSEUDO_DEBUG("Current aligned stack pointer(0x%lx)",
 					ve_info.stack_pointer_aligned);
 			PSEUDO_DEBUG("heap overlapping the stack");
-			ret = -ENOMEM;
+			ret = old_top;
 			goto error_return;
 		}
 		/* Request for Heap extension */
 		ret_addr = ve_heap_extend(handle, old_top, size);
 		if (MAP_FAILED == ret_addr) {
 			PSEUDO_DEBUG("Error while extending the heap");
-			ret = -ENOMEM;
+			ret = old_top;
 			goto error_return;
 		}
 		/* Update Heap position */
@@ -1002,14 +1004,14 @@ ret_t ve_brk(int syscall_num, char *syscall_name, veos_handle *handle)
 		if (new_top < ALIGN(ve_info.heap_start,
 					ve_page_info.page_size)) {
 			PSEUDO_DEBUG("Error while decreasing heap to new heap top(0x%lx)", new_top);
-			ret = -ENOMEM;
+			ret = old_top;
 			goto error_return;
 		}
 		ret = ve_heap_reduce(handle, new_top, size);
 		if (0 > ret) {
 			PSEUDO_DEBUG("Error(%s) while decreasing heap to new heap top(0x%lx)",
 					strerror(-ret), new_top);
-			ret = -ENOMEM;
+			ret = old_top;
 			goto error_return;
 		}
 		/* Update Heap position */

@@ -37,9 +37,6 @@
 #include "sys_process_mgmt.h"
 #include "exception.h"
 
-extern struct tid_info global_tid_info[VEOS_MAX_VE_THREADS];
-extern pthread_mutex_t tid_counter_mutex;
-
 /**
  * @brief  Handle rt_sigaction() system call for VE.
  *

@@ -90,7 +90,7 @@
 #define MARK_VESHM		(((uint8_t)1)<<4)
 #define MARK_FILE		(((uint8_t)1)<<5)
 
-uint64_t default_page_size;
+extern uint64_t default_page_size;
 /**
  * @brief Structure to store ve page info
  */
@@ -101,6 +101,7 @@ struct _ve_page_info {
 	uint64_t chunk_mask;	/*!< chunk size mask*/
 	int updated;
 };
+extern __thread struct _ve_page_info ve_page_info;
 
 /**
 * @brief structure to manage vemva address space.
@@ -112,7 +113,8 @@ struct vemva_header {
 	uint64_t ve_heap;		/*!< ve heap section address */
 	uint64_t ve_stack;		/*!< ve stack section address */
 	struct list_head vemva_list;	/*!< list head for vemva list*/
-} vemva_header;
+};
+extern struct vemva_header vemva_header;
 
 /**
  * @brief Data Structure for VEMVA List

@@ -42,9 +42,6 @@
 #include "velayout.h"
 #include "ve_memory.h"
 
-extern __thread struct _ve_page_info ve_page_info; /*!< VE page size info*/
-extern uint64_t default_page_size;
-
 /**
  * @brief This function to handle shmget system call
  *

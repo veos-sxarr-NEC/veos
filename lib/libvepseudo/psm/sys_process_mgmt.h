@@ -87,6 +87,10 @@ struct tid_info {
 				 */
 };
 
+extern struct tid_info global_tid_info[VEOS_MAX_VE_THREADS];
+
+extern pthread_mutex_t tid_counter_mutex;
+
 /**
  * @brief Structure to be passed an an argument in thread (pseudo process thread)
  * start function.

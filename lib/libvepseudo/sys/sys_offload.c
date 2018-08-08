@@ -10838,7 +10838,7 @@ ret_t ve_futimesat(int syscall_num, char *syscall_name, veos_handle *handle)
 			if (retval == -2)
 				retval = -ENAMETOOLONG;
 			else
-				retval = -ENOTDIR;
+				retval = -EFAULT;
 			goto hndl_return;
 		}
 	}

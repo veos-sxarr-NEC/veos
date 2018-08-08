@@ -45,11 +45,10 @@
 #include "pseudo_ptrace.h"
 #include "sys_mm.h"
 
-/* This variable stores the VE process
+/* ve_proc_sigmask, stores the VE process
  * current signal mask. It will get updated after
  * every sigprocmask() and sigreturn() syscall
  * */
-__thread sigset_t ve_proc_sigmask;
 
 __thread bool pending_hw_signal = false;
 

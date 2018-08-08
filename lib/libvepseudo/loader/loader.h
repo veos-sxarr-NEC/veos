@@ -44,10 +44,6 @@ typedef unsigned long long offset_t;
 #define AUX_BYTE		2
 #define ALIGNED_8BYTE		7
 
-extern __thread core_user_reg_t *usr_regs_addr;
-extern __thread core_system_reg_t *sys_regs_addr;
-extern system_common_reg_t *cnt_regs_addr;
-
 /**
 * @brief data structer for Auxilary vector information.
 */
@@ -80,7 +76,8 @@ struct ve_address_space_info {
 	uint64_t stack_bottom;		/*!< Stack bottom of a VE Process */
 	uint64_t stack_pointer_aligned;	/*!< Page size aligned actual stack
 					 * pointer of a VE process. */
-} ve_info;
+};
+extern struct ve_address_space_info ve_info;
 
 /**
 * @brief Contain information for executable and library to load.
@@ -134,7 +131,8 @@ struct ve_load_data {
 	char *ve_interp_map;		/*!< VE Address at which interp has
 					 * been mapped*/
 	uint64_t pagesize;
-} load_elf;
+};
+extern struct ve_load_data load_elf;
 
 void ve_set_stack_limit(void);
 int ve_address_space_reserve(uint64_t);

@@ -208,16 +208,21 @@ int calc_last_1_5_15_load(struct ve_node_struct *p_ve_node,
 	int itr_1 = 0;
 	int itr_5 = 0;
 	int itr_15 = 0;
-
 	VEOS_TRACE("Entering");
-	if (!p_ve_node || !sys_load_1 || !sys_load_5 || !sys_load_15)
+	if (!p_ve_node || !sys_load_1 || !sys_load_5 || !sys_load_15){
 		goto hndl_return;
+	}
+	/* To avoid deadlock due to sequence node_sem -> ve_relocate_lock */
+	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock), UNLOCK,
+				"Failed to release ve_relocate_lock release lock");
 	/* acquiring semaphore for node */
 	if (-1 == sem_wait(&p_ve_node->node_sem)) {
 		VEOS_DEBUG("Node %d semaphore lock failed with errno: %d",
 				p_ve_node->node_num, errno);
 		goto hndl_error;
 	}
+	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock), RDLOCK,
+				"Failed to acquire ve_relocate_lock read lock");
 	list_for_each_prev(p, &(p_ve_node->ve_sys_load_head)) {
 		tmp = list_entry(p, struct ve_sys_load, list);
 		if (time < (ONE_MIN * MICRO_SECONDS)) {

@@ -1806,7 +1806,7 @@ r*	 cputime of VE process.
  * @author PSMG / Process management
  */
 ret_t pseudo_psm_send_clk_cputime_req(int veos_sock_fd,
-		int type)
+		struct ve_clockinfo clockinfo)
 {
 	ret_t retval = -1;
 	PseudoVeosMessage ve_clk_req = PSEUDO_VEOS_MESSAGE__INIT;
@@ -1822,8 +1822,8 @@ ret_t pseudo_psm_send_clk_cputime_req(int veos_sock_fd,
 	ve_clk_req.has_pseudo_pid = true;
 	ve_clk_req.pseudo_pid = syscall(SYS_gettid);
 
-	cputime.len = sizeof(type);
-	cputime.data = (uint8_t *)&type;
+	cputime.len = sizeof(clockinfo);
+	cputime.data = (uint8_t *)&clockinfo;
 
 	ve_clk_req.has_pseudo_msg = true;
 	ve_clk_req.pseudo_msg = cputime;

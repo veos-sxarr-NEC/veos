@@ -2627,7 +2627,7 @@ int psm_handle_clk_cputime_req(struct veos_thread_arg *pti)
 	PseudoVeosMessage *clk_cputime_req = NULL;
 	struct ve_task_struct *tsk = NULL;
 	struct timespec tp = {0};
-	int type = -1;
+	struct ve_clockinfo clockinfo = {0};
 
 	VEOS_TRACE("Entering");
 
@@ -2639,13 +2639,13 @@ int psm_handle_clk_cputime_req(struct veos_thread_arg *pti)
 	clk_cputime_req = (PseudoVeosMessage *)pti->
 		pseudo_proc_msg;
 
-	memcpy(&type, (clk_cputime_req->pseudo_msg.data),
+	memcpy(&clockinfo, (clk_cputime_req->pseudo_msg.data),
 			clk_cputime_req->pseudo_msg.len);
 
-	VEOS_DEBUG("Type : %d, pid : %d",
-			type, clk_cputime_req->pseudo_pid);
+	VEOS_DEBUG("Clock Type : %d, pid : %d",
+			clockinfo.type, clockinfo.pid);
 
-	tsk = find_ve_task_struct(clk_cputime_req->pseudo_pid);
+	tsk = find_ve_task_struct(clockinfo.pid);
 
 	if (NULL == tsk) {
 		VEOS_ERROR("Failed to find task structure");
@@ -2653,7 +2653,7 @@ int psm_handle_clk_cputime_req(struct veos_thread_arg *pti)
 		goto send_ack;
 	}
 
-	retval = psm_handle_clk_cputime_request(tsk, type, &tp);
+	retval = psm_handle_clk_cputime_request(tsk, clockinfo.type, &tp);
 
 send_ack:
 	if (tsk)
@@ -3578,7 +3578,6 @@ int psm_handle_sysinfo_req(struct veos_thread_arg *pti)
 		retval = -ESRCH;
 		goto hndl_return;
 	}
-
 	retval = psm_handle_sysinfo_request(ve_task_curr, &ve_sysinfo);
 	put_ve_task_struct(ve_task_curr);
 hndl_return:

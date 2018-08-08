@@ -28,8 +28,6 @@
 #include "sys_common.h"
 #include "sys_mm.h"
 
-extern __thread struct _ve_page_info ve_page_info;	/*!< VE page size info*/
-
 /**
  * @brief This function is used to obtain virtual memory for VE on VH side.
  *
@@ -120,7 +118,7 @@ void *ve_get_vemva(veos_handle *handle, uint64_t addr,
 	} else if (!addr && (flag & MAP_FIXED)) {
 		PSEUDO_DEBUG("Error (%s)", strerror(ENOMEM));
 		pthread_mutex_unlock(&vemva_header.vemva_lock);
-		errno = ENOMEM;
+		errno = EPERM;
 		goto err_exit;
 	} else {
 		vemva = avail_vemva(handle, addr, size, flag);

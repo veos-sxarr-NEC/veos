@@ -37,12 +37,6 @@
 #include "locking_handler.h"
 #include "vesync.h"
 
-#define PSM_CTXSW_CREG_VERAA(phys_core_num) (\
-	PCI_BAR2_CREG_SIZE * phys_core_num)
-#define PSM_CTXSW_CREG_SIZE (\
-	offsetof(core_user_reg_t, VR) +\
-	sizeof(((core_user_reg_t *)NULL)->VR))
-
 /**
 * @brief Function handles the failure of assigning task on core
 * while context switch decision is ongoing.
@@ -2452,6 +2446,8 @@ void psm_sched_interval_handler(union sigval psm_sigval)
 				else
 					goto abort;
 			}
+			/* Rebalance task */
+			psm_rebalance_task_to_core(p_ve_core);
 			psm_find_sched_new_task_on_core(p_ve_core,
 					true, false);
 			pthread_rwlock_lock_unlock(&handling_request_lock,
@@ -2483,6 +2479,246 @@ abort:
 	return;
 }
 
+/**
+* @brief Find a task which can be relocated to core which
+* is idle to rebalance VE tasks among VE cores
+*
+* Function traverses core list of all the available core. If a core
+* have two or more than two tasks in its core list, then a task apart
+* from current task on core is selected which can be relocated on the
+* idle core.
+*
+* @param ve_node_id VE node number
+* @param ve_core_id VE core number for core having no task
+*
+* @return Pointer to VE task struct of task which is to be relocated,
+* else NULL is returned.
+*/
+struct ve_task_struct *find_and_remove_task_to_rebalance(
+	int ve_node_id, int ve_core_id)
+{
+	struct ve_task_struct *task_to_rebalance = NULL;
+	struct ve_task_struct *loop_start = NULL;
+	struct ve_task_struct *ve_task_list_head = NULL;
+	struct ve_task_struct *temp = NULL;
+	int core_loop;
+	int rebalance_flag = 0;
+	struct ve_core_struct *p_another_core;
+
+	VEOS_TRACE("Entering");
+
+	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores;
+			core_loop++) {
+		if (core_loop == ve_core_id)
+			continue;
+		p_another_core = VE_CORE(ve_node_id, core_loop);
+		if (NULL == p_another_core) {
+			VEOS_ERROR("BUG Core ID: %d struct is NULL",
+					core_loop);
+			continue;
+		}
+
+		pthread_rwlock_lock_unlock(&(p_another_core->ve_core_lock),
+				WRLOCK,
+				"Failed to acquire Core %d read lock",
+				p_another_core->core_num);
+
+		if(NULL == p_another_core->ve_task_list) {
+			pthread_rwlock_lock_unlock(
+					&(p_another_core->ve_core_lock),
+					UNLOCK,
+					"Failed to release core's write lock");
+			continue;
+		}
+		if (p_another_core->curr_ve_task) {
+			task_to_rebalance = p_another_core->curr_ve_task->next;
+			loop_start = p_another_core->curr_ve_task;
+		} else {
+			VEOS_DEBUG("Current task on core is [%p]",
+						p_another_core->curr_ve_task);
+			task_to_rebalance = p_another_core->ve_task_list->next;
+			loop_start = p_another_core->ve_task_list;
+		}
+
+		ve_task_list_head = p_another_core->ve_task_list;
+
+		/* Check wether curr_ve_task->next should be rabalanced. */
+		while (task_to_rebalance != loop_start) {
+			if (CPU_ISSET(ve_core_id,
+					&(task_to_rebalance->cpus_allowed)) &&
+				!(get_ve_task_struct(task_to_rebalance))) {
+				rebalance_flag = 1;
+				break;
+			}
+			task_to_rebalance = task_to_rebalance->next;
+		}
+		if (rebalance_flag) {
+			VEOS_DEBUG("Found task to rebalance %d",
+					task_to_rebalance->pid);
+			temp = task_to_rebalance;
+			while (temp->next != task_to_rebalance)
+				temp = temp->next;
+
+			temp->next = task_to_rebalance->next;
+			if (task_to_rebalance == ve_task_list_head) {
+				p_another_core->ve_task_list =
+						ve_task_list_head->next;
+				VEOS_DEBUG("Now Head is %p",
+						ve_task_list_head);
+			}
+
+			task_to_rebalance->next = NULL;
+
+			if (RUNNING == task_to_rebalance->ve_task_state) {
+				ve_atomic_dec(&(p_another_core->nr_active));
+				VEOS_DEBUG("Core[%d] nr_active: [%d]",
+					p_another_core->core_num,
+					p_another_core->nr_active);
+			}
+
+			ve_atomic_dec(&(VE_NODE(ve_node_id)->num_ve_proc));
+			ve_atomic_dec(&(p_another_core->num_ve_proc));
+
+			pthread_rwlock_lock_unlock(
+					&(p_another_core->ve_core_lock),
+					UNLOCK,
+					"Failed to release core's write lock");
+			break;
+		}
+		task_to_rebalance = NULL;
+		pthread_rwlock_lock_unlock(&(p_another_core->ve_core_lock),
+				UNLOCK, "Failed to release core's write lock");
+	}
+	VEOS_TRACE("Exiting");
+	return task_to_rebalance;
+}
+
+/**
+* @brief Inserts the "task_to_rebalance" in core list of core
+* which is idle.
+*
+* @param ve_node_id VE node number
+* @param ve_core_id VE core number of idle core
+* @param task_to_rebalance Pointer to task struture which
+* is to be relocated
+*/
+void insert_and_update_task_to_rebalance(
+	int ve_node_id, int ve_core_id,
+	struct ve_task_struct *task_to_rebalance)
+{
+	struct ve_task_struct *ve_task_list_head = NULL;
+	struct ve_task_struct *temp = NULL;
+
+	VEOS_TRACE("Entering");
+
+	VEOS_DEBUG("Node %d Core %d Core Pointer %p", ve_node_id, ve_core_id,
+			VE_CORE(ve_node_id, ve_core_id));
+
+	/* take lock before Updating Core task list */
+	pthread_rwlock_lock_unlock(
+			&(VE_CORE(ve_node_id, ve_core_id)->ve_core_lock),
+			WRLOCK, "Failed to acquire ve core write lock");
+
+	/* Core data structure should not be NULL*/
+	ve_task_list_head = VE_CORE(ve_node_id, ve_core_id)->ve_task_list;
+
+	VEOS_DEBUG("ve_task_list_head : %p", ve_task_list_head);
+
+	/* Create HEAD node*/
+	if (NULL == ve_task_list_head) {
+		VEOS_DEBUG(":%d:%d VE task list INIT", ve_node_id, ve_core_id);
+		ve_task_list_head = task_to_rebalance;
+		ve_task_list_head->next = ve_task_list_head;
+	} else{
+		/* Insert the node at the last */
+		temp = ve_task_list_head->next;
+		while (temp->next != ve_task_list_head)
+			temp = temp->next;
+
+		task_to_rebalance->next = temp->next;
+		temp->next = task_to_rebalance;
+	}
+
+	/* Update HEAD of the Core list */
+	VE_CORE(ve_node_id, ve_core_id)->ve_task_list = ve_task_list_head;
+	/*Protected using relocate lock*/
+	ve_atomic_inc(&(VE_CORE(ve_node_id, ve_core_id)->num_ve_proc));
+
+	ve_atomic_inc(&(VE_NODE(ve_node_id)->num_ve_proc));
+	if (RUNNING == task_to_rebalance->ve_task_state) {
+		ve_atomic_inc(&(VE_CORE(ve_node_id, ve_core_id)->nr_active));
+		VEOS_DEBUG("Core[%d] active task[%d]",
+			task_to_rebalance->p_ve_core->core_num,
+			task_to_rebalance->p_ve_core->nr_active);
+	}
+
+
+	/* update task fields */
+	task_to_rebalance->node_id = ve_node_id;
+	task_to_rebalance->core_id = ve_core_id;
+	task_to_rebalance->p_ve_core = VE_CORE(ve_node_id, ve_core_id);
+
+	/* relaese lock for Core task list */
+	pthread_rwlock_lock_unlock(
+			&(VE_CORE(ve_node_id, ve_core_id)->ve_core_lock),
+			UNLOCK, "Failed to release ve core lock");
+
+	VEOS_DEBUG("Now Head for Core %d is %p Inserted PID %d head IC %lx",
+			ve_core_id, ve_task_list_head, task_to_rebalance->pid,
+			task_to_rebalance->p_ve_thread->IC);
+
+	put_ve_task_struct(task_to_rebalance);
+	VEOS_TRACE("Exiting");
+}
+
+/**
+* @brief Performs rebalancing on VE core if it does not have any
+* task in its core list.
+*
+* @param p_ve_core Pointer to core structure of core which is idle.
+*/
+void psm_rebalance_task_to_core(struct ve_core_struct *p_ve_core)
+{
+	struct ve_task_struct *task_to_rebalance = NULL;
+
+	VEOS_TRACE("Entering");
+
+	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), RDLOCK,
+			"Failed to acquire Core %d read lock",
+			p_ve_core->core_num);
+	if (NULL == p_ve_core->ve_task_list) {
+		pthread_rwlock_lock_unlock(
+				&(p_ve_core->ve_core_lock), UNLOCK,
+				"Failed to acquire Core %d read lock",
+				p_ve_core->core_num);
+
+		pthread_rwlock_lock_unlock(
+				&(VE_NODE(0)->ve_relocate_lock), WRLOCK,
+				"Failed to acquire ve_relocate_lock read lock");
+		/* Find task which can be rebalanced on p_ve_core */
+		task_to_rebalance = find_and_remove_task_to_rebalance(
+				p_ve_core->node_num, p_ve_core->core_num);
+		if (task_to_rebalance) {
+			VEOS_DEBUG("Task to rebalance = %d",
+					task_to_rebalance->pid);
+			/* Insert "task_to_rebalance" in "p_ve_core"
+			 * to rebalance */
+			insert_and_update_task_to_rebalance(
+					p_ve_core->node_num, p_ve_core->core_num,
+					task_to_rebalance);
+		}
+		pthread_rwlock_lock_unlock(
+				&(VE_NODE(0)->ve_relocate_lock), UNLOCK,
+				"Failed to release ve_relocate_lock writelock");
+	} else {
+		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
+				"Failed to acquire Core %d read lock",
+				p_ve_core->core_num);
+	}
+
+	VEOS_TRACE("Exiting");
+	return;
+}
 /**
  * @brief Finds and schedules the most eligible task on core
  *

@@ -29,13 +29,13 @@
 #include "dma_hw.h"
 #include "dma_reqlist.h"
 #include "dma_reqlist_private.h"
-#include "dma_deallocator.h"
 #include "dma_log.h"
 #include "vedma_hw.h"
 
 #include "ve_mem.h"
 
 static void unpin_ve(vedl_handle *, uint64_t);
+static void unpin_ve_dma__addr(vedl_handle *, const ve_dma__addr *, uint32_t);
 
 /**
  * @brief page size of a specified type of address space
@@ -346,7 +346,7 @@ static ve_dma_reqlist_entry *mkrequest(ve_dma_req_hdl *hdl,
 			     vemtlb_dst);
 	if (err != 0) {
 		VE_DMA_ERROR("Error in dest address translation");
-		ve_dma_unpin_addr(vh, &e->src, 1);
+		unpin_ve_dma__addr(vh, &e->src, 1);
 		free(e);
 		errno = -err;
 		return NULL;
@@ -468,7 +468,8 @@ int64_t ve_dma_reqlist_make(ve_dma_req_hdl *hdl, ve_dma_addrtype_t srctype,
 		if (e == NULL) {
 			VE_DMA_ERROR("mkrequest error (errno = %d). "
 				     "request is canceled.", errno);
-			ve_dma_unpin_reqlist_addr(hdl);
+			ve_dma_reqlist_free(hdl);
+			INIT_LIST_HEAD(&hdl->reqlist);
 			return -errno;
 		}
 		VE_DMA_TRACE("request %p is created", e);
@@ -487,10 +488,10 @@ int64_t ve_dma_reqlist_make(ve_dma_req_hdl *hdl, ve_dma_addrtype_t srctype,
 			 * pinned by e_last.
 			 */
 			if (!IS_ALIGNED(e->src.addr, e->src.unpin_pgsz)) {
-				ve_dma_unpin_addr(vh, &e->src, 1);
+				unpin_ve_dma__addr(vh, &e->src, 1);
 			}
 			if (!IS_ALIGNED(e->dst.addr, e->dst.unpin_pgsz)) {
-				ve_dma_unpin_addr(vh, &e->dst, 1);
+				unpin_ve_dma__addr(vh, &e->dst, 1);
 			}
 			free(e);
 		} else {
@@ -512,7 +513,7 @@ int64_t ve_dma_reqlist_make(ve_dma_req_hdl *hdl, ve_dma_addrtype_t srctype,
  * @param dadr unpin address
  * @param length unpin length
  */
-void ve_dma_unpin_addr(vedl_handle *vh, const ve_dma__addr *dadr,
+static void unpin_ve_dma__addr(vedl_handle *vh, const ve_dma__addr *dadr,
 			       uint32_t length)
 {
 	uint64_t unpin_addr;
@@ -530,29 +531,20 @@ void ve_dma_unpin_addr(vedl_handle *vh, const ve_dma__addr *dadr,
  *
  * @param hdl DMA request handle
  */
-void ve_dma_reqlist_free_async(ve_dma_req_hdl *hdl)
+void ve_dma_reqlist_free(ve_dma_req_hdl *hdl)
 {
 	VE_DMA_TRACE("called (%p)", hdl);
-	VE_DMA_DEBUG("ve_dma_reqlist_free_async");
 	struct list_head *lh;
 	struct list_head *tmp;
 	vedl_handle *vh = hdl->engine->vedl_handle;
 	list_for_each_safe(lh, tmp, &hdl->reqlist) {
+		list_del(lh);
 		ve_dma_reqlist_entry *e;
 		e = list_entry(lh, ve_dma_reqlist_entry, list);
-		if (e->src.type_hw != VE_DMA_DESC_ADDR_VHSAA){
-			ve_dma_unpin_addr(vh, &e->src, e->length);
-			e->src.unpin = 0;
-		}
-		if (e->dst.type_hw != VE_DMA_DESC_ADDR_VHSAA){
-			ve_dma_unpin_addr(vh, &e->dst, e->length);
-			e->dst.unpin = 0;
-		}
+		unpin_ve_dma__addr(vh, &e->src, e->length);
+		unpin_ve_dma__addr(vh, &e->dst, e->length);
+		free(e);
 	}
-	pthread_mutex_lock(&hdl->engine->deallocate_list_mutex);
-	list_add_tail(&hdl->deallocate_list, &hdl->engine->deallocate_list); 
-	pthread_cond_signal(&hdl->engine->deallocator_cond);
-	pthread_mutex_unlock(&hdl->engine->deallocate_list_mutex);
 }
 
 /**

@@ -52,6 +52,13 @@
 #define MILLI_SECONDS (1000 * NANO_SECONDS)
 #define MICRO_SECONDS (1000 * 1000 * NANO_SECONDS)
 
+#define PSM_CTXSW_CREG_VERAA(phys_core_num) (\
+	PCI_BAR2_CREG_SIZE * phys_core_num)
+
+#define PSM_CTXSW_CREG_SIZE (\
+	offsetof(core_user_reg_t, VR) +\
+	sizeof(((core_user_reg_t *)NULL)->VR))
+
 #define SECONDS 1
 #define DIR_CNT 32
 /* "PSM_TIMER_INTERVAL_SECS" timer interval in which
@@ -109,8 +116,11 @@ int veos_update_atb(uint64_t, void *, int, int, struct ve_task_struct *);
 int veos_update_dmaatb(uint64_t, void *, int, int, struct ve_task_struct *, reg_t *);
 int psm_sync_hw_regs(struct ve_task_struct *, regs_t, void *, bool, int, int);
 void psm_find_sched_new_task_on_core(struct ve_core_struct *, bool, bool);
+void psm_rebalance_task_to_core(struct ve_core_struct *);
 void psm_unassign_migrate_task(struct ve_task_struct *);
 int psm_calc_task_exec_time(struct ve_task_struct *);
 bool psm_unassign_task(struct ve_task_struct *);
 bool psm_unassign_assign_task(struct ve_task_struct *);
+struct ve_task_struct *find_and_remove_task_to_rebalance(int, int);
+void insert_and_update_task_to_rebalance(int, int, struct ve_task_struct *);
 #endif

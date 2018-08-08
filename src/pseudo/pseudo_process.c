@@ -60,13 +60,20 @@
 
 __thread sigset_t ve_proc_sigmask;
 __thread veos_handle *g_handle;
+__thread struct _ve_page_info ve_page_info;
 
-extern struct tid_info global_tid_info[VEOS_MAX_VE_THREADS];
+struct tid_info global_tid_info[VEOS_MAX_VE_THREADS];
+pthread_mutex_t tid_counter_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 bool ve_trace_me;
 log4c_category_t *cat_pseudo_core;
 log4c_appender_t *app_pseudo_core;
 FILE *pseudo_fp;
+
+struct ve_address_space_info ve_info;
+uint64_t default_page_size;
+struct ve_load_data load_elf;
+struct vemva_header vemva_header;
 
 /**
 * @brief Function to abort Pseudo Process.

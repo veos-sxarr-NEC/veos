@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([veos], [1.2.0])
+AC_INIT([veos], [1.2.1])
 AC_CONFIG_SRCDIR([lib/libvepseudo/psm/exception.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([./build-aux])
@@ -67,6 +67,13 @@ AC_ARG_WITH([vemm-agent-libdir], AS_HELP_STRING([--with-vemm-agent-libdir],
 	[library directory where VEMM agent is installed. [libdir]]),
 	[], [with_vemm_agent_libdir="${libdir}"])
 AC_SUBST(VEMM_AGENT_LIBDIR, "${with_vemm_agent_libdir}")
+AC_ARG_WITH([libvepseudo-headersdir],
+	AS_HELP_STRING([--with-libvepseudo-headersdir],
+	[Specify a directory where libvepseudo headers are installed.
+	 [includedir/libvepseudo]]),
+	[libvepseudo_headersdir=${with_libvepseudo_headersdir}],
+	[libvepseudo_headersdir=${includedir}/libvepseudo])
+AC_SUBST(libvepseudo_headersdir)
 
 AM_PROG_AR
 LT_INIT

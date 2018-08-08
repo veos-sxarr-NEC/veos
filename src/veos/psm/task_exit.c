@@ -403,15 +403,11 @@ hndl_return:
 bool psm_do_notify_parent(struct ve_task_struct *del_task_curr)
 {
 	struct sighand_struct *sighand = NULL;
-	struct ve_task_struct *del_task_real_parent = NULL;
 	bool dead_state = false;
-	int del_task_core_id, task_real_p_core_id;
 
 	VEOS_TRACE("Entering");
 
 	sighand = del_task_curr->parent->sighand;
-	del_task_real_parent = del_task_curr->real_parent;
-	del_task_core_id = del_task_curr->core_id;
 
 	/* Acquire parent's siglock */
 	pthread_mutex_lock_unlock(
@@ -446,42 +442,6 @@ bool psm_do_notify_parent(struct ve_task_struct *del_task_curr)
 			"Failed to acquire task lock");
 	dead_state ? psm_set_task_state(del_task_curr, EXIT_DEAD):
 		psm_set_task_state(del_task_curr, ZOMBIE);
-
-	/* If task is vforked child and its parent exists, then wake up parent */
-	if (true == del_task_curr->vforked_proc &&
-			del_task_curr->wake_up_parent == true) {
-
-		VEOS_DEBUG("vforked process execution completed");
-		/* Acquire core lock as we can update number of active
-		 * task on core */
-		task_real_p_core_id = del_task_real_parent->core_id;
-		if (del_task_core_id != task_real_p_core_id)
-			pthread_rwlock_lock_unlock(
-				&(del_task_real_parent->p_ve_core->ve_core_lock),
-				WRLOCK, "Failed to acquire core lock");
-		pthread_mutex_lock_unlock(
-				&(del_task_real_parent->ve_task_lock), LOCK,
-				"Failed to acquire task lock");
-		/* If parent process has not served UNBLOCK yet then
-		 * do not change task state here let, UNBLOCK request
-		 * make the decision.
-		 */
-
-		if (del_task_real_parent->ve_task_state != STOP
-				&& del_task_real_parent->block_status == UNBLOCK_SERVED) {
-			VEOS_DEBUG("vforked process waking up parent");
-			psm_set_task_state(del_task_real_parent, RUNNING);
-		}
-		del_task_real_parent->vfork_state = VFORK_COMPLETED;
-
-		pthread_mutex_lock_unlock(
-				&(del_task_real_parent->ve_task_lock), UNLOCK,
-				"failed to release task lock");
-		if (del_task_core_id != task_real_p_core_id)
-			pthread_rwlock_lock_unlock(
-				&(del_task_real_parent->p_ve_core->ve_core_lock),
-				UNLOCK, "Failed to acquire core lock");
-	}
 
 	pthread_mutex_lock_unlock(
 			&(del_task_curr->ve_task_lock), UNLOCK,
@@ -822,7 +782,7 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 	int core_id = -1, node_id = -1;
 	int retval = -1;
 	bool leader_set_dead = false;
-	struct ve_task_struct *group_leader = NULL;
+	struct ve_task_struct *group_leader = NULL, *real_parent = NULL;
 
 	if (del_task_curr == NULL)
 		veos_abort("Pointer to task to be deleted is NULL");
@@ -966,23 +926,62 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 
 hndl_reparent:
 	/* do reparenting of child processes if no thread is alive */
+	VEOS_DEBUG("Acquiring tasklist_lock in PID %d", group_leader->pid);
+	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
+			"Failed to acquire tasklist lock");
 	if (thread_group_empty(group_leader) &&
 			(group_leader->ve_task_state == ZOMBIE ||
-			 group_leader->ve_task_state == EXIT_DEAD)
-			&& !thread_execed) {
+			 group_leader->ve_task_state == EXIT_DEAD)) {
+
+		VEOS_DEBUG("vforked process execution completed");
+
+		/* If task is vforked child and its parent exists, then wake up parent */
+		if (true == group_leader->vforked_proc &&
+				group_leader->wake_up_parent == true) {
+			real_parent = group_leader->real_parent;
+
+			/* Acquire core lock as we can update number of active
+			 * task on core */
+			if (group_leader->core_id != real_parent->core_id)
+				pthread_rwlock_lock_unlock(
+						&(real_parent->p_ve_core->ve_core_lock),
+						WRLOCK, "Failed to acquire core lock");
+			pthread_mutex_lock_unlock(
+					&(real_parent->ve_task_lock), LOCK,
+					"Failed to acquire task lock");
+			/* If parent process has not served UNBLOCK yet then
+			 * do not change task state here let, UNBLOCK request
+			 * make the decision.
+			 */
+
+			if (real_parent->ve_task_state != STOP
+					&& real_parent->block_status == UNBLOCK_SERVED) {
+				VEOS_DEBUG("vforked process waking up parent");
+				psm_set_task_state(real_parent, RUNNING);
+			}
+			real_parent->vfork_state = VFORK_COMPLETED;
+
+			pthread_mutex_lock_unlock(
+					&(real_parent->ve_task_lock), UNLOCK,
+					"failed to release task lock");
+			if (group_leader->core_id != real_parent->core_id)
+				pthread_rwlock_lock_unlock(
+						&(real_parent->p_ve_core->ve_core_lock),
+						UNLOCK, "Failed to acquire core lock");
+		}
+
 		/* task's children list and its children's thread group list
 		 * will be accessed now. Hence task lock and thread group lock
 		 * of child processes will be acquired inside
 		 * Hierarchy: tasklist_lock -> task_lock
 		 *	      tasklist_lock -> thread_group_mm_lock
 		 */
-		VEOS_DEBUG("Acquiring tasklist_lock in PID %d", group_leader->pid);
-		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
-				"Failed to acquire tasklist lock");
-		psm_reparent_children(group_leader);
-		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
-				"Failed to release tasklist lock");
+		if (!thread_execed) {
+			psm_reparent_children(group_leader);
+		}
 	}
+	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
+			"Failed to release tasklist lock");
 
 	pthread_mutex_lock_unlock(&(group_leader->sighand->del_lock), UNLOCK,
 			"Failed to release thread group delete lock");

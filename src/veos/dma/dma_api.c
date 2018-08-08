@@ -31,7 +31,6 @@
 #include "dma_hw.h"
 #include "dma_reqlist.h"
 #include "dma_intr.h"
-#include "dma_deallocator.h"
 #include "dma_log.h"
 #include "vedma_hw.h"
 #include "ve_mem.h"
@@ -48,7 +47,6 @@ static void ve_dma__terminate_nolock(ve_dma_req_hdl *);
 ve_dma_hdl *ve_dma_open_p(vedl_handle *vh)
 {
 	ve_dma_hdl *ret;
-	void *ret_from_helper;
 	uint32_t ctl_status;
 	int i;
 	int err;
@@ -62,12 +60,9 @@ ve_dma_hdl *ve_dma_open_p(vedl_handle *vh)
 	}
 	/* initialize a DMA handle */
 	INIT_LIST_HEAD(&ret->waiting_list);
-	INIT_LIST_HEAD(&ret->deallocate_list);
 	ret->vedl_handle = vh;
 	ret->should_stop = 0;
 	pthread_mutex_init(&ret->mutex, NULL);
-	pthread_mutex_init(&ret->deallocate_list_mutex, NULL);
-	pthread_cond_init(&ret->deallocator_cond, NULL);
 	memset(&ret->req_entry, 0, sizeof(ret->req_entry));
 	ret->control_regs = vedl_mmap_cnt_reg(vh);
 	if (ret->control_regs == MAP_FAILED) {
@@ -96,29 +91,13 @@ ve_dma_hdl *ve_dma_open_p(vedl_handle *vh)
 			    strerror(err));
 		goto err_create_helper;
 	}
-
-	/* start a deallocater thread */
-	err = pthread_create(&ret->deallocator, NULL, ve_dma_req_deallocator, ret);
-	if (err != 0) {
-		VE_DMA_CRIT("Failed to create ve_dma_req_deallocator thread. %s",
-				strerror(err));
-		goto err_create_deallocator;
-	}
 	veos_commit_rdawr_order();
 	VE_DMA_DEBUG("DMA engine is opend.");
 	return ret;
-err_create_deallocator:
-	ret->should_stop = 1;
-	err = pthread_join(ret->helper, &ret_from_helper);
-	if (err != 0)
-		VE_DMA_CRIT("Failed to join ve_dma_intr_helper thread. %s",
-				strerror(err));
 err_create_helper:
 	munmap(ret->control_regs, sizeof(system_common_reg_t));
 err_map_cnt_reg:
 	pthread_mutex_destroy(&ret->mutex);
-	pthread_mutex_destroy(&ret->deallocate_list_mutex);
-	pthread_cond_destroy(&ret->deallocator_cond);
 	free(ret);
 	return NULL;
 }
@@ -133,7 +112,6 @@ err_map_cnt_reg:
 int ve_dma_close_p(ve_dma_hdl *hdl)
 {
 	void *ret_from_helper;
-	void *ret_from_deallocator;
 	int err;
 
 	VE_DMA_TRACE("called");
@@ -162,12 +140,6 @@ int ve_dma_close_p(ve_dma_hdl *hdl)
 	if (err != 0)
 		VE_DMA_CRIT("Failed to join ve_dma_intr_helper thread. %s",
 			     strerror(err));
-	err = pthread_join(hdl->deallocator, &ret_from_deallocator);
-	if (err != 0)
-		VE_DMA_CRIT("Failed to join ve_dma_req_deallocator thread. %s",
-			     strerror(err));
-	pthread_cond_destroy(&hdl->deallocator_cond);
-	pthread_mutex_destroy(&hdl->deallocate_list_mutex);
 	pthread_mutex_destroy(&hdl->mutex);
 	munmap(hdl->control_regs, sizeof(system_common_reg_t));
 	free(hdl);
@@ -293,7 +265,6 @@ ve_dma_req_hdl *ve_dma_post_p_va(ve_dma_hdl *hdl, ve_dma_addrtype_t srctype,
 	ret->engine = hdl;
 	pthread_cond_init(&ret->cond, NULL);
 	INIT_LIST_HEAD(&ret->reqlist);
-	INIT_LIST_HEAD(&ret->deallocate_list);
 
 	n_dma_req = ve_dma_reqlist_make(ret, srctype, srcpid, srcaddr, dsttype,
 					dstpid, dstaddr, length);
@@ -308,6 +279,7 @@ ve_dma_req_hdl *ve_dma_post_p_va(ve_dma_hdl *hdl, ve_dma_addrtype_t srctype,
 		free(ret);
 		return NULL;
 	}
+
 	/*
 	 * post DMA requests
 	 */
@@ -335,7 +307,7 @@ error_post:
 error_dma_engine:
 	veos_commit_rdawr_order();
 	pthread_mutex_unlock(&hdl->mutex);
-	ve_dma_unpin_reqlist_addr(ret);
+	ve_dma_reqlist_free(ret);
 	free(ret);
 	return NULL;
 }
@@ -485,7 +457,9 @@ ve_dma_status_t ve_dma_timedwait(ve_dma_req_hdl *req, const struct timespec *t)
 int ve_dma_req_free(ve_dma_req_hdl *req)
 {
 	VE_DMA_TRACE("called");
-	ve_dma_reqlist_free_async(req);
+	ve_dma_reqlist_free(req);
+	pthread_cond_destroy(&req->cond);
+	free(req);
 	return 0;
 }
 

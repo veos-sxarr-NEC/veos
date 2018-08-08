@@ -48,7 +48,7 @@ int64_t pseudo_psm_recv_schedule_ack(int);
 ret_t pseudo_psm_send_fork_req(char *, struct pseudo_ve_clone_info, int);
 int pseudo_psm_recv_fork_ack(int);
 int pseudo_psm_recv_load_binary_req(int, int*, int*);
-int64_t pseudo_psm_send_clk_cputime_req(int, int);
+int64_t pseudo_psm_send_clk_cputime_req(int, struct ve_clockinfo);
 int64_t pseudo_psm_recv_clk_cputime_ack(int, struct timespec *);
 int64_t pseudo_psm_send_get_rlimit_req(int, int, pid_t);
 int64_t pseudo_psm_recv_get_rlimit_ack(int, struct rlimit *);

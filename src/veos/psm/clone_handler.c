@@ -311,11 +311,14 @@ int copy_ve_thread(struct ve_task_struct *current,
 	int retval = -ENOMEM;
 	struct ve_task_struct *task_on_core = NULL;
 	reg_t pef_rst_mask = PSW_PEF_RST;
+	ve_dma_status_t dma_status = 0;
+	struct ve_node_struct *p_ve_node = VE_NODE(current->node_id);
+	pid_t veos_pid = getpid();
 
 	VEOS_TRACE("Entering");
 
-	if (!current || !new_tsk) {
-		VEOS_ERROR("NULL argument received");
+	if (!current || !new_tsk || !p_ve_node) {
+		VEOS_ERROR("Either parent or child or node structure is NULL");
 		goto hndl_return;
 	}
 
@@ -329,10 +332,11 @@ int copy_ve_thread(struct ve_task_struct *current,
 		VEOS_DEBUG("Task %d is currently scheduled on core",
 				current->pid);
 		/* Fetching Register values using VE driver handle */
-		if (0 > vedl_get_usr_reg_all(VE_HANDLE(current->node_id),
-					VE_CORE_USR_REG_ADDR(current->node_id,
-						current->core_id),
-				(core_user_reg_t *)new_tsk->p_ve_thread)) {
+		dma_status = ve_dma_xfer_p_va(p_ve_node->dh,  VE_DMA_VERAA, veos_pid,
+				PSM_CTXSW_CREG_VERAA(current->p_ve_core->phys_core_num),
+				VE_DMA_VHVA, veos_pid, (uint64_t)new_tsk->p_ve_thread,
+				PSM_CTXSW_CREG_SIZE);
+		if (dma_status != VE_DMA_STATUS_OK) {
 			VEOS_ERROR("Failed to get the register values");
 			pthread_rwlock_lock_unlock(&(VE_CORE(current->node_id,
 					current->core_id)->ve_core_lock),
@@ -859,6 +863,8 @@ free_mm_struct:
 free_sighand:
 	psm_del_sighand_struct(new_task);
 free_new_task:
+	if(new_task->real_parent->vfork_state == VFORK_ONGOING)
+		new_task->real_parent->vfork_state = VFORK_C_INVAL;
 	ret = pthread_mutex_destroy(&(new_task->offset_lock));
 	if (ret != 0) {
 		VEOS_ERROR("Failed to destroy offset lock");
@@ -1091,6 +1097,8 @@ int do_ve_fork(unsigned long clone_flags,
 	goto hndl_return;
 
 hndl_return1:
+	if(new_task->real_parent->vfork_state == VFORK_ONGOING)
+		new_task->real_parent->vfork_state = VFORK_C_INVAL;
 	ret = psm_handle_delete_ve_process(new_task);
 	if (ret < 0)
 		VEOS_ERROR("Failed to delete new task");

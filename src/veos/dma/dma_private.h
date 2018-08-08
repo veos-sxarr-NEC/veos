@@ -63,13 +63,9 @@ struct ve_dma_reqlist_entry;
  */
 struct ve_dma_hdl_struct {
 	struct list_head waiting_list;/*!< wait queue */
-	struct list_head deallocate_list;/*!< deallocate queue */
 	vedl_handle *vedl_handle;/*!< VEDL handle of the node */
 	pthread_t helper;/*!< interrupt helper thread for the DMA engine */
-	pthread_t deallocator;/*!< DMA request deallocator thread */
 	pthread_mutex_t mutex;/*!< mutex for this DMA handle */
-	pthread_mutex_t deallocate_list_mutex;/*!< mutex for deallocate_list in this DMA handle */
-	pthread_cond_t deallocator_cond;/*!< condition variable for deallocator */
 	int should_stop;/*!< flag denoting that DMA engine should stop and should not accept any more requests */
 	int desc_used_begin;/*!< the start number of used DMA descriptors */
 	int desc_num_used;/*!< the number of used DMA descriptors */
@@ -84,7 +80,6 @@ struct ve_dma_req_hdl_struct {
 	struct ve_dma_hdl_struct *engine;/*!< DMA engine on which this request is posted */
 	pthread_cond_t cond;/*!< condition variable to wait for status of DMA reqlist entries in reqlist to change */
 	struct list_head reqlist;/*!< a list of DMA reqlist entries composing this request */
-	struct list_head deallocate_list;/*!< deallocate queue */
 };
 
 /* in dma_intr.c */

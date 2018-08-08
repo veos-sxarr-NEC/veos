@@ -43,7 +43,6 @@
 		ve_rt_sigmask(SIGILL)	| ve_rt_sigmask(SIGFPE)   | \
 		ve_rt_sigmask(SIGSYS))
 
-extern __thread sigset_t ve_proc_sigmask;
 
 /**
 * @brief Check whether signal number is valid or not

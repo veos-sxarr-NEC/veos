@@ -50,7 +50,6 @@
 #include "sys_mm.h"
 
 static struct auxv_info auxv;
-extern uint64_t default_page_size;
 
 #define VEOS_VER0
 
@@ -996,12 +995,6 @@ char * open_bin_file (char *filename, int *pfd)
 	/* Check if noexec flag was set when the directory was mounted */
 	if (st.f_flag & ST_NOEXEC) {
 		PSEUDO_ERROR("Executing from a directory mounted with noexec");
-		retval = -EACCES;
-		goto end;
-	}
-
-	if (st.f_flag & ST_NOSUID) {
-		PSEUDO_ERROR("Executing from a directory mounted with nosuid");
 		retval = -EACCES;
 		goto end;
 	}

@@ -1129,7 +1129,8 @@ ret_t ve_hndl_p_int_p_int_p_int(int syscall_num, char *syscall_name, veos_handle
 	retval = syscall(syscall_num,
 			args[0] ? &rid : NULL,
 			args[1] ? &eid : NULL,
-			args[3] ? &sid : NULL,
+			args[2] ? &sid : NULL,
+			args[3],
 			args[4],
 			args[5]);
 	if (-1 == retval) {

@@ -14,10 +14,12 @@ ve_include_HEADERS = \
 	vhcall.h \
 	vhshm_defs.h
 
-noinst_HEADERS = \
+libvepseudo_headers_HEADERS = \
 	comm_request.h \
+	mm_type.h \
+	ve_memory.h
+
+noinst_HEADERS = \
 	ived_request.h \
 	ve_atomic.h \
-	ve_list.h \
-	ve_memory.h \
-	mm_type.h
+	ve_list.h
