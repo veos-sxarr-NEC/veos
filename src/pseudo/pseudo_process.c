@@ -710,8 +710,8 @@ int main(int argc, char *argv[], char *envp[])
 	/* Memory Manager updates ATB & DMAATB entry */
 	ret = pse_load_binary(exe_name, handle, &start_ve_req);
 	if (ret) {
-		PSEUDO_ERROR("failed to load VE binary");
-		fprintf(stderr, "failed to load VE binary\n");
+		PSEUDO_ERROR("Failed to load executable");
+		fprintf(stderr, "Failed to load executable: ");
 		process_thread_cleanup(handle, -1);
 		pseudo_abort();
 	}
@@ -725,7 +725,7 @@ int main(int argc, char *argv[], char *envp[])
 			envp, &start_ve_req);
 	if (ret) {
 		PSEUDO_ERROR("failed to make stack region");
-		fprintf(stderr, "VE process setup failed\n");
+		fprintf(stderr, "VE process setup failed: ");
 		process_thread_cleanup(handle, -1);
 		/* Unblock SIGSEGV signal */
 		sigemptyset(&set);

@@ -64,6 +64,119 @@
 #include "psm_stat.h"
 
 /**
+* @brief Get the content of register value of the VE process.
+*
+* @param[in] pid Pid of VE process
+* @param[in] numregs Number of registers whose data needs to
+* 	be fetched form VEOS
+* @param[in] regids Array of Register ID whose data is needed
+* @param[out] data Data corresponding to Register ID needs to
+* be populated in it
+*
+* @return 0 in case of success and negative value in case of failure
+*/
+int psm_get_regval(struct ve_task_struct *tsk,
+		int numregs, int *regids, uint64_t *data)
+{
+	int i, regid;
+	int retval = -1;
+	int node_id = -1, core_id = -1;
+	struct ve_task_struct *curr_ve_task = NULL;
+	struct ve_core_struct *p_ve_core = NULL;
+	bool should_stop_core = false, core_stopped = false;
+	reg_t exception_reg;
+
+	VEOS_TRACE("Entering");
+
+	node_id = tsk->node_id;
+	core_id = tsk->core_id;
+	p_ve_core = tsk->p_ve_core;
+	curr_ve_task = p_ve_core->curr_ve_task;
+
+	for (i = 0; i < numregs; i++) {
+		regid = regids[i];
+		if (regid < USRCC || regid > SR63) {
+			retval = -EINVAL;
+			VEOS_DEBUG("Illegal regid %d", regid);
+			goto hndl_return;
+		}
+		/* Check if Register ID array contains any register for
+		 * which core is needed to be stopped if task
+		 * is current task on core */
+		if (!((USRCC <= regid && regid <= PMC15) || (regid == EXS)
+					|| (SAR <= regid && regid <= PMCR03)))
+			should_stop_core = true;
+	}
+
+	/* Acquire core lock */
+	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), WRLOCK,
+			"Failed to acquire Core %d write lock",
+			p_ve_core->core_num);
+
+	if (curr_ve_task == tsk && should_stop_core) {
+		pthread_mutex_lock_unlock(&tsk->p_ve_mm->
+				thread_group_mm_lock, LOCK,
+				"Failed to acquire thread-group-mm-lock");
+		psm_halt_ve_core(0, core_id, &exception_reg, false);
+
+		if (!(exception_reg & VE_EXCEPTION))
+			psm_unassign_assign_task(p_ve_core->curr_ve_task);
+
+		core_stopped = true;
+	}
+
+	for (i = 0; i < numregs; i++) {
+		regid = regids[i];
+		if (tsk == p_ve_core->curr_ve_task &&
+				!(regid >= SAR && regid <= PMCR03)) {
+			VEOS_DEBUG("Getting reg[%d] on core[%d]",
+				   regid, core_id);
+			retval = vedl_get_usr_reg(VE_HANDLE(node_id),
+				VE_CORE_USR_REG_ADDR(node_id, core_id),
+						  regid,
+						  &data[i]);
+			if (0 != retval) {
+				VEOS_ERROR("Failed to get user registers "
+					"for core[%d]", core_id);
+				retval = -EFAULT;
+				goto hndl_return2;
+			}
+		} else {
+			retval = psm_ptrace_peekuser(tsk, regid,
+						     (void *)&data[i]);
+			if (0 != retval) {
+				VEOS_ERROR("Failed to read the content of"
+					"given VE register Process for core"
+					"[%d]", core_id);
+				retval = -EFAULT;
+				goto hndl_return2;
+			}
+		}
+		VEOS_DEBUG("Register %d: %lx of Pid: %d", regid,
+			   data[i], tsk->pid);
+	}
+	retval = 0;
+hndl_return2:
+	if (core_stopped) {
+		/* Start VE core if no exception is pending */
+		if (!(exception_reg & VE_EXCEPTION))
+			psm_start_ve_core(0, core_id);
+
+		pthread_mutex_lock_unlock(&tsk->p_ve_mm->
+				thread_group_mm_lock, UNLOCK,
+				"Failed to release thread-group-mm-lock");
+	}
+	/* Release core lock */
+	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
+			"Failed to release Core %d read lock",
+			p_ve_core->core_num);
+hndl_return:
+	put_ve_task_struct(tsk);
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
  * @brief Sets task's state according to current_state and new_state.
  * Also increments/decrements nr_active if required.
  *

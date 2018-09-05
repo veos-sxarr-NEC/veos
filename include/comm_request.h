@@ -45,14 +45,15 @@
 #define VEOS_MAX_VE_THREADS (VEOS_THREAD_PAGE_SIZE \
 		/ VEOS_BYTES_PER_VE_THREAD)
 
+#define USER_REG_MASK 0xFFFFFFFFFFFFFFFF
+#define SHM_BITMAX 128
+
 #define CPUCLOCK_PERTHREAD(clock) \
         (((clock) & (clockid_t) CPUCLOCK_PERTHREAD_MASK) != 0)
-
-#define USER_REG_MASK 0xFFFFFFFFFFFFFFFF
+#define CPUCLOCK_WHICH(clock)   ((clock) & (clockid_t) CPUCLOCK_CLOCK_MASK)
 #define CPUCLOCK_PERTHREAD_MASK 4
 #define CPUCLOCK_CLOCK_MASK     3
 #define CLOCKFD_MASK            (CPUCLOCK_PERTHREAD_MASK|CPUCLOCK_CLOCK_MASK)
-#define SHM_BITMAX 128
 
 
 /**
@@ -475,8 +476,10 @@ struct ve_rusage_info {
 * @brief Clock info for VE process
 */
 struct ve_clockinfo {
-	pid_t pid;		/*!< PID of task who's info is required */
-	int type;		/*!< Clock id */
+	pid_t pid;		/*!< PID of task whose info is required */
+	pid_t current;          /*!< PID of task who invoked system call */
+	clockid_t clockid;	/*!< Clock id */
+	bool pid_flag;		/*!< Whether PID is present in clock_id */
 };
 /**
  * @brief mprotect request structure received by AMM from pseudo process.

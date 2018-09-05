@@ -863,7 +863,8 @@ free_mm_struct:
 free_sighand:
 	psm_del_sighand_struct(new_task);
 free_new_task:
-	if(new_task->real_parent->vfork_state == VFORK_ONGOING)
+	if((clone_flags & CLONE_VFORK) &&
+			(new_task->real_parent->vfork_state == VFORK_ONGOING))
 		new_task->real_parent->vfork_state = VFORK_C_INVAL;
 	ret = pthread_mutex_destroy(&(new_task->offset_lock));
 	if (ret != 0) {
@@ -1097,7 +1098,8 @@ int do_ve_fork(unsigned long clone_flags,
 	goto hndl_return;
 
 hndl_return1:
-	if(new_task->real_parent->vfork_state == VFORK_ONGOING)
+	if((clone_flags & CLONE_VFORK) &&
+			(new_task->real_parent->vfork_state == VFORK_ONGOING))
 		new_task->real_parent->vfork_state = VFORK_C_INVAL;
 	ret = psm_handle_delete_ve_process(new_task);
 	if (ret < 0)

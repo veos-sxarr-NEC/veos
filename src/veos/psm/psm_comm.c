@@ -2624,8 +2624,10 @@ ret:
 int psm_handle_clk_cputime_req(struct veos_thread_arg *pti)
 {
 	int retval = -1;
+	int clk_type = -1;
 	PseudoVeosMessage *clk_cputime_req = NULL;
 	struct ve_task_struct *tsk = NULL;
+	struct ve_task_struct *current = NULL;
 	struct timespec tp = {0};
 	struct ve_clockinfo clockinfo = {0};
 
@@ -2642,28 +2644,66 @@ int psm_handle_clk_cputime_req(struct veos_thread_arg *pti)
 	memcpy(&clockinfo, (clk_cputime_req->pseudo_msg.data),
 			clk_cputime_req->pseudo_msg.len);
 
-	VEOS_DEBUG("Clock Type : %d, pid : %d",
-			clockinfo.type, clockinfo.pid);
+	VEOS_DEBUG("Clock id: %d, PID : %d",
+			clockinfo.clockid, clockinfo.pid);
 
 	tsk = find_ve_task_struct(clockinfo.pid);
 
 	if (NULL == tsk) {
-		VEOS_ERROR("Failed to find task structure");
+		VEOS_ERROR("Failed to find task %d", clockinfo.pid);
 		retval = -ESRCH;
-		goto send_ack;
+		goto send_ack1;
 	}
 
-	retval = psm_handle_clk_cputime_request(tsk, clockinfo.type, &tp);
+	if (clockinfo.pid_flag == 0) {
+		clk_type = ((clockinfo.clockid & CLOCKFD_MASK) == 2) ? 1 : 0;
+		retval = psm_handle_clk_cputime_request
+			(tsk, clk_type, &tp);
+	} else {
+		current = find_ve_task_struct(clockinfo.current);
+		if (NULL == current) {
+			VEOS_ERROR("Failed to find current task");
+			retval = -ESRCH;
+			goto send_ack1;
+		}
 
+		/* third bit checks process or thread
+		 * rest two bits checks for clock validity
+		 */
+		if (CPUCLOCK_PERTHREAD(clockinfo.clockid)) {
+			if (current->sighand == tsk->sighand)
+				clk_type = 0;
+		} else {
+			if (tsk == current || thread_group_leader(tsk))
+				clk_type = 1;
+		}
+		if (clk_type == -1) {
+			VEOS_ERROR("Invalid clock_gettime() request\n");
+			retval = -EINVAL;
+			goto send_ack;
+		}
+		VEOS_DEBUG("clock type: %d", clk_type);
+		switch (CPUCLOCK_WHICH(clockinfo.clockid)) {
+			default:
+				VEOS_ERROR("Invalid clock %d",
+						clockinfo.clockid);
+				retval = -EINVAL;
+				break;
+			case 0:
+			case 1:
+			case 2:
+				retval = psm_handle_clk_cputime_request
+					(tsk, clk_type, &tp);
+				break;
+		}
+	}
 send_ack:
+	if (clockinfo.pid_flag)
+		put_ve_task_struct(current);
+send_ack1:
 	if (tsk)
 		put_ve_task_struct(tsk);
-	if (0 == retval) {
-		retval = psm_pseudo_clk_cputime_ack(pti, retval, tp);
-	} else {
-		VEOS_ERROR("Failed to handle clock cputime request");
-		retval = psm_pseudo_clk_cputime_ack(pti, retval, tp);
-	}
+	retval = psm_pseudo_clk_cputime_ack(pti, retval, tp);
 
 hndl_return:
 	VEOS_TRACE("Exiting");

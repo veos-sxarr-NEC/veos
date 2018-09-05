@@ -107,7 +107,9 @@ if [ $1 -gt 1 ] ; then
         /usr/bin/systemctl start ve-ived.service
     fi
 fi
-/usr/bin/systemctl restart systemd-binfmt
+if [ $1 -eq 1 ] ; then
+    /usr/bin/systemctl restart systemd-binfmt
+fi
 
 %preun
 for dev in /dev/veslot*; do

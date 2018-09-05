@@ -556,4 +556,5 @@ int psm_handle_set_reg_req(struct ve_task_struct *, usr_reg_name_t, reg_t, int64
 void psm_st_rst_context(struct ve_task_struct *, reg_t *, reg_t *, bool);
 void psm_set_task_state(struct ve_task_struct *, enum proc_state);
 void psm_do_process_cleanup(struct ve_task_struct *, struct ve_task_struct *, int);
+int psm_get_regval(struct ve_task_struct *, int, int *, uint64_t *);
 #endif

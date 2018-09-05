@@ -45,6 +45,7 @@
 #include <sys/wait.h>
 #include <stdarg.h>
 #include "ve_hw.h"
+#include "buddy.h"
 #include "task_mgmt.h"
 #include "veos_handler.h"
 #include "mm_common.h"
@@ -1067,7 +1068,7 @@ int ve_getframe(struct ve_task_struct *p_ve_task,
 		frame_vir_addrs = p_ve_task->p_ve_thread->SR[11]
 			- sizeof(struct sigframe);
 	}
-
+	frame_vir_addrs = ALIGN_RD(frame_vir_addrs, 8);
 	frame_phy_addrs[0] = __veos_virt_to_phy(frame_vir_addrs,
 			&(p_ve_task->p_ve_mm->atb), NULL, &pgmod);
 	if (0 > frame_phy_addrs[0]) {

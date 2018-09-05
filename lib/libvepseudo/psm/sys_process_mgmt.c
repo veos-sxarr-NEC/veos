@@ -1648,7 +1648,6 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 				cntr+shift_cntr,
 				execve_vh_arg[cntr+shift_cntr]);
 	}
-
 	if (cntr >= (EXECVE_MAX_ARGS - shift_cntr)) {
 		PSEUDO_ERROR("Argument count exceeded");
 		retval = -E2BIG;
@@ -4028,58 +4027,72 @@ ret_t ve_clock_gettime(int syscall_num, char *syscall_name, veos_handle *handle)
 	struct timespec time_buf = {0};
 	struct ve_clockinfo clockinfo = {0};
 	uint64_t args[2] = {0};
-	clockid_t id = 0;
+	clockid_t clockid = 0;
 
 	PSEUDO_TRACE("Entering");
 	PSEUDO_DEBUG("%s is called", syscall_name);
-
 
 	/* get arguments */
 	retval = vedl_get_syscall_args(handle->ve_handle, args, 2);
 	if (retval < 0) {
 		PSEUDO_ERROR("clock_gettime() failure: "
-				"failed to fetch system call aguments,");
+				"failed to fetch system call arguments");
 		PSEUDO_DEBUG("%s failure: "
 				" return value: %d, mapped value: %d",
 				syscall_name, (int)retval, -EFAULT);
 		retval = -EFAULT;
 		goto hndl_return;
 	}
-	id = (clockid_t)args[0];
-	pid = (pid_t)~((id) >> 3);
-	id = (id & CLOCKFD_MASK);
 
-	PSEUDO_DEBUG("Clock id: %d, PID: %d", id, pid);
+	clockid = (clockid_t)args[0];
+	pid = (pid_t)~((clockid) >> 3);
 
-	if (pid > 0) {
+	PSEUDO_DEBUG("Clock Id: %d, PID: %d", clockid, pid);
+
+	if (pid == 1) {
+		/* since we don't have running INIT process */
+		PSEUDO_ERROR("clock_gettime() for INIT process invalid\n");
+		retval = -EINVAL;
+		goto hndl_return;
+
+	} else if (pid > 1) {
+
 		clockinfo.pid = pid;
-		clockinfo.type = CPUCLOCK_PERTHREAD(id)?0:1;
+		clockinfo.clockid = clockid;
+		clockinfo.pid_flag = 1;
+		clockinfo.current = syscall(186);
 
-		if (pseudo_psm_send_clk_cputime_req(handle->veos_sock_fd,
-					clockinfo) < 0) {
+		retval = pseudo_psm_send_clk_cputime_req(handle->veos_sock_fd,
+					clockinfo);
+		if (retval < 0) {
 			PSEUDO_ERROR("clock_gettime() failure: "
 					"veos request error");
 			PSEUDO_DEBUG("%s failure: veos request error,"
-					" return value %d, mapped value: %d",
+					" return value: %d, mapped value: %d",
 					syscall_name, (int)retval, -EFAULT);
 			retval = -EFAULT;
 			goto hndl_return;
 		}
 
-		if (pseudo_psm_recv_clk_cputime_ack(handle->veos_sock_fd,
-					&time_buf) < 0) {
+		retval = pseudo_psm_recv_clk_cputime_ack(handle->veos_sock_fd,
+					&time_buf);
+		if (retval < 0) {
 			PSEUDO_ERROR("clock_gettime() failure: "
-					"veos acknowledgement error");
-			PSEUDO_DEBUG("%s failure: "
-					"return value: %d, mapped value: %d",
-					syscall_name, (int)retval, -EFAULT);
-			retval = -EFAULT;
+					"veos acknowledgment error");
+			if (retval == -ESRCH || retval == -EINVAL) {
+				PSEUDO_DEBUG("return value: %d, mapped "
+						"value: %d", (int)retval, -EINVAL);
+				retval = -EINVAL;
+			} else {
+				PSEUDO_DEBUG("return value: %d, mapped "
+						"value: %d", (int)retval, -EFAULT);
+				retval = -EFAULT;
+			}
 			goto hndl_return;
 		}
 		retval = 0;
 	} else {
-
-		switch (id) {
+		switch (clockid & CLOCKFD_MASK) {
 			case CLOCK_REALTIME:
 			case CLOCK_REALTIME_COARSE:
 			case CLOCK_MONOTONIC:
@@ -4094,7 +4107,7 @@ ret_t ve_clock_gettime(int syscall_num, char *syscall_name, veos_handle *handle)
 							strerror(errno));
 					goto hndl_return;
 				} else
-					PSEUDO_DEBUG("syscall clock_gettime() returned %d",
+					PSEUDO_DEBUG("clock_gettime() returned %d",
 							(int)retval);
 				PSEUDO_DEBUG("timespec.tv_sec = %ld",
 						time_buf.tv_sec);
@@ -4108,8 +4121,11 @@ ret_t ve_clock_gettime(int syscall_num, char *syscall_name, veos_handle *handle)
 			case CLOCK_THREAD_CPUTIME_ID:
 				/* interact with PSM to get the process cputime.
 				*/
-				clockinfo.type = (id == CLOCK_PROCESS_CPUTIME_ID)?1:0;
 				clockinfo.pid = syscall(186);
+				clockinfo.current = syscall(186);
+				clockinfo.clockid = clockid;
+				clockinfo.pid_flag = 0;
+
 				if (pseudo_psm_send_clk_cputime_req(handle->veos_sock_fd,
 							clockinfo) < 0) {
 					PSEUDO_ERROR("clock_gettime() failure: veos request error");
@@ -4122,19 +4138,24 @@ ret_t ve_clock_gettime(int syscall_num, char *syscall_name, veos_handle *handle)
 
 				if (pseudo_psm_recv_clk_cputime_ack(handle->veos_sock_fd,
 							&time_buf) < 0) {
+
 					PSEUDO_ERROR("clock_gettime() failure: "
-							"veos acknowledgement error");
-					PSEUDO_DEBUG("clock_gettime() failure: "
-							"return value: %d,mapped value : %d",
-							(int)retval, -EFAULT);
-					retval = -EFAULT;
+							"veos acknowledgment error");
+					if (retval == -ESRCH || retval == -EINVAL) {
+						PSEUDO_DEBUG("return value: %d, mapped "
+								"value: %d", (int)retval, -EINVAL);
+						retval = -EINVAL;
+					} else {
+						PSEUDO_DEBUG("return value: %d, mapped "
+								"value: %d", (int)retval, -EFAULT);
+						retval = -EFAULT;
+					}
 					goto hndl_return;
 				}
 				retval = 0;
 				break;
 		}
 	}
-
 	/* send the filled timespec buf */
 	if (0 > ve_send_data(handle, args[1],
 				sizeof(struct timespec), (uint64_t *)(&time_buf))) {

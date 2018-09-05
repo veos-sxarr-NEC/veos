@@ -30,6 +30,7 @@
 #include "veos_handler.h"
 #include "veos.h"
 #define VMFLAGS_LENGTH  81
+#define VE_MAX_REGVALS  64
 /**
  * @brief RPM sub commands
  */
@@ -56,6 +57,7 @@ enum veos_rpm_subcmd {
 	VE_ACCTINFO,
 	VE_CREATE_PROCESS,
 	VE_SHM_RMLS,
+	VE_GET_REGVALS,
 	VE_RPM_INVALID = -1
 };
 
@@ -415,4 +417,5 @@ int rpm_handle_get_affinity_req(struct veos_thread_arg *);
 int rpm_handle_prlimit_req(struct veos_thread_arg *);
 int rpm_handle_acctinfo_req(struct veos_thread_arg *);
 int rpm_handle_ipc_ls_rm_req(struct veos_thread_arg *);
+int rpm_handle_get_regvals_req(struct veos_thread_arg *pti);
 #endif

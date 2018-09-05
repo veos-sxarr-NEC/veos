@@ -71,8 +71,8 @@ static struct auxv_info auxv;
 #define TRANS_MAX       (MMAP_SIZE - 0x20)   /*!< address, datasize
 					      * and buffer */
 #define TRANS_SZ_SHFT   3	/*!< make a size of multiples of 8. */
-#define EXECVE_MAX_ARGS 257
-#define EXECVE_MAX_ENVP 257
+#define EXECVE_MAX_ARGS 513
+#define EXECVE_MAX_ENVP 513
 reg_t inst_intr; /*!< In pse_load_interp = ehdr->e_entry */
 reg_t inst_main; /*!< In pse_load_binary  ehdr->e_entry */
 unsigned long long dyn_seg_addr_main; /*!< PT_DYN(main) phdr->p_vaddr */
@@ -215,6 +215,7 @@ int pse_load_binary(char *filename, veos_handle *handle,
 	head = (char *)vh_map_elf(load_elf.stat.file_exec);
 	if (!head) {
 		ret = -errno;
+		fprintf(stderr, "Failed to map binary\n");
 		goto err_ret;
 	}
 	/* check file type (magic, class, data and type) */
@@ -231,6 +232,7 @@ int pse_load_binary(char *filename, veos_handle *handle,
 		head_interp = vh_map_elf_dyn(load_elf.stat.file_interp);
 		if (!head_interp) {
 			ret = -errno;
+			fprintf(stderr, "Failed to map binary\n");
 			goto err_ret;
 		}
 		load_elf.stat.elf_interp = (Elf_Ehdr *)head_interp;
@@ -475,9 +477,10 @@ int init_stack(veos_handle *handle, int argc,
 	areap_8b += 1;		/* argc */
 	areap_8b += argc + 1;	/* argv + NULL */
 	if (argc >= EXECVE_MAX_ARGS) {
-                PSEUDO_ERROR("Argument count exceeded: %d", argc);
-                ret = -E2BIG;
-                goto stack_err;
+		PSEUDO_ERROR("Argument count exceeded: %d", argc);
+		fprintf(stderr, "Argument count exceeded\n");
+		ret = -E2BIG;
+		goto stack_err;
         }
 
 	arg_p = envp;		/* envp */
@@ -487,8 +490,9 @@ int init_stack(veos_handle *handle, int argc,
 		cnt_env++;
 	}
 	if (cnt_env >= EXECVE_MAX_ENVP) {
-                PSEUDO_ERROR("Env variable exceeded: %d", cnt_env);
-                ret = -E2BIG;
+                PSEUDO_ERROR("Environment variable exceeded: %d", cnt_env);
+                fprintf(stderr, "Environment variables exceeded\n");
+		ret = -E2BIG;
                 goto stack_err;
         }
 	areap_8b++;		/* + NULL */
@@ -576,6 +580,7 @@ int init_stack(veos_handle *handle, int argc,
 		ret = -errno;
 		PSEUDO_ERROR("Stack for VE allocation failed: %s",
 				strerror(-ret));
+		fprintf(stderr, "Out of VH memory for VE stack image creation\n");
 		goto stack_err;
 	}
 	PSEUDO_DEBUG("Stack image size: %d"
@@ -756,6 +761,7 @@ int init_stack(veos_handle *handle, int argc,
 		ret = -errno;
 		PSEUDO_ERROR("Failed(%s) to handle memory mapping",
 				strerror(-ret));
+		fprintf(stderr, "Out of VE memory for stack creation\n");
 		goto stack_err_ret;
 	}
 
@@ -901,21 +907,21 @@ void fill_ve_elf_data(char *head)
 						phdr->p_offset, SEEK_SET))) {
 				PSEUDO_ERROR("failed to reposition offset"
 						": %s", strerror(errno));
-				fprintf(stderr, "failed to load VE binary");
+				fprintf(stderr, "Failed to load executable\n");
 				pseudo_abort();
 			}
 			buf = (char *)calloc(1, phdr->p_filesz);
 			if(!buf) {
 				PSEUDO_ERROR("failed to allocate buffer: %s",
 						strerror(errno));
-				fprintf(stderr, "failed to load VE binary");
+				fprintf(stderr, "Failed to load executable\n");
 				pseudo_abort();
 			}
 			if (0 > (read(load_elf.stat.fd, buf,
 							phdr->p_filesz))) {
 				PSEUDO_ERROR("failed to read data: %s",
 						strerror(errno));
-				fprintf(stderr, "failed to load VE binary");
+				fprintf(stderr, "Failed to load executable\n");
 				pseudo_abort();
 			}
 			is_interp = 1;
@@ -1402,7 +1408,7 @@ void fill_ve_vh_segmap(veos_handle *handle)
 	if (NULL == load_elf.seg) {
 		PSEUDO_ERROR("failed to load segments: %s",
 				strerror(errno));
-		fprintf(stderr, "failed to load VE binary");
+		fprintf(stderr, "Failed to load executable\n");
 		pseudo_abort();
 	}
 	PSEUDO_DEBUG("Return address for ve_vh_segmap: %p",

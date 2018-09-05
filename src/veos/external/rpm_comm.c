@@ -419,6 +419,76 @@ hndl_return1:
 }
 
 /**
+ * @brief Handles the VE_GET_REGVALS request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_get_regvals_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	int pid = -1;
+	struct ve_task_struct *tsk = NULL;
+	ProtobufCBinaryData rpm_pseudo_msg = {0};
+	int numregs = 0;
+	int regids[VE_MAX_REGVALS] = {0};
+	uint64_t regvals[VE_MAX_REGVALS] = {0};
+
+	VEOS_TRACE("Entering");
+
+	pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->ve_pid;
+
+	/* allow only root or own user to retrieve registers
+	 * task struct is retrieved once again later, but this
+	 * seems still the cheapest way to restrict access
+	 */
+	tsk = find_ve_task_struct(pid);
+	if (NULL == tsk) {
+		VEOS_DEBUG("VE task with pid %d not found", pid);
+		retval = -ESRCH;
+		goto hndl_return;
+	}
+	if (tsk->uid != pti->cred.uid && pti->cred.uid != 0) {
+		VEOS_DEBUG("VE regvals access not permitted");
+		retval = -EPERM;
+		goto hndl_return;
+	}
+
+	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
+		pseudo_msg;
+	numregs = rpm_pseudo_msg.len / sizeof(int);
+	if (numregs < 1 || numregs > VE_MAX_REGVALS) {
+		VEOS_ERROR("illegal value for numregs: %d", numregs);
+		retval = -EINVAL;
+		numregs = 0;
+		goto hndl_return;
+	}
+
+	memcpy(&regids[0], rpm_pseudo_msg.data, rpm_pseudo_msg.len);
+
+	/* PSM will populate regvals */
+	retval = psm_get_regval(tsk, numregs, regids, regvals);
+	if (0 > retval) {
+		VEOS_ERROR("Populating information failed for PID: %d",
+				pid);
+		VEOS_DEBUG("PSM populate regvals returned %d", retval);
+		goto hndl_return;
+	}
+
+	retval = 0;
+hndl_return:
+	/* Send the response back to RPM command */
+
+	retval = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+				       (uint8_t *)&regvals,
+				       sizeof(uint64_t) * numregs,
+				       retval);
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
  * @brief Handles the VE_PIDSTATM_INFO request from RPM command.
  *
  * @param[in] pti Contains the request message received from RPM command
@@ -1376,6 +1446,14 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 	case VE_SHM_RMLS:
 		VEOS_DEBUG("RPM request : IPCS/IPCRM");
 		retval = rpm_handle_ipc_rmls_req(pti);
+		if (0 > retval) {
+			VEOS_ERROR("Query request failed");
+			goto hndl_return;
+		}
+		break;
+	case VE_GET_REGVALS:
+		VEOS_DEBUG("RPM request : GET_REGVALS");
+		retval = rpm_handle_get_regvals_req(pti);
 		if (0 > retval) {
 			VEOS_ERROR("Query request failed");
 			goto hndl_return;
