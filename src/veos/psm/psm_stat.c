@@ -296,7 +296,7 @@ int psm_rpm_handle_stat_req(struct ve_node_struct *p_ve_node,
 {
 	int retval = -1;
 	int core_loop = 0;
-	int64_t nr_switches = -1;
+	unsigned long nr_switches = 0;
 	struct timeval now = {0};
 	uint64_t core_uptime = 0;
 	struct ve_core_struct *p_ve_core = NULL;
@@ -319,7 +319,7 @@ int psm_rpm_handle_stat_req(struct ve_node_struct *p_ve_node,
 	}
 
 	nr_switches = psm_calc_nr_context_switches(p_ve_node);
-	if (-1 == nr_switches) {
+	if ((unsigned long)-1 == nr_switches) {
 		VEOS_ERROR("Failed to get number of context switches");
 		goto hndl_return;
 	}

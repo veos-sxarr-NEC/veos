@@ -557,13 +557,15 @@ void *__ve_mmap(veos_handle *handle, vemva_t addr, size_t size,
 		 * this region.
 		 */
 		align_fsz = ALIGN(f_stat->stat.st_size, PAGE_SIZE_4KB);
+		if (offset < align_fsz)
+			align_fsz -= offset;
 		if ((offset < f_stat->stat.st_size) && (0 < (int64_t)(aligned_sz - align_fsz))) {
 			PSEUDO_DEBUG("offset %ld f_stat->stat.st_size  %ld",
 					offset, align_fsz);
 			mmap_flag = (flag | MAP_FIXED | MAP_ANON) &
 				(~(MAP_2MB | MAP_64MB | MAP_VESHM | MAP_ADDR_SPACE));
-			if (MAP_FAILED == mmap((void*)((uint64_t)ret_addr + (align_fsz - offset)),
-						(aligned_sz - (align_fsz - offset)),
+			if (MAP_FAILED == mmap((void*)((uint64_t)ret_addr + align_fsz),
+						aligned_sz - align_fsz,
 						ve_prot,
 						mmap_flag,
 						-1, 0)) {
@@ -634,7 +636,7 @@ int64_t amm_request_mmap(veos_handle *handle, vemva_t vemva, size_t size,
 	}
 
 	PSEUDO_DEBUG("Sending request for MMAP with vemva(0x%lx) "
-			"size(0x%lx) perm(0x%lx) flags(0x%lx)",
+			"size(0x%lx) perm(0x%x) flags(0x%lx)",
 			cmd->vaddr, cmd->size, cmd->perm, cmd->flags);
 
 	/* Populate parameters for ve_mmap req */
@@ -1501,7 +1503,12 @@ ret_t ve_mprotect(int syscall_num, char *syscall_name, veos_handle *handle)
 			PSEUDO_DEBUG("Error(%s) while getting page size", strerror(-ret));
 			goto error_return;
 		}
+	} else {
+		PSEUDO_DEBUG("address is NULL\n");
+		ret = -ENOMEM;
+		goto error_return;
 	}
+
 
 	/*check whether memory ref by addr is mapped or not*/
 	ret = vemva_mapped((void *)vemva, len, MARK_USED);
@@ -1715,7 +1722,7 @@ int64_t __ve_msync(veos_handle *handle, vemva_t vemva, size_t size, int flag)
 		 */
 		if (vemva_mapped((void *)vemva, pgsize, MARK_FILE|MARK_USED)) {
 			/* receive the data from VE memory*/
-			ret = __ve_recv_data(handle, (uint64_t)vemva_ve, pgsize, (void *)vemva_vh);
+			ret = __ve_recv_data(handle, (uint64_t)vemva_ve, pgsize, (void *)vemva_vh, 0);
 			if (0 > ret) {
 				PSEUDO_TRACE("Error(%s) while receiving date from VE",
 						strerror(-ret));

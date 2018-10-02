@@ -314,8 +314,8 @@ int64_t veos_get_vhsaa_pciatb(vemaa_t vemaa, pid_t pid)
 	/*Get Total valid entry count*/
 	entry_max = vnode_info->pci_mempool->total_pages;
 
-	pg_mode = (vnode_info->pci_bar01_pgsz == PAGE_2MB)
-		? PGMOD_2MB : PGMOD_64MB;
+	pg_mode = (uint64_t)((vnode_info->pci_bar01_pgsz == PAGE_2MB)
+		? PGMOD_2MB : PGMOD_64MB);
 
 	page_no = pfnum(vemaa, PGMOD_2MB);
 	if ((page_no > vnode_info->mp->total_pages) ||
@@ -469,8 +469,8 @@ int get_pci_req_type(uint64_t *pgmod_arr, bool *comm)
 		pgmod_arr, (*comm) ? "true" : "false");
 
 	if (*comm) {
-		page_size = (pgmod_arr[0] == PGMOD_2MB) ?
-					PAGE_2MB : PAGE_64MB;
+		page_size = (size_t)((pgmod_arr[0] == PGMOD_2MB) ?
+					PAGE_2MB : PAGE_64MB);
 		if (page_size < vnode->pci_bar01_pgsz) {
 			VEOS_DEBUG("Process pgsz incomaptible with PCIATB pgsz");
 			return PCI_ALLOC_ERROR;
@@ -1034,8 +1034,8 @@ int64_t veos_alloc_pciatb(pid_t pid, uint64_t vaddr,
 		goto pci_failed;
 	}
 
-	pg_mode = (vnode_info->pci_bar01_pgsz == PAGE_2MB) ?
-			PGMOD_2MB : PGMOD_64MB;
+	pg_mode = (uint64_t)((vnode_info->pci_bar01_pgsz == PAGE_2MB) ?
+			PGMOD_2MB : PGMOD_64MB);
 	/*Get free entry from buddy*/
 	/*if requested size is power of two*/
 	pthread_mutex_lock_unlock(&vnode_info->pci_mempool->buddy_mempool_lock,

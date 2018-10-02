@@ -124,11 +124,13 @@ void calc_address(struct addr_struct *as)
 * @param[in] vehva  Virtual address of VH memory.
 * @param[in] size size of data to be tranfer/receive.
 * @param[in] is_send whether to send/receive.
+* @param[in] tid TID of VE thread to/from which memory is transferred.
+*            This param is set for DMA request using specified tid
 *
 * @return returns zero if success else negative of errno.
 */
 int direct_send_recv(veos_handle *handle, vemva_t vemva,
-		vehva_t vehva, size_t size, bool is_send)
+		vehva_t vehva, size_t size, bool is_send, pid_t tid)
 {
 	size_t size_remain = size;
 	size_t chunk_sz = 0;
@@ -140,14 +142,14 @@ int direct_send_recv(veos_handle *handle, vemva_t vemva,
 		chunk_sz  = (size_remain >= VE_XFER_BLOCK_SIZE) ?
 			VE_XFER_BLOCK_SIZE : size_remain;
 		if (is_send) {
-			ret = __ve_send_data(handle, vemva, chunk_sz, (void *)vehva);
+			ret = __ve_send_data(handle, vemva, chunk_sz, (void *)vehva, tid);
 			if (ret < 0) {
 				PSEUDO_DEBUG("error(%s) while transfering data to VE memory",
 					strerror(-ret));
 				goto xfer_done;
 			}
 		} else {
-			ret = __ve_recv_data(handle, vemva, chunk_sz, (void *)vehva);
+			ret = __ve_recv_data(handle, vemva, chunk_sz, (void *)vehva, tid);
 			if (ret < 0) {
 				PSEUDO_DEBUG("error(%s) while receiving data from VE memory",
 					strerror(-ret));
@@ -168,7 +170,6 @@ xfer_done:
 
 /**
  * @brief This function is used to send data from VH to VE memory.
- *
  * @param[in] handle VEOS handle
  * @param[in] address destination address
  * @param[in] datasize size of the data
@@ -178,6 +179,24 @@ xfer_done:
  */
 int ve_send_data(veos_handle *handle, uint64_t address,
 		size_t datasize, void *data)
+{
+	return ve_send_data_tid(handle, address, datasize, data, 0);
+}
+
+/**
+ * @brief This function is used to send data from VH to VE memory.
+ *
+ * @param[in] handle VEOS handle
+ * @param[in] address destination address
+ * @param[in] datasize size of the data
+ * @param[in] data data buffer to transfer
+ * @param[in] tid TID of VE thread to/from which memory is transferred.
+ *            This param is set for DMA request using specified tid
+ *
+ * @return On success return 0 and negative of errno on failure.
+ */
+int ve_send_data_tid(veos_handle *handle, uint64_t address,
+		size_t datasize, void *data, pid_t tid)
 {
 	int ret = 0, tot_offset = 0;
 	struct addr_struct *as = NULL;
@@ -212,7 +231,7 @@ int ve_send_data(veos_handle *handle, uint64_t address,
 
 	/*If src, dst and size are align then send directly*/
 	if (!as->top_offset && !as->bottom_offset && !(vehva % ALIGN_BUFF_SIZE)) {
-		ret = direct_send_recv(handle, vemva, (vehva_t)vehva, remain_sz, true);
+		ret = direct_send_recv(handle, vemva, (vehva_t)vehva, remain_sz, true, tid);
 		goto exit_func2;
 	}
 
@@ -241,7 +260,7 @@ int ve_send_data(veos_handle *handle, uint64_t address,
 			goto exit_func2;
 		}
 		/* Receiving top part of VE memory into top buffer */
-		ret = __ve_recv_data(handle, as->aligned_top_address, ALIGN_BUFF_SIZE, t_buf);
+		ret = __ve_recv_data(handle, as->aligned_top_address, ALIGN_BUFF_SIZE, t_buf, tid);
 		if (ret) {
 			PSEUDO_DEBUG("error while receiving top part of VE data");
 			free(t_buf);
@@ -261,7 +280,7 @@ int ve_send_data(veos_handle *handle, uint64_t address,
 		}
 		/* receive bottom part of VE memory into bottom buffer */
 		ret = __ve_recv_data(handle, as->aligned_bottom_address - ALIGN_BUFF_SIZE,
-				ALIGN_BUFF_SIZE, b_buf);
+				ALIGN_BUFF_SIZE, b_buf, tid);
 		if (ret) {
 			PSEUDO_DEBUG("error while receiving bottom part of VE data");
 			goto exit_func3;
@@ -292,7 +311,7 @@ int ve_send_data(veos_handle *handle, uint64_t address,
 		memcpy(dst, (void*)vehva, (data_xfer_sz - tot_offset));
 
 		/* Sending buffer to VE memory after padding top and bottom data*/
-		ret = __ve_send_data(handle, vemva, data_xfer_sz, buf);
+		ret = __ve_send_data(handle, vemva, data_xfer_sz, buf, tid);
 		if (ret) {
 			PSEUDO_DEBUG("error(%s) while sending data to VE memory",
 				strerror(-ret));
@@ -347,6 +366,24 @@ exit_func1:
 int ve_recv_data(veos_handle *handle, uint64_t address,
 		size_t datasize, void *data)
 {
+	return ve_recv_data_tid(handle, address, datasize, data, 0);
+}
+
+/**
+ * @brief This function used to receive data from VE memory.
+ *
+ * @param[in] handle VEOS handle
+ * @param[in] address VE address
+ * @param[in] datasize data size to receive
+ * @param[out] data buffer to hold data
+ * @param[in] tid TID of VE thread to/from which memory is transferred.
+ *            This param is set for DMA request using specified tid
+ *
+ * @return On success returns 0 and negative of errno on failure.
+ */
+int ve_recv_data_tid(veos_handle *handle, uint64_t address,
+		size_t datasize, void *data, pid_t tid)
+{
 	int ret = 0;
 	struct addr_struct *as = NULL;
 	void *src = NULL;
@@ -379,7 +416,7 @@ int ve_recv_data(veos_handle *handle, uint64_t address,
 
 	/*If src, dst and size are align then receive directly */
 	if (!as->top_offset && !as->bottom_offset && !(vehva % ALIGN_BUFF_SIZE)) {
-		ret = direct_send_recv(handle, vemva, (vehva_t)vehva, remain_sz, false);
+		ret = direct_send_recv(handle, vemva, (vehva_t)vehva, remain_sz, false, tid);
 		goto exit_func1;
 	}
 
@@ -410,7 +447,7 @@ int ve_recv_data(veos_handle *handle, uint64_t address,
 				VE_XFER_BLOCK_SIZE : remain_sz;
 
 		/* Receive data from VE memory into buffer */
-		ret = __ve_recv_data(handle, vemva, data_xfer_sz, buf);
+		ret = __ve_recv_data(handle, vemva, data_xfer_sz, buf, tid);
 		if (0 > ret) {
 			PSEUDO_DEBUG("error(%s) while receiving data from VE",
 				strerror(errno));
@@ -466,11 +503,13 @@ exit_func1:
  * @param[in] address VE address
  * @param[in] datasize data size
  * @param[in] data VH buffer to hold data
+ * @param[in] tid TID of VE thread to/from which memory is transferred.
+ *            This param is set for DMA request using specified tid
  *
  * @return On success returns 0 and negative of errno on failure.
  */
 int __ve_send_data(veos_handle *handle, uint64_t address, size_t datasize,
-		void *data)
+		void *data, pid_t tid)
 {
 	int ret = 0;
 	struct dma_args dma_param = {0};
@@ -488,7 +527,7 @@ int __ve_send_data(veos_handle *handle, uint64_t address, size_t datasize,
 	dma_param.dstaddr = address;
 	dma_param.size = datasize;
 
-	ret = amm_dma_xfer_req((uint8_t *)&dma_param, handle);
+	ret = amm_dma_xfer_req((uint8_t *)&dma_param, handle, tid);
 	if (0 > ret) {
 		PSEUDO_DEBUG("error(%s) while Posting DMA request", strerror(ret));
 		ret = -EFAULT;
@@ -505,11 +544,13 @@ int __ve_send_data(veos_handle *handle, uint64_t address, size_t datasize,
  * @param[in] address VE address
  * @param[in] datasize Data size
  * @param[out] data Buffer to hold data
+ * @param[in] tid TID of VE thread to/from which memory is transferred.
+ *            This param is set for DMA request using specified tid
  *
  * @return On success returns 0 and negative of errno.
  */
 int __ve_recv_data(veos_handle *handle, uint64_t address,
-		   size_t datasize, void *data)
+		   size_t datasize, void *data, pid_t tid)
 {
 	int ret = 0;
 	struct dma_args dma_param = {0};
@@ -524,7 +565,7 @@ int __ve_recv_data(veos_handle *handle, uint64_t address,
 	dma_param.dstaddr = (uint64_t)data;
 	dma_param.size = datasize;
 
-	ret = amm_dma_xfer_req((uint8_t *)&dma_param, handle);
+	ret = amm_dma_xfer_req((uint8_t *)&dma_param, handle, tid);
 	if (0 > ret) {
 		PSEUDO_DEBUG("error while Posting DMA request");
 		ret = -EFAULT;
@@ -540,10 +581,12 @@ int __ve_recv_data(veos_handle *handle, uint64_t address,
  *
  * @param[in] handle VEOS handle
  * @param[in] cmd message to send
+ * @param[in] tid TID of VE thread to/from which memory is transferred.
+ *            This param is set for DMA request using specified tid
  *
  * @return On success returns 0 and negative of errno on failure.
  */
-int amm_dma_xfer_req(uint8_t *dma_param, veos_handle *handle)
+int amm_dma_xfer_req(uint8_t *dma_param, veos_handle *handle, pid_t tid)
 {
 	int ret = -1;
 	ssize_t pseudo_msg_len = -1;
@@ -559,7 +602,13 @@ int amm_dma_xfer_req(uint8_t *dma_param, veos_handle *handle)
 	/*Pseudo Command message ID*/
 	ve_dma_req.pseudo_veos_cmd_id = DMA_REQ;
 	ve_dma_req.has_pseudo_pid = true;
-	ve_dma_req.pseudo_pid = syscall(SYS_gettid);
+	if (tid) {
+		/* Set tid passed in params, in order to allow any thread of
+		 * pseudo process to request DMA transfer. */
+		ve_dma_req.pseudo_pid = tid;
+	} else {
+		ve_dma_req.pseudo_pid = syscall(SYS_gettid);
+	}
 
 	ve_dma_req_msg.len = sizeof(struct dma_args);
 	ve_dma_req_msg.data = (uint8_t *)dma_param;

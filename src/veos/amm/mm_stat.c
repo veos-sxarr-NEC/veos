@@ -479,7 +479,7 @@ int veos_pmap(pid_t pid, struct ve_mapheader *header)
 	}
 
 	header->shmid = shmid;
-	header->length = pmapcount;
+	header->length = (unsigned int)pmapcount;
 
 	ret = shmdt(shmaddr);
 	if (0 > ret) {
@@ -527,7 +527,7 @@ size_t get_map_attr(vemva_t vemap, size_t map_sz, struct ve_mm_struct *mm, char 
 		}
 
 		pgno = pfnum(phy, PG_2M);
-		pg_sz = ((pgmod == PG_2M) ? PAGE_SIZE_2MB : PAGE_SIZE_64MB);
+		pg_sz = (size_t)((pgmod == PG_2M) ? PAGE_SIZE_2MB : PAGE_SIZE_64MB);
 
 		if (!strcasecmp(attr, "pss")) {
 			if (map_sz < pg_sz) {
@@ -663,7 +663,7 @@ int change_owner_shm(int uid, int shmid)
 		goto err;
 	}
 
-	buf.shm_perm.uid = uid;
+	buf.shm_perm.uid = (__uid_t)uid;
 
 	ret = shmctl(shmid, IPC_SET, &buf);
 	if (0 > ret) {

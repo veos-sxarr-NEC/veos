@@ -163,7 +163,7 @@ int __page_entry(struct buddy_mempool *mp, pgno_t pg_no, int pgmod, int order)
 	page->page_start = (uint64_t)(mp->base_addr +
 			(pg_no * (1UL << (mp->min_order))));
 
-	page->pgsz = pgmod_to_pgsz(pgmod);
+	page->pgsz = (size_t)pgmod_to_pgsz(pgmod);
 	page->flag = PG_VE;
 	page->perm = 0;
 	page->ref_count = 0;
@@ -184,7 +184,7 @@ int __page_entry(struct buddy_mempool *mp, pgno_t pg_no, int pgmod, int order)
 			pgsz_to_pgstr(page->pgsz), pg_no,
 			vnode_info->ve_pages);
 	VEOS_DEBUG("%s (%p) info start(%lx), flag(%ld) perm(%ld), refcnt(%ld)"
-			"dma refcnt(%ld), private(%p), own(%p), order(%ld)",
+			"dma refcnt(%ld), private(%p), own(%p), order(%d)",
 			pgsz_to_pgstr(page->pgsz), page, page->page_start,
 			page->flag, page->perm, page->ref_count, page->dma_ref_count,
 			page->private_data, page->owner, page->buddy_order);
@@ -548,7 +548,7 @@ struct block *get_buddy(struct buddy_mempool *mp,
 		struct block *self, int order)
 {
 	struct block *free_buddy = NULL;
-	uint64_t self_start = NULL;
+	uint64_t self_start = 0;
 	uint64_t _buddy = 0;
 	VEOS_TRACE("invoked");
 	VEOS_DEBUG("getting buddy blk from pool %p with self %p and order %d",
@@ -1034,7 +1034,7 @@ void veos_dump_ve_pages(void)
 				mp->total_pages; pg_idx++) {
 		if ((ve_pages[pg_idx] != NULL) &&
 				(ve_pages[pg_idx] != (struct ve_page *)-1)) {
-				VEOS_DEBUG("%5d%15lx%15ld%15ld%15ld%15s",
+				VEOS_DEBUG("%5d%15lx%15ld%15ld%15d%15s",
 					pg_idx, ve_pages[pg_idx]->page_start,
 				ve_pages[pg_idx]->ref_count,
 				ve_pages[pg_idx]->dma_ref_count,

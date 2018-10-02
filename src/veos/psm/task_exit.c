@@ -116,8 +116,9 @@ void psm_do_execve_wait(struct ve_task_struct *del_task)
 void psm_do_process_cleanup(struct ve_task_struct *group_leader,
 		struct ve_task_struct *current, int elf_type)
 {
-	struct list_head *p, *n;
+	struct list_head *p, *n, *prev;
 	struct ve_task_struct *tmp = NULL;
+	struct ve_sigqueue *pending_sig = NULL;
 
 	VEOS_TRACE("Entering");
 	VEOS_DEBUG("elf_type set to %d", elf_type);
@@ -166,6 +167,38 @@ one:
 				current->pid);
 		current->thread_execed = true;
 		psm_do_execve_wait(current);
+		/* Actually, the best place to update signal mask is inside
+		 * clear_ve_task_struct() which is responsible for updating
+		 * task struct members, but our plight is, we have limited
+		 * information about exec task in clear_ve_task_struct()*/
+		psm_set_current_blocked(group_leader, &current->blocked);
+		/* As signal pending set is preserve across execve() so
+		 * clean group leader pending signal list and update it
+		 * with the signal pending list of task which has called
+		 * execve().
+		 * */
+		if (!list_empty(&group_leader->pending.list)) {
+			list_for_each_safe(p, n,
+					&group_leader->pending.list) {
+				pending_sig = list_entry(p, struct ve_sigqueue,
+						list);
+					free(pending_sig);
+			}
+			VEOS_DEBUG("Task[%d] Pending signal cleared",
+					group_leader->pid);
+			ve_init_sigpending(&group_leader->pending);
+		}
+		if (!list_empty(&current->pending.list)) {
+			memcpy(&group_leader->pending.signal,
+				&current->pending.signal, sizeof(sigset_t));
+			group_leader->pending.list.next = current->pending.list.next;
+			prev = current->pending.list.prev;
+			current->pending.list.prev->next = &group_leader->pending.list;
+			group_leader->pending.list.prev = prev;
+			ve_init_sigpending(&current->pending);
+			VEOS_DEBUG("Task[%d] Pending signal updated",
+					group_leader->pid);
+		}
 		put_ve_task_struct(current);
 	}
 
@@ -610,6 +643,7 @@ void delete_entries(struct ve_task_struct *del_task_struct)
 	struct ve_task_struct *ve_task_list_head = NULL;
 	struct ve_task_struct *temp = NULL, *group_leader = NULL;
 	struct list_head *p, *n;
+	struct ve_sigqueue *pending_sig;
 	int ret = -1;
 
 	VEOS_TRACE("Entering");
@@ -731,7 +765,15 @@ resume:
 	 * child processes */
 	if (thread_group_leader(del_task_struct))
 		psm_traverse_children_for_zombie(group_leader);
-
+	if (!list_empty(&del_task_struct->pending.list)) {
+		list_for_each_safe(p, n, &del_task_struct->pending.list) {
+			pending_sig = list_entry(p, struct ve_sigqueue, list);
+			free(pending_sig);
+		}
+		ve_init_sigpending(&del_task_struct->pending);
+		VEOS_DEBUG("Task[%d] Pending signal cleared",
+			del_task_struct->pid);
+	}
 	psm_del_sighand_struct(del_task_struct);
 
 	amm_del_mm_struct(del_task_struct);

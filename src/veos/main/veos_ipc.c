@@ -427,6 +427,10 @@ terminate:
 	return;
 hndl_return:
 	close(l_sock);
+	ret = pthread_attr_destroy(&attr);
+	if (ret != 0)
+		VEOS_ERROR("Failed to destroy thread attribute, "
+				"return value %s", strerror(ret));
 	VEOS_TRACE("Exiting");
 	veos_abort("VEOS Main thread failure...");
 }

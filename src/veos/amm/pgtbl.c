@@ -534,7 +534,8 @@ int amm_copy_atb_private(atb_reg_t *old_atb,
 				 * In case of PROT_NONE memory ATB entry is invalid
 				 * but it is having valid page number.
 				 * */
-				if (pg_isvalid(&new_pte[ent]) || pg_getpb(&new_pte[ent], PG_2M))
+				if (pg_isvalid(&new_pte[ent]) ||
+				    pg_getpb(&new_pte[ent], PG_2M)) {
 					ret = copy_entry(&new_pte[ent],
 								&old_pte[ent], pgmod);
 					if (0 > ret) {
@@ -544,6 +545,7 @@ int amm_copy_atb_private(atb_reg_t *old_atb,
 						return ret;
 
 					}
+				}
 			}
 		}
 	}
@@ -696,7 +698,7 @@ int copy_entry(atb_entry_t *new_pte, atb_entry_t *old_pte,
 	op_flg = VE_PAGE(vnode, pgno_src)->flag;
 	op_perm = VE_PAGE(vnode, pgno_src)->perm;
 
-	pgsz = pgmod_to_pgsz(pgmod);
+	pgsz = (size_t)pgmod_to_pgsz(pgmod);
 
 	/* Below condition is for allocating new page in child
 	 * When flags are as follows:
@@ -717,7 +719,7 @@ int copy_entry(atb_entry_t *new_pte, atb_entry_t *old_pte,
 		}
 
 		/*Update perm*/
-		VE_PAGE(vnode, pgno_dst)->perm = op_perm;
+		VE_PAGE(vnode, pgno_dst)->perm = (uint64_t)op_perm;
 
 		/*Update flag*/
 		VE_PAGE(vnode, pgno_dst)->flag = op_flg;

@@ -65,7 +65,7 @@ struct ve_mm_struct {
 	/* Mutex lock */
 	pthread_mutex_t thread_group_mm_lock;
 	/* SHM/LHM area address for maintaining system call VHSAA and VHVA */
-	uint64_t shm_lhm_addr_vhsaa;
+	vhsaa_t shm_lhm_addr_vhsaa;
 	uint64_t shm_lhm_vehva;
 	uint64_t shm_lhm_addr_vehva;
 

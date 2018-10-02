@@ -1072,6 +1072,8 @@ int rpm_handle_acctinfo_req(struct veos_thread_arg *pti)
 
 	retval = psm_rpm_handle_acct(pid, acct_file);
 	if (0 > retval) {
+		if (acct_file)
+			free(acct_file);
 		VEOS_ERROR("Accounting failed");
 		VEOS_DEBUG("PSM acct handling failed returned %d", retval);
 		goto hndl_return;

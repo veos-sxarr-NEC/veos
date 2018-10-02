@@ -3,7 +3,7 @@
 
 <log4c>
         <config>
-                <bufsize>0</bufsize>
+                <bufsize>1024</bufsize>
                 <debug level="0"/>
                 <nocleanup>0</nocleanup>
         </config>

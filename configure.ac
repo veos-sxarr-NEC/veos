@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([veos], [1.2.2])
+AC_INIT([veos], [1.3.0])
 AC_CONFIG_SRCDIR([lib/libvepseudo/psm/exception.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([./build-aux])
@@ -56,6 +56,18 @@ AC_ARG_WITH(binfmtdir, [AS_HELP_STRING([--with-binfmtdir],
 	    [binfmtdir=${with_binfmtdir}],
 	    [binfmtdir=/usr/lib/binfmt.d])
 AC_SUBST(binfmtdir)
+AC_ARG_WITH(limitsdir, [AS_HELP_STRING([--with-limitsdir],
+	    [Specify pam_limits module configuration file directory for
+	    VE program, [/etc/security/limits.d]])],
+	    [limitsdir=${with_limitsdir}],
+	    [limitsdir=/etc/security/limits.d])
+AC_SUBST(limitsdir)
+AC_ARG_WITH(sysctldir, [AS_HELP_STRING([--with-sysctldir],
+	    [Specify sysctl configuration file directory for VE program,
+	    [/etc/sysctl.d]])],
+	    [sysctldir=${with_sysctldir}],
+	    [sysctldir=/etc/sysctl.d])
+AC_SUBST(sysctldir)
 
 AC_ARG_WITH([vemm-agent-includedir],
 	AS_HELP_STRING([--with-vemm-agent-includedir],
@@ -108,6 +120,7 @@ AC_CHECK_LIB([protobuf-c], [protobuf_c_message_pack], [], [AC_MSG_ERROR([protobu
 AC_CHECK_LIB([uuid], [uuid_generate], [], [AC_MSG_ERROR([uuid library support missing/incomplete])])
 AC_CHECK_LIB([systemd], [sd_notify], [], [AC_MSG_ERROR([systemd library support missing/incomplete])])
 AC_CHECK_LIB([procps], [openproc], [], [AC_MSG_ERROR([procps-ng-devel library support missing/incomplete])])
+AC_CHECK_LIB([dhash], [hash_count], [], [AC_MSG_ERROR([dhash-devel library support missing/incomplete])])
 
 # Checks for header files.
 AC_CHECK_HEADERS([fcntl.h limits.h stddef.h stdint.h stdlib.h string.h sys/socket.h sys/time.h unistd.h utime.h])
@@ -139,6 +152,8 @@ AC_CHECK_FUNCS([clock_gettime ftruncate getpagesize gettimeofday memset munmap r
 AC_CONFIG_FILES([Makefile
 		veos.spec
 		conf/Makefile
+		conf/limits.d/Makefile
+		conf/sysctl.d/Makefile
 		include/Makefile
 		lib/Makefile
                 lib/libived/Makefile

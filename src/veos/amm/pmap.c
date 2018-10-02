@@ -481,7 +481,7 @@ void final_pmap(struct _psuedo_pmap *pvemap,
 		pgmod = __veos_get_pgmode(VE_ADDR_VEMVA,
 				tsk, curr->begin);
 		if (0 > pgmod) return;
-		pg_sz = (pgmod == PG_2M) ? PAGE_SIZE_2MB : PAGE_SIZE_64MB;
+		pg_sz = (size_t)((pgmod == PG_2M) ? PAGE_SIZE_2MB : PAGE_SIZE_64MB);
 
 		/*Aligned starting address*/
 		if (!IS_ALIGNED(curr->begin, pg_sz))

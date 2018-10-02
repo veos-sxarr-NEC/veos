@@ -40,6 +40,7 @@
 #include "pseudo_cr.h"
 #include "pseudo_veshm.h"
 #include "pseudo_vhshm.h"
+#include "sys_veaio.h"
 
 /**
  * @brief This function will be invoked to handle the MONC interrupt
@@ -172,7 +173,7 @@ ret_t ve_generic_offload(int syscall_num, char *syscall_name,
 		case __NR_epoll_create:
 		case __NR_epoll_create1:
 			{
-				if ((int)args[0] < 0)
+				if ((ssize_t)args[0] < 0)
 				{
 					retval = -EINVAL;
 					goto hndl_return;
@@ -1444,6 +1445,17 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 		break;
 	case VE_SYSVE_UNMAP_DMADES:
 		retval = ve_sys_unmap_dmades(handle,(uint64_t)args[1]);
+		break;
+	case VE_SYSVE_AIO_READ:
+		retval = sys_ve_aio_read(handle, (void *)args[1], (int)args[2],
+				(ssize_t)args[3], (void *)args[4], args[5]);
+		break;
+	case VE_SYSVE_AIO_WRITE:
+		retval = sys_ve_aio_write(handle, (void *)args[1], (int)args[2],
+				(ssize_t)args[3], (void *)args[4], args[5]);
+		break;
+	case VE_SYSVE_AIO_WAIT:
+		retval = sys_ve_aio_wait(handle, (void *)args[1]);
 		break;
 	default:
 		/* write return value */

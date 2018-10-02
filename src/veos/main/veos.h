@@ -158,7 +158,7 @@ struct ve_node_struct {
 	uint64_t dirty_pg_num_2M;
 	uint64_t dirty_pg_num_64M;
 	struct ve_mem_info mem; /*!< VE memory data , mem START and its SIZE */
-	uint64_t zeroed_page_address; /*!< VE Memory Zeroed Page address */
+	vemaa_t zeroed_page_address; /*!< VE Memory Zeroed Page address */
 	vedl_handle *handle; /*!< VEDL handle */
 	ve_dma_hdl *dh; /*!< VE DMA handle */
 	system_common_reg_t *cnt_regs_addr; /*!< Node control registers */
@@ -171,7 +171,7 @@ struct ve_node_struct {
 	struct timeval sched_stime; /*!< Start time of PSM scheduler */
 	struct list_head ve_sys_load_head; /*!< Head element of VE system load */
 	uint64_t total_sys_load_time; /*!< Total load time in microseconds maintained */
-	int nr_active; /*!< Number of active task on VE node */
+	unsigned long nr_active; /*!< Number of active task on VE node */
 	uint64_t total_forks; /*!< Number of forks since VE node is booted */
 	uint64_t node_boot_time; /*!< Time at which node is booted */
 	reg_t pciattr; /*!< PCIATBA register to control PCI attributes */
@@ -190,8 +190,8 @@ struct ve_node_struct {
 	struct ve_cr_page *ve_cr_pages; /*!PAGE array of all CR pages*/
 	struct ve_cr_rlim *node_cr_rlim;
 	pthread_mutex_t cr_node_lock; /*! CR node Mutex Lock */
-	uint64_t vdso_pfn; /*! VE Memory VDSO Page */
-	uint64_t zeroed_pfn; /*! VE Memory Resv Page for clearing memory*/
+	pgno_t vdso_pfn; /*! VE Memory VDSO Page */
+	pgno_t zeroed_pfn; /*! VE Memory Resv Page for clearing memory*/
 	uint64_t vdso_pcientry; /*! Allocated pci enrty for vdso*/
 	char cr_dump_fname[FILENAME_MAX];
 	sem_t node_sem; /* Semaphore for performing scheduling on node */

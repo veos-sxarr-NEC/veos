@@ -143,8 +143,6 @@ void process_thread_cleanup(veos_handle *handle, int exit_code)
 	index_local = find_global_array_index(tid);
 	if (index_local == VEOS_MAX_VE_THREADS) {
 		PSEUDO_ERROR("TID %d not found", tid);
-		fprintf(stderr, "Internal resource usage "
-				"error\n");
 		pseudo_abort();
 	}
 
@@ -303,7 +301,7 @@ static void thread_dummy_func(void *thread_args)
 	ret_t retval = 1;
 	struct thread_func_args *thread_dummy_func_args = NULL;
 	veos_handle *parent_handle = NULL;
-	int index = -1;
+	int index = ((struct thread_func_args *)thread_args)->tid_val_index;;
 	struct pseudo_ve_clone_info ve_clone_info = {0};
 	struct clone_response clone_response_rcvd = {0};
 	void (*exception_handler) (veos_handle *, void *);
@@ -320,7 +318,6 @@ static void thread_dummy_func(void *thread_args)
 	memset(thread_dummy_func_args, '\0', sizeof(struct thread_func_args));
 	memcpy(thread_dummy_func_args, thread_args, sizeof(struct thread_func_args));
 	parent_handle = thread_dummy_func_args->parent_handle;
-	index = thread_dummy_func_args->tid_val_index;
 	exception_handler = thread_dummy_func_args->handler;
 	extra_arg = (void *)thread_dummy_func_args->extra_arg;
 
@@ -1121,7 +1118,8 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 		}
 
 		/* Re-initialize global tid array and tid_counter */
-		memset(global_tid_info, 0, sizeof(global_tid_info));
+		memset(((void *)global_tid_info)+sizeof(struct tid_info), 0,
+				sizeof(global_tid_info) - sizeof(struct tid_info));
 		tid_counter = 0;
 		/* Update global tid array for main thread */
 		global_tid_info[0].vefd = g_handle->ve_handle->vefd;
@@ -1323,13 +1321,15 @@ hndl_fail4:
  */
 ret_t ve_vfork(int syscall_num, char *syscall_name, veos_handle *handle)
 {
-	uint64_t clone_args[4];
+	uint64_t clone_args[6];
 	ret_t retval = -1;
 
 	clone_args[0] = CLONE_VM | CLONE_VFORK | SIGCHLD | 0;
 	clone_args[1] = 0;
 	clone_args[2] = 0;
 	clone_args[3] = 0;
+	clone_args[4] = 0;
+	clone_args[5] = 0;
 
 	PSEUDO_TRACE("Entering");
 	PSEUDO_DEBUG("%s is called", syscall_name);
@@ -1372,13 +1372,15 @@ ret_t ve_vfork(int syscall_num, char *syscall_name, veos_handle *handle)
  */
 ret_t ve_fork(int syscall_num, char *syscall_name, veos_handle *handle)
 {
-	uint64_t clone_args[4];
+	uint64_t clone_args[6];
 	ret_t retval = -1;
 
 	clone_args[0] = SIGCHLD | 0;
 	clone_args[1] = 0;
 	clone_args[2] = 0;
 	clone_args[3] = 0;
+	clone_args[4] = 0;
+	clone_args[5] = 0;
 
 	PSEUDO_TRACE("Entering");
 	PSEUDO_DEBUG("%s is called", syscall_name);
@@ -1862,7 +1864,7 @@ hndl_fail2:
 hndl_fail1:
 	if (real_exe_name != NULL)
 		free(real_exe_name);
-	if (exe_name != NULL);
+	if (exe_name != NULL)
 		free(exe_name);
 	/* Cleaning of all the task associated with pid*/
 	if (kill_flag == 1) {
@@ -4049,14 +4051,10 @@ ret_t ve_clock_gettime(int syscall_num, char *syscall_name, veos_handle *handle)
 
 	PSEUDO_DEBUG("Clock Id: %d, PID: %d", clockid, pid);
 
-	if (pid == 1) {
-		/* since we don't have running INIT process */
-		PSEUDO_ERROR("clock_gettime() for INIT process invalid\n");
+	if (pid < -1 || pid == 1) {
 		retval = -EINVAL;
 		goto hndl_return;
-
 	} else if (pid > 1) {
-
 		clockinfo.pid = pid;
 		clockinfo.clockid = clockid;
 		clockinfo.pid_flag = 1;

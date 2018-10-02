@@ -214,7 +214,7 @@ struct ve_page {
 				 * Mapped for DMA xfer to this Physical page.*/
 	void *private_data;	/*!< private data for ve page*/
 	struct ve_task_struct *owner;/*!< It will be Used in PG_PTRACE case*/
-	uint64_t buddy_order;	/*!< order of buddy in which page belongs*/
+	int buddy_order;	/*!< order of buddy in which page belongs*/
 	pthread_mutex_t ve_page_lock; /*!< mutex lock*/
 };
 

@@ -312,15 +312,16 @@ int copy_ve_thread(struct ve_task_struct *current,
 	struct ve_task_struct *task_on_core = NULL;
 	reg_t pef_rst_mask = PSW_PEF_RST;
 	ve_dma_status_t dma_status = 0;
-	struct ve_node_struct *p_ve_node = VE_NODE(current->node_id);
+	struct ve_node_struct *p_ve_node = NULL;
 	pid_t veos_pid = getpid();
 
 	VEOS_TRACE("Entering");
 
-	if (!current || !new_tsk || !p_ve_node) {
+	if (!new_tsk || !current) {
 		VEOS_ERROR("Either parent or child or node structure is NULL");
 		goto hndl_return;
 	}
+	p_ve_node = VE_NODE(current->node_id);
 
 	pthread_rwlock_lock_unlock(&(VE_CORE(current->node_id, current->core_id)
 			->ve_core_lock), RDLOCK,

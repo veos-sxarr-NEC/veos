@@ -4,7 +4,8 @@ ve_musl_include_HEADERS = \
 	vecr_defs.h \
 	sysve.h \
 	vhcall.h \
-	vhshm_defs.h
+	vhshm_defs.h \
+	veaio_defs.h
 
 ve_include_HEADERS = \
 	veos_defs.h \
@@ -12,7 +13,8 @@ ve_include_HEADERS = \
 	vecr_defs.h \
 	sysve.h \
 	vhcall.h \
-	vhshm_defs.h
+	vhshm_defs.h \
+	veaio_defs.h
 
 libvepseudo_headers_HEADERS = \
 	comm_request.h \

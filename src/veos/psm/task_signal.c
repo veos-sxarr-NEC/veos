@@ -201,6 +201,8 @@ int psm_restore_ve_context(struct ve_task_struct *ve_task_curr)
 	VEOS_TRACE("Entering");
 
 	memset(&p_ve_sigframe, 0, sizeof(struct sigframe));
+	pthread_rwlock_lock_unlock(&(ve_task_curr->p_ve_core->ve_core_lock),
+			RDLOCK, "Failed to acquire core's read lock");
 	if (ve_task_curr->p_ve_core->curr_ve_task == ve_task_curr) {
 		if (vedl_get_usr_reg(VE_HANDLE(ve_task_curr->node_id),
 				VE_CORE_USR_REG_ADDR(ve_task_curr->node_id,
@@ -213,6 +215,8 @@ int psm_restore_ve_context(struct ve_task_struct *ve_task_curr)
 	} else {
 		curr_sp = ve_task_curr->p_ve_thread->SR[11];
 	}
+	pthread_rwlock_lock_unlock(&(ve_task_curr->p_ve_core->ve_core_lock),
+			UNLOCK, "Failed to release core's read lock");
 
 	VEOS_DEBUG("signal handler stack address : %lx",
 			curr_sp);
@@ -995,13 +999,31 @@ int psm_dequeue_ve_signal(siginfo_t *ve_siginfo,
 */
 int on_sig_stack(struct ve_task_struct *current)
 {
-	unsigned long sp = current->p_ve_thread->SR[11];
+	unsigned long sp = 0;
+	int result = 0;
 
 	VEOS_TRACE("Entering");
+	if (current->p_ve_core->curr_ve_task == current) {
+		if (vedl_get_usr_reg(VE_HANDLE(current->node_id),
+				VE_CORE_USR_REG_ADDR(current->node_id,
+						current->core_id),
+					SR11,
+					&sp)) {
+
+			veos_abort("failed to get user registers");
+		}
+	} else {
+		sp = current->p_ve_thread->SR[11];
+	}
+
+	result = ((sp > current->sas_ss_sp) &&
+		(sp - current->sas_ss_sp <= current->sas_ss_size));
+
+	VEOS_DEBUG("sp: %lx current->sas_ss_sp %lx result: %d",
+			sp, current->sas_ss_sp, result);
 
 	VEOS_TRACE("Exiting");
-	return sp > current->sas_ss_sp &&
-		sp - current->sas_ss_sp <= current->sas_ss_size;
+	return result;
 }
 
 /**
@@ -1075,7 +1097,9 @@ int ve_getframe(struct ve_task_struct *p_ve_task,
 		ret = -1;
 		goto error_return;
 	}
+
 	aligned_addr = ALIGN(frame_vir_addrs, pgmod_to_pgsz(pgmod));
+
 	if (aligned_addr - frame_vir_addrs < sizeof(struct sigframe)) {
 		frame_phy_addrs[1] = __veos_virt_to_phy(aligned_addr,
 				&(p_ve_task->p_ve_mm->atb), NULL, &pgmod);
@@ -1259,7 +1283,7 @@ static int setup_ve_frame(int signum,
 	/* set the value signal handler routine argument in SR[0],
 	 * SR[1] and SR[2]
 	 * */
-	p_ve_task->p_ve_thread->SR[0] = signum;
+	p_ve_task->p_ve_thread->SR[0] = (reg_t)signum;
 
 	p_ve_task->p_ve_thread->SR[1] = frame_vir_addr +
 		offsetof(struct sigframe, ve_siginfo);
@@ -2291,9 +2315,13 @@ void psm_getold_sas(struct ve_task_struct *ve_task_curr, stack_t *old_sas)
 	if (!ve_task_curr->sas_ss_size) {
 		old_sas->ss_flags = SS_DISABLE;
 	} else {
+		pthread_rwlock_lock_unlock(&(ve_task_curr->p_ve_core->ve_core_lock),
+				RDLOCK, "Failed to acquire core's read lock");
 		old_sas->ss_flags =
 			on_sig_stack(ve_task_curr)
 			? SS_ONSTACK : 0;
+		pthread_rwlock_lock_unlock(&(ve_task_curr->p_ve_core->ve_core_lock),
+				UNLOCK, "Failed to release core's read lock");
 	}
 	VEOS_DEBUG("old_sas->ss_sp : %p"
 			"\t\told_sas->ss_size : %ld"
@@ -2332,13 +2360,19 @@ int psm_setnew_sas(struct ve_task_struct *ve_task_curr, stack_t *new_sas)
 
 	/* Verify whether alernate signal stack is active
 	 * */
+	pthread_rwlock_lock_unlock(&(ve_task_curr->p_ve_core->ve_core_lock),
+			RDLOCK, "Failed to acquire core's read lock");
 	if (on_sig_stack(ve_task_curr)) {
 		VEOS_ERROR("[%d] Attempt to change the alternate "
 				"signal stack while it is active",
 				ve_task_curr->pid);
 		retval = -EPERM;
+		pthread_rwlock_lock_unlock(&(ve_task_curr->p_ve_core->ve_core_lock),
+				UNLOCK, "Failed to release core's read lock");
 		goto hndl_ret;
 	}
+	pthread_rwlock_lock_unlock(&(ve_task_curr->p_ve_core->ve_core_lock),
+			UNLOCK, "Failed to release core's read lock");
 
 	/* Verify the sas flags are valid or not
 	 * */

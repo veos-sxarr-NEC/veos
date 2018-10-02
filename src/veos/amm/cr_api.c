@@ -393,6 +393,8 @@ int veos_dump_cr(struct ve_task_struct *tsk, uint64_t mode_flag)
 		}
 		VEOS_DEBUG("---------------------------------------------------------");
 		break;
+		default:
+		break;
 	}
 #if 0
 		VEOS_DEBUG("---------------------------------------------------------");
@@ -594,7 +596,7 @@ void update_ve_cr_page(struct ve_node_struct *vnode, uint64_t mode_flag,
 
 	vnode->ve_cr_pages[cr_pg].page_attr = mode_flag;
 	vnode->ve_cr_pages[cr_pg].tsk = tsk;
-	vnode->ve_cr_pages[cr_pg].cr_page_no = cr_pg;
+	vnode->ve_cr_pages[cr_pg].cr_page_no = (uint64_t)cr_pg;
 
 	VEOS_TRACE("returned");
 }

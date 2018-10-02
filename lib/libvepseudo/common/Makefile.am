@@ -12,7 +12,9 @@ libpseudocommon_la_SOURCES = \
 	syscall_impl.h \
 	sysve_os.c \
 	sysve_os.h \
-	list.h
+	list.h \
+	sys_veaio.c \
+	sys_veaio.h
 
 BUILT_SOURCES = \
 	ve_syscall_no.h \

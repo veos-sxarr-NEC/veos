@@ -14,11 +14,13 @@ BuildRequires:	libcap-devel
 BuildRequires:	procps-ng-devel
 BuildRequires:	protobuf-compiler
 BuildRequires:  ve-memory-mapping-devel
+BuildRequires:  libdhash-devel
 Requires:	libved velayout
 Requires:	protobuf-c log4c systemd-libs libuuid
 Requires:	libcap
 Requires:	procps-ng
 Requires:	protobuf-python
+Requires:	libdhash
 Requires(pre):	systemd glibc
 Requires(preun):	systemd glibc
 
@@ -80,7 +82,9 @@ include them.
 %build
 %configure --with-ve-musl-includedir=@ve_musl_includedir@ \
   --with-vemm-agent-includedir=@VEMM_AGENT_INCLUDEDIR@ \
-  --with-binfmtdir=@binfmtdir@
+  --with-binfmtdir=@binfmtdir@ \
+  --with-limitsdir=@limitsdir@ \
+  --with-sysctldir=@sysctldir@
 make %{?_smp_mflags}
 
 %install
@@ -107,6 +111,9 @@ if [ $1 -gt 1 ] ; then
         /usr/bin/systemctl start ve-ived.service
     fi
 fi
+if [ $1 -ge 1 ] ; then
+    /usr/sbin/sysctl --system >/dev/null 2>&1
+fi
 if [ $1 -eq 1 ] ; then
     /usr/bin/systemctl restart systemd-binfmt
 fi
@@ -130,6 +137,8 @@ done
 %files
 %config %{_sysconfdir}/log4crc
 %config @binfmtdir@/ve.conf
+%config @sysctldir@/10-veos.conf
+%config @limitsdir@/10-veos.conf
 @ve_os_launcher_confdir@/ve-ived.options
 @ve_os_launcher_confdir@/veos_timer.options
 @ve_bindir@/*

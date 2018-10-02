@@ -121,9 +121,6 @@ static inline void ve_sigandnsets(sigset_t *dest, const sigset_t *left
 	unsigned long i = 0, *d = (void *) dest, *l = (void *) left;
 	unsigned long *r = (void *) right;
 
-	if ((dest == NULL) || (left == NULL))
-		return;
-
 	for (; i < SST_SIZE; i++)
 		d[i] = ((l[i]) & ~(r[i]));
 }
@@ -188,8 +185,8 @@ struct dump_params {
 */
 struct ve_corename {
 	char *corename; /*!< ve core filename */
-	int space_used; /*!< Space exhausted in corename buffer */
-	int actual_space; /*!< memory allocated to corename buffer */
+	size_t space_used; /*!< Space exhausted in corename buffer */
+	size_t actual_space; /*!< memory allocated to corename buffer */
 	int copy_pattern; /*!< copy updated corefile name for local use */
 	int use_all; /*!< use full buffer */
 	char *core_pattern; /*!< pattern contains in core_pattern file */

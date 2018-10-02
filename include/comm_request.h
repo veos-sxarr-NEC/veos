@@ -154,7 +154,7 @@ struct clone_response {
 */
 struct k_sigaction {
 	void (*handler)(int);	/*!< Signal handler routine */
-	unsigned long flags;	/*!< Signal action flags */
+	int  flags;	/*!< Signal action flags */
 	void (*restorer)(void);	/*!< Restorer element */
 	unsigned mask[2];	/*!< signal mask which will be blocked */
 };
@@ -219,11 +219,11 @@ struct new_ve_proc {
 * @brief ve_mmap command Information
 */
 struct ve_mmap_cmd {
-	uint64_t vaddr; /*!<
+	vemva_t vaddr; /*!<
 			 * VEMVA, used for mapping of VE physical pages to
 			 * this address
 			 */
-	uint64_t perm; /*!< VE physical page access permission */
+	int perm; /*!< VE physical page access permission */
 	uint64_t size; /*!<
 			* VE physical memory allocation/de-allocation request
 			* size
@@ -248,7 +248,7 @@ struct ve_jid_cmd {
  * @brief Contain information to check_rw_permission.
  */
 struct ve_rw_check_iovec {
-	uint64_t  vaddr;	/*!< VEMVA address to check permission */
+	vemva_t  vaddr;		/*!< VEMVA address to check permission */
 	uint64_t len;		/*!< Length to check permission */
 	pid_t pid;		/*!< Pid of process */
 	int type;		/*!< Type to permission */
@@ -318,7 +318,7 @@ struct new_proc_info {
 * @brief VEMVA_INIT_TAB info
 */
 struct vemva_init_atb_cmd {
-	uint64_t vaddr;
+	vemva_t vaddr;
 	size_t page_size;
 };
 
@@ -417,15 +417,15 @@ struct ve_context_info {
 };
 
 struct ve_address_space_info_cmd {
-	uint64_t heap_start;            /*!< Start address of heap */
-	uint64_t heap_top;              /*!< Heap top of VE Process */
+	vemva_t heap_start;            /*!< Start address of heap */
+	vemva_t heap_top;              /*!< Heap top of VE Process */
 	uint64_t stack_limit;           /*!< Max stack limit for a VE Process.
 					 * value = 0 in case of UNLIMITED,
 					 * value = 'X' in case of User-Defined
 					 * or default(Currently 10MB).
 					 */
-	uint64_t stack_bottom;          /*!< Stack bottom of a VE Process */
-	uint64_t stack_pointer_aligned; /*!< Page size aligned actual stack
+	vemva_t stack_bottom;          /*!< Stack bottom of a VE Process */
+	vemva_t stack_pointer_aligned; /*!< Page size aligned actual stack
 					 * pointer of a VE process. */
 };
 

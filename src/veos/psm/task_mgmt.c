@@ -84,7 +84,7 @@ int psm_get_regval(struct ve_task_struct *tsk,
 	struct ve_task_struct *curr_ve_task = NULL;
 	struct ve_core_struct *p_ve_core = NULL;
 	bool should_stop_core = false, core_stopped = false;
-	reg_t exception_reg;
+	reg_t exception_reg = 0;
 
 	VEOS_TRACE("Entering");
 
@@ -269,10 +269,10 @@ hndl_return:
  * @internal
  * @author PSMG / Scheduling and context switch
  */
-int64_t psm_calc_nr_context_switches(struct ve_node_struct *p_ve_node)
+unsigned long psm_calc_nr_context_switches(struct ve_node_struct *p_ve_node)
 {
-	int64_t retval = -1;
-	int64_t sum = 0;
+	unsigned long retval = -1;
+	unsigned long sum = 0;
 	int core_loop = 0;
 	struct ve_core_struct *p_ve_core = NULL;
 
@@ -483,7 +483,7 @@ void calc_sys_load_per_sched_interval(struct ve_node_struct *p_ve_node)
 	/* Average load on a NODE */
 	per_node_load = per_node_load/(p_ve_node->nr_avail_cores);
 
-	VEOS_TRACE("VE System Load (In %.2f Sec): %.4f, Active Task: %d",
+	VEOS_TRACE("VE System Load (In %.2f Sec): %.4f, Active Task: %lu",
 			(double)(time_slice/(double)MICRO_SECONDS),
 			per_node_load * p_ve_node->nr_active,
 			p_ve_node->nr_active);
@@ -3527,7 +3527,6 @@ int psm_handle_do_acct_ve(char *file_name)
 		retval = -errno;
 		VEOS_ERROR("VEOS failed to open accounting file: %s",
 				file_name);
-		free(file_name);
 		goto hndl_return;
 	}
 

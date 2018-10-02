@@ -35,6 +35,10 @@
 #include "ve_socket.h"
 #include "signal_comm.h"
 #include "process_mgmt_comm.h"
+#include "vh_mem_alloc.h"
+#include "vemva_mgmt.h"
+
+#define SIZE_512	0x200
 
 /**
  * @brief Generic Handler for write() and pwrite64() system call for VE.
@@ -90,14 +94,19 @@ ret_t ve_hndl_write_pwrite64(int syscall_num, char *syscall_name,
 		/* allocate memory to store write data */
 		flags = fcntl(args[0],F_GETFL,0);
 		if (flags & O_DIRECT) {
+			if (!IS_ALIGNED(args[1], SIZE_512)) {
+				PSEUDO_DEBUG("O_DIRECT set and VE buffer is unaligned");
+				retval = -EINVAL;
+				goto hndl_return;
+			}
 			/* Under Linux 2.6, alignment to 512-byte boundaries suffices
 			 * e.g -
 			 * 1 --> posix_memalign(&write_buff,512,recv_size);
 			 * 2 --> memalign(sysconf(_SC_PAGESIZE),size);
 			 */
-			write_buff = (char *)valloc(recv_size);
+			write_buff = (char *)vh_alloc_buf(recv_size, true);
 		} else {
-			write_buff = (char *)calloc(recv_size, sizeof(char));
+			write_buff = (char *)vh_alloc_buf(recv_size, false);
 		}
 
 		if (NULL == write_buff) {
@@ -152,7 +161,7 @@ ret_t ve_hndl_write_pwrite64(int syscall_num, char *syscall_name,
 	PSEUDO_DEBUG("Blocked signals for post-processing");
 
 hndl_return1:
-	free(write_buff);
+	vh_free_buf(write_buff);
 hndl_return:
 	/* write return value */
 	PSEUDO_TRACE("Exiting");
@@ -235,7 +244,7 @@ ret_t ve_hndl_writev_pwritev(int syscall_num, char *syscall_name,
 	}
 
 	/* local memory buffer to store writev data */
-	vh_iov = (struct iovec *)calloc(iovcnt, sizeof(struct iovec));
+	vh_iov = (struct iovec *)vh_alloc_buf(iovcnt * sizeof(struct iovec), false);
 	if (NULL == vh_iov) {
 		retval = -ENOSPC;
 		PSEUDO_ERROR("Failed to create local memory buffer");
@@ -275,7 +284,7 @@ ret_t ve_hndl_writev_pwritev(int syscall_num, char *syscall_name,
 	}
 
 	/* create VH buffers */
-	vh_buff_addr = calloc(iovcnt, (sizeof(uint64_t)));
+	vh_buff_addr = vh_alloc_buf(iovcnt * (sizeof(uint64_t)), false);
 	if (NULL == vh_buff_addr) {
 		retval = -ENOSPC;
 		PSEUDO_ERROR("Failed to create internal memory buffer");
@@ -298,10 +307,18 @@ ret_t ve_hndl_writev_pwritev(int syscall_num, char *syscall_name,
 		if ((NULL != (void *)vh_iov[i].iov_base) &&
 				(0 != (ssize_t)vh_iov[i].iov_len)) {
 			if (dio_flag) {
-				vh_buff_addr[i] = (uint64_t *)valloc(vh_iov[i].iov_len);
+				if (!IS_ALIGNED(args[1], SIZE_512)) {
+					PSEUDO_DEBUG("O_DIRECT set and"
+							" VE buffer is unaligned");
+					retval = -EINVAL;
+					goto hndl_return2;
+				}
+				vh_buff_addr[i] =
+					(uint64_t *)vh_alloc_buf(
+							vh_iov[i].iov_len, true);
 			} else {
-				vh_buff_addr[i] = (uint64_t *)calloc
-					((vh_iov[i].iov_len), sizeof(char));
+				vh_buff_addr[i] = (uint64_t *)vh_alloc_buf
+					((vh_iov[i].iov_len), false);
 			}
 
 			if (NULL != (void *)vh_buff_addr[i]) {
@@ -359,11 +376,11 @@ ret_t ve_hndl_writev_pwritev(int syscall_num, char *syscall_name,
 hndl_return2:
 	for (i = 0; i < iovcnt; i++) {
 		if (NULL != (void *)vh_buff_addr[i])
-			free(vh_buff_addr[i]);
+			vh_free_buf(vh_buff_addr[i]);
 	}
-	free(vh_buff_addr);
+	vh_free_buf(vh_buff_addr);
 hndl_return1:
-	free(vh_iov);
+	vh_free_buf(vh_iov);
 hndl_return:
 	/* write return value */
 	PSEUDO_TRACE("Exiting");
@@ -391,7 +408,7 @@ hndl_return:
 ret_t ve_hndl_readv_preadv(int syscall_num, char *syscall_name,
 					veos_handle *handle)
 {
-	ret_t retval = -1;
+	ssize_t retval = -1;
 	struct iovec *vh_iov = NULL;
 	int iovcnt = 0, i = 0;
 	int err_flag = -1;
@@ -399,7 +416,7 @@ ret_t ve_hndl_readv_preadv(int syscall_num, char *syscall_name,
 	uint64_t args[4] = {0};
 	uint64_t *ve_buff_addr = NULL;
 	sigset_t signal_mask = { {0} };
-	ret_t send_bytes = -1;
+	size_t send_bytes = -1;
 	int dio_flag = -1;
 
 	PSEUDO_TRACE("Entering");
@@ -533,7 +550,7 @@ ret_t ve_hndl_readv_preadv(int syscall_num, char *syscall_name,
 	PSEUDO_DEBUG("Blocked signals for post-processing");
 
 hndl_return2:
-	send_bytes = retval;
+	send_bytes = (size_t)retval;
 	for (i = 0; i < cnt; i++) {
 		if(!send_bytes)
 			break;
@@ -2376,7 +2393,7 @@ ret_t ve_nanosleep(int syscall_num, char *syscall_name, veos_handle *handle)
 
 		/* tv_nsec can't have more nanoseconds then a second */
 		if ((req.tv_sec < 0) ||
-			((unsigned long)req.tv_nsec >= NSEC_PER_SEC)) {
+			(req.tv_nsec >= NSEC_PER_SEC)) {
 			retval = -EINVAL;
 			goto hndl_return;
 		}
@@ -3069,7 +3086,7 @@ ret_t ve_sendto(int syscall_num, char *syscall_name, veos_handle *handle)
 	struct sockaddr_storage addr = {0};
 	char *send_buff = NULL;
 	size_t len = 0;
-	int addr_len = 0;
+	socklen_t addr_len = 0;
 	sigset_t signal_mask = { {0} };
 
 	PSEUDO_TRACE("Entering");
@@ -7881,7 +7898,7 @@ ret_t ve_hndl_sethostname_setdomainname(int syscall_num,
 {
 	ret_t retval = -1;
 	char *name_buff = NULL;
-	int vh_len = 0;
+	size_t vh_len = 0;
 	uint64_t args[2] = {0};
 
 	PSEUDO_TRACE("Entering");
@@ -7896,10 +7913,10 @@ ret_t ve_hndl_sethostname_setdomainname(int syscall_num,
 	}
 
 	/* get size of the buffer from args[1] */
-	vh_len = (size_t)args[1];
-	PSEUDO_DEBUG("VE buffer len : %d", vh_len);
+	vh_len = args[1];
+	PSEUDO_DEBUG("VE buffer len : %ld", vh_len);
 
-	if (vh_len < 0 || vh_len > __NEW_UTS_LEN) {
+	if (vh_len > __NEW_UTS_LEN) {
 		retval = -EINVAL;
 		goto hndl_return;
 	}
@@ -9322,6 +9339,7 @@ ret_t ve_timer_create(int syscall_num, char *syscall_name, veos_handle *handle)
 	ret_t retval = -1;
 	uint64_t args[3] = {0};
 	timer_t timer_id = 0;
+	clockid_t clockid = 0;
 	struct ksigevent {
 		union sigval sigev_value;
 		int sigev_signo;
@@ -9339,9 +9357,13 @@ ret_t ve_timer_create(int syscall_num, char *syscall_name, veos_handle *handle)
 		goto hndl_return;
 	}
 
-	if (args[0] == CLOCK_PROCESS_CPUTIME_ID ||
-			args[0] == CLOCK_THREAD_CPUTIME_ID) {
-		PSEUDO_INFO("CLOCK ID DOES NOT SUPPORTED");
+	clockid = (clockid_t)args[0];
+
+	PSEUDO_DEBUG("Clock Id: %d", clockid);
+
+	if (clockid != CLOCK_REALTIME && clockid != CLOCK_MONOTONIC) {
+		PSEUDO_INFO("timer_create is not supported for "
+				"Process/Thread CPU clock");
 		retval = -EINVAL;
 		goto hndl_return;
 	}
@@ -9607,6 +9629,7 @@ ret_t ve_clock_nanosleep(int syscall_num, char *syscall_name, veos_handle *handl
 	struct timespec rem = {0};
 	int flag = 0;
 	uint64_t args[4] = {0};
+	clockid_t clockid = 0;
 	sigset_t signal_mask = { {0} };
 
 	PSEUDO_TRACE("Entering");
@@ -9621,12 +9644,14 @@ ret_t ve_clock_nanosleep(int syscall_num, char *syscall_name, veos_handle *handl
 
 	flag = args[1];
 
-	/* clock_id CLOCK_PROCESS_CPUTIME_ID does not support on VE */
-	if ((CLOCK_PROCESS_CPUTIME_ID == args[0])
-		|| (CLOCK_THREAD_CPUTIME_ID == args[0])) {
+	clockid = (clockid_t)args[0];
+
+	PSEUDO_DEBUG("Clock Id: %d", clockid);
+
+	if (clockid != CLOCK_REALTIME && clockid != CLOCK_MONOTONIC) {
+		PSEUDO_INFO("clock_nanosleep is not supported for "
+				"Process CPU clock");
 		retval = -EINVAL;
-		PSEUDO_INFO("clock_id (CLOCK_PROCESS_CPUTIME_ID) unsupported"
-			"clock_id (CLOCK_THREAD_CPUTIME_ID) unsupported");
 		goto hndl_return;
 	}
 
@@ -10261,10 +10286,10 @@ hndl_return:
  *
  * @return system call value to VE process.
  */
-ret_t ve_mq_timedreceive(int syscall_num, char *syscall_name,
+ssize_t ve_mq_timedreceive(int syscall_num, char *syscall_name,
 						veos_handle *handle)
 {
-	ret_t retval = -1;
+	ssize_t retval = -1;
 	char *msgptr = NULL;
 	size_t msg_len = 0;
 	struct timespec abs_timeout = {0};
@@ -10294,7 +10319,7 @@ ret_t ve_mq_timedreceive(int syscall_num, char *syscall_name,
 		goto hndl_return;
 	}
 
-	if ((int)msg_len < attr.mq_msgsize)
+	if ((long int)msg_len < attr.mq_msgsize)
 	{
 		retval = -EMSGSIZE;
 		goto hndl_return;
@@ -10371,7 +10396,7 @@ ret_t ve_mq_timedreceive(int syscall_num, char *syscall_name,
 	if (args[1] && retval) {
 
 		/* Number of bytes receive from kernel successfully */
-		msg_len = retval;
+		msg_len = (size_t)retval;
 
 		/* send the received buffer */
 		if (0 > ve_send_data(handle, args[1],
@@ -11918,7 +11943,7 @@ ret_t ve_vmsplice(int syscall_num, char *syscall_name, veos_handle *handle)
 					" %s argument[1]",
 					strerror(errno), SYSCALL_NAME);
 			retval = -EFAULT;
-			goto hndl_return1;
+			goto hndl_return;
 		}
 
 		/* store ve buffer addresses */

@@ -2656,7 +2656,7 @@ malloc_error:
  */
 int pseudo_psm_recv_sysinfo_ack(int veos_sock_fd, struct sysinfo *vh_sysinfo)
 {
-	size_t retval = -1;
+	ssize_t retval = -1;
 	char buf[MAX_PROTO_MSG_SIZE] = {0};
 	PseudoVeosMessage *pseudo_msg = NULL;
 

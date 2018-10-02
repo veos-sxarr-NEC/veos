@@ -89,7 +89,7 @@ struct shm *amm_get_shm_segment(key_t key, int shmid, size_t size,
 	shm_ent->size = size;
 	shm_ent->nattch = 0;
 	shm_ent->pgmod =  (flag & SHM_2MB) ? PG_2M : PG_HP;
-	shm_ent->flag = flag;
+	shm_ent->flag = (uint64_t)flag;
 	shm_ent->flag |= SHM_AVL;
 
 	pthread_mutex_init(&shm_ent->shm_lock, NULL);
@@ -153,7 +153,7 @@ int alloc_shm_pages(struct shm *shm)
 	VEOS_DEBUG("Allocate pages for shared memory segment(%p) with shmid %d",
 			shm, shm->shmid);
 	size = shm->size;
-	pgsz = (shm->flag & SHM_2MB) ? PAGE_SIZE_2MB : PAGE_SIZE_64MB;
+	pgsz = (size_t)((shm->flag & SHM_2MB) ? PAGE_SIZE_2MB : PAGE_SIZE_64MB);
 	count = (size)/(pgsz);
 
 	VEOS_DEBUG("Allocating memory for page map to hold shm pages");
@@ -265,7 +265,7 @@ int amm_do_shmat(key_t key, int shmid, vemva_t shmaddr, size_t size,
 
 	/* Get page size */
 	pgmod = shm_ent->pgmod;
-	pgsz = (pgmod == PG_2M) ? PAGE_SIZE_2MB : PAGE_SIZE_64MB;
+	pgsz = (size_t)((pgmod == PG_2M) ? PAGE_SIZE_2MB : PAGE_SIZE_64MB);
 
 	/* calculate the number of 2MB pages
 	 */
@@ -408,8 +408,8 @@ int amm_release_shm_segment(struct shm *shm_ent)
 	VEOS_DEBUG("Releasing shared memory segment key(%d):id(%d)",
 			shm_ent->key, shm_ent->shmid);
 
-	pgsz = shm_ent->pgmod == PG_2M ? PAGE_SIZE_2MB :
-		PAGE_SIZE_64MB;
+	pgsz = (size_t)(shm_ent->pgmod == PG_2M ? PAGE_SIZE_2MB :
+		PAGE_SIZE_64MB);
 
 	count = shm_ent->size / pgsz;
 
@@ -541,8 +541,8 @@ int amm_do_shmdt(vemva_t shmaddr, struct ve_task_struct *tsk,
 	}
 
 	pgmod = shm_segment->pgmod;
-	pgsz = (pgmod == PG_2M) ? PAGE_SIZE_2MB :
-		PAGE_SIZE_64MB;
+	pgsz = (size_t)((pgmod == PG_2M) ? PAGE_SIZE_2MB :
+		PAGE_SIZE_64MB);
 
 	shm_info->size = shm_segment->size;
 	count = shm_segment->size / pgsz;
@@ -685,7 +685,7 @@ int insert_shm_map_entry(vemva_t shmaddr, struct shm *seg,
 	}
 
 	pgmod = seg->pgmod;
-	pgsz = (pgmod == PG_2M) ? PAGE_SIZE_2MB : PAGE_SIZE_64MB;
+	pgsz = (uint64_t)((pgmod == PG_2M) ? PAGE_SIZE_2MB : PAGE_SIZE_64MB);
 
 	/*create new shm_mapping and add to list*/
 	shm_tmp = (struct shm_map *)calloc(1, sizeof(struct shm_map));

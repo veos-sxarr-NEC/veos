@@ -103,6 +103,8 @@ int ve_address_space_reserve(uint64_t ve_text_page)
 		ret = -errno;
 		PSEUDO_ERROR("Failed to reserve VE address"
 				" space %s", strerror(-ret));
+		fprintf(stderr, "Failed to reserve VE address"
+			" space %s\n", strerror(-ret));
 		goto err;
 	}
 	PSEUDO_DEBUG("VE Address space reserved successfuly, "
@@ -121,7 +123,7 @@ err:
  */
 void ve_set_stack_limit(void)
 {
-	int64_t tmp_stack_limit = DEFAULT_STACK_LIMIT;
+	uint64_t tmp_stack_limit = DEFAULT_STACK_LIMIT;
 	char *endptr =  NULL;
 	char *env_stack_limit = getenv("VE_STACK_LIMIT");
 
@@ -215,7 +217,6 @@ int pse_load_binary(char *filename, veos_handle *handle,
 	head = (char *)vh_map_elf(load_elf.stat.file_exec);
 	if (!head) {
 		ret = -errno;
-		fprintf(stderr, "Failed to map binary\n");
 		goto err_ret;
 	}
 	/* check file type (magic, class, data and type) */
@@ -232,7 +233,6 @@ int pse_load_binary(char *filename, veos_handle *handle,
 		head_interp = vh_map_elf_dyn(load_elf.stat.file_interp);
 		if (!head_interp) {
 			ret = -errno;
-			fprintf(stderr, "Failed to map binary\n");
 			goto err_ret;
 		}
 		load_elf.stat.elf_interp = (Elf_Ehdr *)head_interp;
@@ -478,7 +478,8 @@ int init_stack(veos_handle *handle, int argc,
 	areap_8b += argc + 1;	/* argv + NULL */
 	if (argc >= EXECVE_MAX_ARGS) {
 		PSEUDO_ERROR("Argument count exceeded: %d", argc);
-		fprintf(stderr, "Argument count exceeded\n");
+		fprintf(stderr, "Argument count exceeded: %d (max %d)\n",
+			argc, EXECVE_MAX_ARGS-1);
 		ret = -E2BIG;
 		goto stack_err;
         }
@@ -491,7 +492,8 @@ int init_stack(veos_handle *handle, int argc,
 	}
 	if (cnt_env >= EXECVE_MAX_ENVP) {
                 PSEUDO_ERROR("Environment variable exceeded: %d", cnt_env);
-                fprintf(stderr, "Environment variables exceeded\n");
+                fprintf(stderr, "Environment variable count exceeded"
+			" %d (max %d)\n", cnt_env,  EXECVE_MAX_ENVP-1);
 		ret = -E2BIG;
                 goto stack_err;
         }
@@ -761,7 +763,7 @@ int init_stack(veos_handle *handle, int argc,
 		ret = -errno;
 		PSEUDO_ERROR("Failed(%s) to handle memory mapping",
 				strerror(-ret));
-		fprintf(stderr, "Out of VE memory for stack creation\n");
+		fprintf(stderr, "VE stack memory mapping failed\n");
 		goto stack_err_ret;
 	}
 
@@ -772,6 +774,8 @@ int init_stack(veos_handle *handle, int argc,
 			(uint64_t *)new_area);
 	if (ret) {
 		PSEUDO_ERROR("Failed to send data. (stack): %s",
+				strerror(errno));
+		fprintf(stderr, "Failed to send data. (stack): %s\n",
 				strerror(errno));
 		goto stack_err_ret;
 	}
@@ -791,6 +795,8 @@ int init_stack(veos_handle *handle, int argc,
 				(void *)&l_argc);
 	if (ret) {
 		PSEUDO_ERROR("Failed(%s) to receive data", strerror(errno));
+		fprintf(stderr, "Failed(%s) to receive stack dump\n",
+			strerror(errno));
 		goto stack_err_ret;
 	}
 	PSEUDO_DEBUG("ARGC_ADDR: %p ARGC: %ld", (void *)areap_8b,  l_argc);
@@ -807,6 +813,9 @@ int init_stack(veos_handle *handle, int argc,
 			 if (ret) {
 				PSEUDO_ERROR("Failed(%s) to"
 						" receive data (ARG)",
+						 strerror(errno));
+				fprintf(stderr, "Failed(%s) to receive"
+						" ARG data\n",
 						 strerror(errno));
 				goto stack_err_ret;
 			}
@@ -826,6 +835,9 @@ int init_stack(veos_handle *handle, int argc,
 				PSEUDO_ERROR("Failed(%s) to "
 						"receive data (ENV)",
 						strerror(errno));
+				fprintf(stderr, "Failed(%s) to receive"
+						" ENV data\n",
+						 strerror(errno));
 				goto stack_err_ret;
 			}
 		}
@@ -843,10 +855,13 @@ int init_stack(veos_handle *handle, int argc,
 			ret = ve_recv_data(handle, (uint64_t)areap_8b,
 						sizeof(long long),
 						(uint64_t *)(&arg_p));
-				if (ret) {
-					PSEUDO_ERROR("Failed(%s) to"
-						" receive data ARGV",
-						strerror(errno));
+			if (ret) {
+				PSEUDO_ERROR("Failed(%s) to"
+					     " receive data ARGV",
+					     strerror(errno));
+				fprintf(stderr, "Failed(%s) to receive"
+					" ARG data\n",
+					strerror(errno));
 				goto stack_err_ret;
 			}
 		}
@@ -907,21 +922,27 @@ void fill_ve_elf_data(char *head)
 						phdr->p_offset, SEEK_SET))) {
 				PSEUDO_ERROR("failed to reposition offset"
 						": %s", strerror(errno));
-				fprintf(stderr, "Failed to load executable\n");
+				fprintf(stderr, "Failed to load executable\n"
+					"Reposition offset: %s\n",
+					strerror(errno));
 				pseudo_abort();
 			}
 			buf = (char *)calloc(1, phdr->p_filesz);
 			if(!buf) {
 				PSEUDO_ERROR("failed to allocate buffer: %s",
 						strerror(errno));
-				fprintf(stderr, "Failed to load executable\n");
+				fprintf(stderr, "Failed to load executable\n"
+					"Allocate interpreter buffer: %s\n",
+					strerror(errno));
 				pseudo_abort();
 			}
 			if (0 > (read(load_elf.stat.fd, buf,
 							phdr->p_filesz))) {
 				PSEUDO_ERROR("failed to read data: %s",
 						strerror(errno));
-				fprintf(stderr, "Failed to load executable\n");
+				fprintf(stderr, "Failed to load executable\n"
+					"Read interpreter data: %s",
+					strerror(errno));
 				pseudo_abort();
 			}
 			is_interp = 1;
@@ -983,8 +1004,10 @@ char * open_bin_file (char *filename, int *pfd)
                 retval = -errno;
                 PSEUDO_ERROR("Failed to get realpath");
                 PSEUDO_DEBUG("Fail(%s) to get realpath of:%s",
-                                strerror(errno),
+                                strerror(-retval),
                                 filename);
+                fprintf(stderr, "Failed to get binary realpath: %s\n",
+			filename);
                 goto end;
         }
 
@@ -994,14 +1017,19 @@ char * open_bin_file (char *filename, int *pfd)
 		retval = -errno;
 		PSEUDO_ERROR("File stat fail");
 		PSEUDO_DEBUG("File stat fail: %s",
-				strerror(retval));
+			     strerror(-retval));
+		fprintf(stderr, "VE binary stat failed: %s\n",
+			strerror(-retval));
 		goto end;
 	}
 
 	/* Check if noexec flag was set when the directory was mounted */
 	if (st.f_flag & ST_NOEXEC) {
-		PSEUDO_ERROR("Executing from a directory mounted with noexec");
 		retval = -EACCES;
+		PSEUDO_ERROR("Executing from a directory mounted with noexec: %s"
+				, strerror(-retval));
+		fprintf(stderr, "VE binary in directory mounted"
+			" with noexec %s\n", strerror(-retval));
 		goto end;
 	}
 
@@ -1012,7 +1040,9 @@ char * open_bin_file (char *filename, int *pfd)
 		retval = -errno;
 		PSEUDO_ERROR("Path of binary inaccessible");
 		PSEUDO_DEBUG("Accessing real_path to binary failed, "
-				"errno %s", strerror(retval));
+			     "errno %s", strerror(-retval));
+		fprintf(stderr, "Path of VE binary inaccessible: %s\n",
+			strerror(-retval));
 		goto end;
 	}
 
@@ -1020,19 +1050,23 @@ char * open_bin_file (char *filename, int *pfd)
 	if (-1 == retval) {
 		retval = -errno;
 		PSEUDO_ERROR("File stat fail");
-		PSEUDO_ERROR("File stat fail: %s",
-				strerror(errno));
+		PSEUDO_DEBUG("File stat fail: %s",
+				strerror(-retval));
+		fprintf(stderr, "VE binary stat failed: %s\n",
+			strerror(-retval));
 		goto end;
 	}
 
 	if (S_ISDIR(sb.st_mode)) {
 		PSEUDO_ERROR("File is a directory");
+		fprintf(stderr, "VE binary path is a directory\n");
 		retval = -EISDIR;
 		goto end;
 	}
 
 	if (!S_ISREG(sb.st_mode)) {
 		PSEUDO_ERROR("Not a regular file");
+		fprintf(stderr, "VE binary is not a regular file\n");
 		retval = -EACCES;
 		goto end;
 	}
@@ -1040,6 +1074,7 @@ char * open_bin_file (char *filename, int *pfd)
 	/* Check if the file has execute permissions */
 	if (!(sb.st_mode & S_IXUSR)) {
 		PSEUDO_ERROR("File doesn't have executable permissions");
+		fprintf(stderr, "VE binary has no exec permissions\n");
 		retval = -EACCES;
 		goto end;
 	}
@@ -1050,6 +1085,8 @@ char * open_bin_file (char *filename, int *pfd)
 		PSEUDO_ERROR("Failed to open ELF file name");
 		PSEUDO_DEBUG("Failed(%s) to open ELF file name",
 				strerror(-retval));
+		fprintf(stderr, "Failed to open VE binary file: %s\n",
+			     strerror(-retval));
 		goto end;
 	}
 	buf = (char *)calloc(1, sizeof(Elf64_Ehdr));
@@ -1058,6 +1095,8 @@ char * open_bin_file (char *filename, int *pfd)
 		PSEUDO_ERROR("Failed to allocate buffer to read ELF file");
 		PSEUDO_DEBUG("Failed(%s) to allocate buffer to read ELF file",
 				strerror(-retval));
+		fprintf(stderr, "Failed to allocate buffer for VE binary:"
+			" %s\n", strerror(-retval));
 		close(fd);
 		goto end;
 	}
@@ -1069,6 +1108,8 @@ char * open_bin_file (char *filename, int *pfd)
 		buf = NULL;
 		PSEUDO_ERROR("Failed to read ELF file");
 		PSEUDO_DEBUG("Failed(%s) to read ELF file", strerror(-retval));
+		fprintf(stderr, "Failed to read VE ELF file: %s\n",
+			strerror(-retval));
 		goto end;
 	}
 end:
@@ -1093,7 +1134,7 @@ char *vh_map_elf_dyn(char *filename)
 	char *head = NULL;
 	int fd = -1;
 	int ret = 0;
-	size_t map_size = -1;
+	size_t map_size = 0;
 	Elf64_Ehdr *ehdr = NULL;
 	Elf64_Shdr *nhdr = NULL;
 
@@ -1111,6 +1152,8 @@ char *vh_map_elf_dyn(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to repositions file offset: dynamic",
 				strerror(-ret));
+		fprintf(stderr, "Failed to repositions ELF file offset:"
+			" dynamic: %s\n", strerror(-ret));
 		goto err_ret1;
 	}
 
@@ -1122,6 +1165,8 @@ char *vh_map_elf_dyn(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to create buffer: "
 				"dynamic", strerror(-ret));
+		fprintf(stderr, "Failed to create buffer for ELF file: "
+				"dynamic: %s\n", strerror(-ret));
 		goto err_ret;
 	}
 
@@ -1130,6 +1175,8 @@ char *vh_map_elf_dyn(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to read data: dynamic",
 				strerror(-ret));
+		fprintf(stderr, "Failed to read ELF file data:"
+			" dynamic: %s\n", strerror(-ret));
 		goto err_ret1;
 	}
 
@@ -1144,8 +1191,10 @@ char *vh_map_elf_dyn(char *filename)
 	if (0 > (lseek(fd, ehdr->e_shoff, SEEK_SET))) {
 		ret = -errno;
 		close(fd);
-		PSEUDO_ERROR("Failed(%s) to repositions file offset: dynamic",
+		PSEUDO_ERROR("Failed(%s) to reposition file offset: dynamic",
 				strerror(-ret));
+		fprintf(stderr, "Failed(%s) to reposition ELF file offset:"
+			" dynamic\n", strerror(-ret));
 		goto err_ret1;
 	}
 	map_size = ((ehdr->e_shentsize) * (ehdr->e_shnum));
@@ -1156,6 +1205,8 @@ char *vh_map_elf_dyn(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to allocated buffer to read start"
 				" section: dynamic", strerror(-ret));
+		fprintf(stderr, "Failed to allocated buffer to read start"
+				" section: dynamic: %s\n", strerror(-ret));
 		goto err_ret1;
 	}
 	if (0 > (read(fd, load_elf.stat.start_section_dyn, map_size))) {
@@ -1163,6 +1214,8 @@ char *vh_map_elf_dyn(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to read start section: dynamic",
 				strerror(-ret));
+		fprintf(stderr, "Failed to read ELF file start section:"
+			" dynamic: %s\n", strerror(-ret));
 		free(load_elf.stat.start_section_dyn);
 		goto err_ret1;
 	}
@@ -1176,8 +1229,10 @@ char *vh_map_elf_dyn(char *filename)
 	if (0 > (lseek(fd, nhdr->sh_offset, SEEK_SET))) {
 		ret = -errno;
 		close(fd);
-		PSEUDO_ERROR("Failed(%s) to repositions file offset: dynamic",
+		PSEUDO_ERROR("Failed(%s) to reposition file offset: dynamic",
 				strerror(-ret));
+		fprintf(stderr, "Failed to reposition ELF file offset:"
+			" dynamic: %s\n", strerror(-ret));
 		free(load_elf.stat.start_section_dyn);
 		goto err_ret1;
 	}
@@ -1186,8 +1241,10 @@ char *vh_map_elf_dyn(char *filename)
 	if(!load_elf.stat.start_string_dyn) {
 		ret = -errno;
 		close(fd);
-		PSEUDO_ERROR("Failed(%s) to allocated buffer to read start"
+		PSEUDO_ERROR("Failed(%s) to allocate buffer to read start"
 				" string: dynamic", strerror(-ret));
+		fprintf(stderr, "Failed to allocate buffer to read ELF"
+			" file start string: dynamic: %s\n", strerror(-ret));
 		free(load_elf.stat.start_section_dyn);
 		goto err_ret1;
 	}
@@ -1197,6 +1254,8 @@ char *vh_map_elf_dyn(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to read start string: dynamic",
 				strerror(-ret));
+		fprintf(stderr, "Failed to read ELF file start string:"
+			" dynamic: %s\n", strerror(-ret));
 		free(load_elf.stat.start_section_dyn);
 		free(load_elf.stat.start_string_dyn);
 		goto err_ret1;
@@ -1223,8 +1282,8 @@ void *vh_map_elf(char *filename)
 	char *buf = NULL;
 	int fd = -1;
 	int ret = 0;
-	size_t map_size = -1;
-	size_t size = -1;
+	size_t map_size = 0;
+	size_t size = 0;
 	void *map_addr = NULL;
 	void *head = NULL;
 	Elf64_Ehdr *ehdr = NULL;
@@ -1248,6 +1307,8 @@ void *vh_map_elf(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to create virtual address space"
 				" mapping", strerror(-ret));
+		fprintf(stderr, "Failed to create virtual address space"
+				" mapping: %s\n", strerror(-ret));
 		goto err_ret1;
 	}
 	PSEUDO_DEBUG("For mapping the ELF file: %p", (void *)map_addr);
@@ -1261,6 +1322,8 @@ void *vh_map_elf(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to reposition file offset",
 				strerror(-ret));
+		fprintf(stderr, "Failed to reposition ELF file offset: %s\n",
+			strerror(-ret));
 		(void)munmap(map_addr, map_size);
 		goto err_ret1;
 	}
@@ -1272,6 +1335,8 @@ void *vh_map_elf(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to create buffer to read start"
 				" section", strerror(-ret));
+		fprintf(stderr, "Failed to alloc buffer for ELF start"
+				" section: %s\n", strerror(-ret));
 		(void)munmap(map_addr, map_size);
 		goto err_ret1;
 	}
@@ -1280,6 +1345,8 @@ void *vh_map_elf(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to read start section",
 				strerror(-ret));
+		fprintf(stderr, "Failed to read ELF start section: %s\n",
+			strerror(-ret));
 		(void)munmap(map_addr, map_size);
 		free(load_elf.stat.start_section);
 		goto err_ret1;
@@ -1307,6 +1374,8 @@ void *vh_map_elf(char *filename)
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to create buffer to read start"
 				" string", strerror(-ret));
+		fprintf(stderr, "Failed to alloc buffer to read ELF start"
+				" string: %s\n", strerror(-ret));
 		(void)munmap(map_addr, map_size);
 		free(load_elf.stat.start_section);
 		goto err_ret1;
@@ -1315,6 +1384,8 @@ void *vh_map_elf(char *filename)
 		ret = -errno;
 		close(fd);
 		PSEUDO_ERROR("Failed(%s) to read start string", strerror(-ret));
+		fprintf(stderr, "Failed to read ELF start string: %s\n",
+			strerror(-ret));
 		(void)munmap(map_addr, map_size);
 		free(load_elf.stat.start_section);
 		free(load_elf.stat.start_string);
@@ -1342,28 +1413,33 @@ int chk_elf_consistency(Elf_Ehdr *ehdr)
 
 	if (!IS_ELF(*ehdr)) {
 		ret = -ENOEXEC;
-		PSEUDO_ERROR("This is not ELF file: %s", strerror(ret));
-		goto err_ret;
-	}
-	if (ELF_CLASS != ehdr->e_ident[EI_CLASS]) {
-		ret = -ENOEXEC;
-		PSEUDO_ERROR("This is not 64 bit object: %s", strerror(ret));
-		goto err_ret;
-	}
-	if (ELFDATA2LSB != ehdr->e_ident[EI_DATA]) {
-		ret = -ENOEXEC;
-		PSEUDO_ERROR("This is not little endian: %s", strerror(ret));
+		PSEUDO_ERROR("This is not an ELF file: %s", strerror(-ret));
 		goto err_ret;
 	}
 	if (ELF_VE != ehdr->e_machine) {
 		ret = -ENOEXEC;
-		PSEUDO_ERROR("This is not VE ELF file: %s", strerror(ret));
+		PSEUDO_ERROR("This is not VE ELF file: %s", strerror(-ret));
 		goto err_ret;
 	}
-
+	if (ELF_CLASS != ehdr->e_ident[EI_CLASS]) {
+		ret = -ENOEXEC;
+		PSEUDO_ERROR("This is not 64 bit object: %s", strerror(-ret));
+		fprintf(stderr, "This is not 64 bit object: %s\n",
+			strerror(-ret));
+		goto err_ret;
+	}
+	if (ELFDATA2LSB != ehdr->e_ident[EI_DATA]) {
+		ret = -ENOEXEC;
+		PSEUDO_ERROR("This is not little endian: %s", strerror(-ret));
+		fprintf(stderr, "ELF data is not little endian: %s\n",
+			strerror(-ret));
+		goto err_ret;
+	}
 	if ((ET_EXEC != ehdr->e_type) && (ET_DYN != ehdr->e_type)) {
 		ret = -ENOEXEC;
-		PSEUDO_ERROR("This is not an executable or shared file: %s", strerror(ret));
+		PSEUDO_ERROR("This is not an executable or shared file: %s", strerror(-ret));
+		fprintf(stderr, "This is not an executable or a shared file:"
+			" %s\n", strerror(-ret));
 		goto err_ret;
 	}
 
@@ -1408,7 +1484,8 @@ void fill_ve_vh_segmap(veos_handle *handle)
 	if (NULL == load_elf.seg) {
 		PSEUDO_ERROR("failed to load segments: %s",
 				strerror(errno));
-		fprintf(stderr, "Failed to load executable\n");
+		fprintf(stderr, "Failed to load ELF segments: %s\n",
+			strerror(errno));
 		pseudo_abort();
 	}
 	PSEUDO_DEBUG("Return address for ve_vh_segmap: %p",
@@ -1589,8 +1666,9 @@ void fill_ve_vh_segmap(veos_handle *handle)
 							" DATA (fixed): %s",
 							strerror(errno));
 					PSEUDO_ERROR("failed to load dyn DATA");
-					fprintf(stderr,	"failed"
-						" to load VE binary");
+					fprintf(stderr, "VE mmap failed to load"
+						" dyn DATA (fixed): %s\n",
+						strerror(errno));
 					pseudo_abort();
 				}
 				seg_addr->ve_addr = (uint64_t)ret_addr;
@@ -1617,8 +1695,9 @@ void fill_ve_vh_segmap(veos_handle *handle)
 						" (fixed), fileback: %s",
 						strerror(errno));
 					PSEUDO_ERROR("failed to load dyn DATA");
-					fprintf(stderr,	"failed"
-						" to load VE binary");
+					fprintf(stderr, "VE mmap failed to load"
+						" dyn DATA (fixed, fileback):"
+						" %s\n", strerror(errno));
 					pseudo_abort();
 				}
 			} else {
@@ -1635,8 +1714,9 @@ void fill_ve_vh_segmap(veos_handle *handle)
 							strerror(errno));
 						PSEUDO_ERROR("failed to load"
 								" EXEC DATA");
-						fprintf(stderr,	"failed"
-							" to load VE binary");
+						fprintf(stderr, "failed to load"
+							" EXEC DATA(fixed):%s\n",
+							strerror(errno));
 						pseudo_abort();
 					}
 					PSEUDO_DEBUG("Mapping file: EXEC - Mapping"
@@ -1657,12 +1737,14 @@ void fill_ve_vh_segmap(veos_handle *handle)
 					if ((void *)-1 == ret_addr) {
 						PSEUDO_DEBUG("VE mmap EXEC: "
 							"DATA(fixed):"
-                                                        "Fileback %s",
+							"Fileback %s",
 							strerror(errno));
 						PSEUDO_ERROR("failed to load"
 							" EXEC data");
-						fprintf(stderr,	"failed"
-							" to load VE binary");
+						fprintf(stderr, "failed to load"
+							" EXEC DATA (fixed,"
+							" fileback): %s\n",
+							strerror(errno));
                                                 pseudo_abort();
 					}
 				} else {
@@ -1679,8 +1761,9 @@ void fill_ve_vh_segmap(veos_handle *handle)
 						PSEUDO_ERROR("failed to load"
 								" exec text"
 								" data");
-						fprintf(stderr,	"failed"
-							" to load VE binary");
+						fprintf(stderr, "VE mmap failed"
+							" on TEXT (fixed): %s\n",
+							strerror(errno));
 						pseudo_abort();
 					}
 					PSEUDO_DEBUG("Mapping file: EXEC - Mapping "
@@ -1699,8 +1782,8 @@ void fill_ve_vh_segmap(veos_handle *handle)
 						": %s",
 						strerror(errno));
 				PSEUDO_ERROR("failed to load INTERP data");
-				fprintf(stderr,	"failed"
-						" to load VE binary");
+				fprintf(stderr, "VE mmap failed on INTERP - TEXT"
+						": %s\n", strerror(errno));
 				pseudo_abort();
 			}
 			PSEUDO_DEBUG("Mapping file: INTERP "
@@ -1760,8 +1843,8 @@ void fill_ve_vh_segmap(veos_handle *handle)
 			if (ret) {
 				PSEUDO_ERROR("failed to send data from VH to"
 						" VE memory");
-				fprintf(stderr,	"failed"
-						" to load VE binary");
+				fprintf(stderr, "failed to send data from"
+					" VH to VE memory\n");
 				pseudo_abort();
 			}
 			PSEUDO_DEBUG("CLEAR BSS: VE send data pass");
@@ -1788,8 +1871,7 @@ void fill_ve_vh_segmap(veos_handle *handle)
 			if (!buf_bss) {
 				PSEUDO_ERROR("Calloc fails for clearing"
 						" BSS(DYN)");
-				fprintf(stderr,	"failed"
-						" to load VE binary");
+				fprintf(stderr, "Failed to alloc BSS(DYN)\n");
 				pseudo_abort();
 			}
 			PSEUDO_DEBUG("Src: %p, Dest: %p",
@@ -1802,8 +1884,8 @@ void fill_ve_vh_segmap(veos_handle *handle)
 			if (ret) {
 				PSEUDO_DEBUG("failed to send data from VH to VE"
 						" memory");
-				fprintf(stderr,	"failed"
-						" to load VE binary");
+				fprintf(stderr, "Failed to send data from VH to VE"
+						" memory\n");
 				pseudo_abort();
 			}
 			PSEUDO_DEBUG("CLEAR BSS: LIBC, VE send data pass");

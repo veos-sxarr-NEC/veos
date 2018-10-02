@@ -773,7 +773,7 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
                 tsk->p_ve_mm->shm_lhm_addr_vhsaa = vedl_get_dma_address(VE_HANDLE(0),
                                 (void *)(tsk->p_ve_mm->shm_lhm_addr),
                                 tsk->pid, 1, 0, 0);
-		if (0 > (tsk->p_ve_mm->shm_lhm_addr_vhsaa)) {
+		if ((uint64_t)-1 == tsk->p_ve_mm->shm_lhm_addr_vhsaa) {
 			VEOS_ERROR("Failed to convert the address");
 			VEOS_DEBUG("Failed to convert the address(VHVA->VHSAA),"
 					"return value %d, mapped value %d",

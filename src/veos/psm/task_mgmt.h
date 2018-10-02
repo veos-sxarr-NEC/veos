@@ -219,7 +219,7 @@ typedef  unsigned long long cputime_t;
  */
 struct pacct_struct {
 	int ac_flag; /*!< status of the process when it terminated */
-	long ac_exitcode; /*!< task exit code passed to the exit system call */
+	__u32 ac_exitcode; /*!< task exit code passed to the exit system call */
 	unsigned long ac_mem; /*!< Memory usage */
 	cputime_t ac_utime; /*!< Time spend by the process while scheduled on VE core */
 };
@@ -359,7 +359,7 @@ struct ve_task_struct {
 	char ve_comm[ACCT_COMM]; /*!< VE Command name */
 	char ve_exec_path[PATH_MAX]; /*!< Path of ve_exec */
 	unsigned int flags;  /* per process flags */
-	int policy; /*!< Assume we have only one SCHED_OTHER policy */
+	unsigned int policy; /*!< Assume we have only one SCHED_OTHER policy */
 	int rt_priority; /*!< realtime priority */
 	pid_t pid; /*!< VE proces PID */
 	jid_t jid;    /*!< Job ID */
@@ -433,7 +433,7 @@ struct ve_task_struct {
 	struct ve_ptrace_info *p_ve_ptrace; /*!< Tracing information */
 	uint64_t gid; /*!< VE Process group ID */
 	uint64_t uid; /*!< VE Process user ID */
-	uint64_t lshmid; /*!< Storing lshm id of task */
+	int lshmid; /*!< Storing lshm id of task */
 	int rpm_preserve_task; /*!< Flag to indicate to preseve RPM task*/
 	bool rpm_create_task; /*!< Flag to indicate to RPM created the task */
 	struct ived_shared_resource_data *ived_resource; /*!< VESHM/CR */
@@ -498,7 +498,7 @@ static inline bool thread_group_empty(struct ve_task_struct *p)
 	return list_empty(&p->group_leader->thread_group);
 }
 
-int64_t psm_calc_nr_context_switches(struct ve_node_struct *);
+unsigned long psm_calc_nr_context_switches(struct ve_node_struct *);
 int calc_last_1_5_15_load(struct ve_node_struct *, double *, double *, double *);
 void populate_1_5_15_sys_load(struct ve_node_struct *, double, uint64_t);
 void calc_sys_load_per_sched_interval(struct ve_node_struct *);

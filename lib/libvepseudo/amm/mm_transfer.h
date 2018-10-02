@@ -38,20 +38,22 @@
  *@brief structure for calculating address offset and datasize.
  */
 struct addr_struct {
-        uint64_t top_address;
-        uint64_t bottom_address;
-        uint64_t aligned_top_address;
-        uint64_t aligned_bottom_address;
+        vemva_t top_address;
+        vemva_t bottom_address;
+        vemva_t aligned_top_address;
+        vemva_t aligned_bottom_address;
         int top_offset;
         int bottom_offset;
         size_t new_datasize;
 };
 
 
-int amm_dma_xfer_req(uint8_t *, veos_handle *);
+int amm_dma_xfer_req(uint8_t *, veos_handle *, pid_t tid);
 int ve_send_data(veos_handle *, uint64_t, size_t, void *);
 int ve_recv_data(veos_handle *, uint64_t, size_t, void *);
+int ve_send_data_tid(veos_handle *, uint64_t, size_t, void *, pid_t tid);
+int ve_recv_data_tid(veos_handle *, uint64_t, size_t, void *, pid_t tid);
 int ve_recv_string(veos_handle *, uint64_t, char *, size_t);
-int __ve_send_data(veos_handle *, uint64_t, size_t, void *);
-int __ve_recv_data(veos_handle *, uint64_t, size_t, void *);
+int __ve_send_data(veos_handle *, uint64_t, size_t, void *, pid_t tid);
+int __ve_recv_data(veos_handle *, uint64_t, size_t, void *, pid_t tid);
 #endif

@@ -205,7 +205,7 @@ int64_t veos_alloc_dmaatb_entry_for_vemva(pid_t requester, pid_t owner,
 					"Failed to release thread-group-mm-lock");
 			goto malloc_err;
 		}
-		pgsz = pgmod_to_pgsz(pgmod);
+		pgsz = (uint64_t)pgmod_to_pgsz(pgmod);
 
 		if (NULL == map) {
 			count = size/pgsz;
@@ -370,9 +370,9 @@ int64_t veos_alloc_dmaatb_entry_for_aa_tsk(struct ve_task_struct *tsk,
 
 	VEOS_DEBUG("End Dump Array of ABS addresses");
 
-	pgsize = (vehva_flag & VEHVA_4K) ? PAGE_SIZE_4KB :
+	pgsize = (size_t)((vehva_flag & VEHVA_4K) ? PAGE_SIZE_4KB :
 		(vehva_flag & VEHVA_2MB) ? PAGE_SIZE_2MB :
-		PAGE_SIZE_64MB;
+		PAGE_SIZE_64MB);
 	pgmod = (vehva_flag & VEHVA_4K) ? PG_4K :
 		(vehva_flag & VEHVA_2MB) ? PG_2M :
 		PG_HP;
@@ -666,9 +666,9 @@ int64_t veos_free_dmaatb_entry_tsk(struct ve_task_struct *req_tsk,
 		goto err_handle;
 	}
 
-	pgsz = (pgmod == PG_4K) ? PAGE_SIZE_4KB :
+	pgsz = (uint64_t)((pgmod == PG_4K) ? PAGE_SIZE_4KB :
 		(pgmod == PG_2M) ? PAGE_SIZE_2MB :
-		PAGE_SIZE_64MB;
+		PAGE_SIZE_64MB);
 
 	count = size/pgsz;
 	tmp_vehva = vehva;
@@ -850,9 +850,9 @@ int64_t veos_aa_to_vehva(pid_t pid, vemaa_t addr, int type)
 			/* pgmode check */
 			pgmode_dir = ps_getpgsz(atbp);
 
-			pgsz = (pgmode_dir == PG_2M) ? PAGE_SIZE_2MB :
+			pgsz = (uint64_t)((pgmode_dir == PG_2M) ? PAGE_SIZE_2MB :
 				(pgmode_dir == PG_4K) ? PAGE_SIZE_4KB :
-				PAGE_SIZE_64MB;
+				PAGE_SIZE_64MB);
 
 			pgmask = ~(uint64_t)(pgsz - 1);
 
@@ -1071,7 +1071,7 @@ int sync_node_dmaatb_dir(vehva_t vehva, struct ve_mm_struct *mm, dir_t dir_idx, 
 {
 	atb_dir_t *pgd = NULL;
 	atb_entry_t *pte = NULL;
-	dir_t dir_num = NULL;
+	dir_t dir_num = 0;
 	dmaatb_reg_t *dmaatb = &mm->dmaatb;
 	struct ve_node_struct *vnode = VE_NODE(0);
 	VEOS_TRACE("Invoked");

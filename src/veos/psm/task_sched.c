@@ -56,7 +56,7 @@ void psm_handle_assign_failure(struct ve_task_struct *curr_ve_task,
 	 * - Decrement thread_sched_count
 	 * - Save current task context
 	 * */
-	if (schedule_current) {
+	if (schedule_current && curr_ve_task) {
 		*(curr_ve_task->thread_sched_count) -= 1;
 		CLEAR_BIT(*(curr_ve_task->thread_sched_bitmap),
 				curr_ve_task->core_id);

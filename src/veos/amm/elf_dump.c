@@ -63,7 +63,7 @@ void create_ehdr(char *dumpImage,
 	((Elf64_Ehdr *)dumpImage)->e_flags = NUL;
 	((Elf64_Ehdr *)dumpImage)->e_ehsize = sizeof(Elf64_Ehdr);
 	((Elf64_Ehdr *)dumpImage)->e_phentsize = sizeof(Elf64_Phdr);
-	((Elf64_Ehdr *)dumpImage)->e_phnum = count;
+	((Elf64_Ehdr *)dumpImage)->e_phnum = (uint16_t)count;
 	((Elf64_Ehdr *)dumpImage)->e_shentsize = NUL;
 	((Elf64_Ehdr *)dumpImage)->e_shnum = NUL;
 	((Elf64_Ehdr *)dumpImage)->e_shstrndx = NUL;
@@ -113,9 +113,9 @@ int create_phdr(struct dump_params *cprm,
 		if (!IS_ALIGNED(cprm->f_post, PAGE_SIZE))
 			offset = (cprm->f_post & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
 		else
-			offset = cprm->f_post;
+			offset = (uint64_t)cprm->f_post;
 		((Elf64_Phdr *)phdrImage)->p_type = PT_LOAD;
-		((Elf64_Phdr *)phdrImage)->p_flags = ve_pmap->prmsn;
+		((Elf64_Phdr *)phdrImage)->p_flags = (uint32_t)ve_pmap->prmsn;
 		((Elf64_Phdr *)phdrImage)->p_offset = offset;
 		((Elf64_Phdr *)phdrImage)->p_vaddr = ve_pmap->begin;
 		((Elf64_Phdr *)phdrImage)->p_paddr = NUL;
@@ -445,7 +445,7 @@ static int writenote(struct memelfnote *men,
 
 	en.n_namesz = strlen(men->name) + 1;
 	en.n_descsz = men->datasz;
-	en.n_type = men->type;
+	en.n_type = (uint32_t)men->type;
 
 	return dump_core_info(cprm, &en, sizeof(en), 0) &&
 		dump_core_info(cprm, men->name, en.n_namesz, 0) &&
@@ -613,8 +613,8 @@ static void fill_prstatus(struct elf_prstatus *prstatus,
 	tp.tv_usec = p->exec_time%SECS_TO_MICROSECONDS;
 
 	prstatus->pr_info.si_signo = prstatus->pr_cursig = signr;
-	prstatus->pr_sigpend = p->sigpending;
-	prstatus->pr_sighold = p->sigpending;
+	prstatus->pr_sigpend = (unsigned long)p->sigpending;
+	prstatus->pr_sighold = (unsigned long)p->sigpending;
 	prstatus->pr_ppid = p->parent->pid;
 	prstatus->pr_pid = p->pid;
 	prstatus->pr_pgrp = 0;
@@ -708,7 +708,7 @@ static int fill_files_note(struct memelfnote *note,
 	const char *filename = NULL;
 
 	pmap = ve_pmap;
-	count = map_count;
+	count = (unsigned int)map_count;
 	size = count * FILEINFO_IN_BYTES;
 	names_ofs = (BUF_2BYTES + BUF_3BYTES * count) * sizeof(data[0]);
 

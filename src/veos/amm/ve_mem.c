@@ -1155,9 +1155,9 @@ int amm_do_munmap(vemva_t vaddr, size_t size,
 				&tmp_atb, NULL, &pgmod);
 		if (0 > pb) {
 			VEOS_DEBUG("vemva 0x%lx not valid", vaddr);
-			pgsz = (pgmod == PG_HP) ?
+			pgsz = (size_t)((pgmod == PG_HP) ?
 				PAGE_SIZE_64MB : (pgmod == PG_2M) ?
-				PAGE_SIZE_2MB : CHUNK_512MB;
+				PAGE_SIZE_2MB : CHUNK_512MB);
 			tmp_size -= pgsz;
 			dir_num = invalidate_vemva(vaddr, &tmp_atb);
 			if (0 > dir_num)
@@ -1165,7 +1165,7 @@ int amm_do_munmap(vemva_t vaddr, size_t size,
 						vaddr);
 			continue;
 		}
-		pgsz = pgmod_to_pgsz(pgmod);
+		pgsz = (size_t)pgmod_to_pgsz(pgmod);
 		tmp_size -= pgsz;
 
 		pgno = pfnum(pb, PG_2M);
@@ -1361,7 +1361,7 @@ int amm_do_mprotect(vemva_t vaddr, ssize_t size, uint64_t perm,
 			ret = -EINVAL;
 			goto mprot_error;
 		}
-		pgsz = pgmod_to_pgsz(ps_getpgsz(&mm->atb.dir[dir_num]));
+		pgsz = (size_t)pgmod_to_pgsz(ps_getpgsz(&mm->atb.dir[dir_num]));
 
 		if (prv_dir == -1 || (prv_dir != dir_num))
 			dirs[dir_cnt++] = dir_num;
@@ -2016,7 +2016,8 @@ uint64_t *amm_get_pgmod_info(vemva_t vaddr,
 		struct ve_task_struct *tsk, size_t size, bool *same)
 {
 	int pgmod = -1, start_pgmod = -1;
-	uint64_t *pg_info1 = NULL, *pg_info = NULL, tmp_addr = -1;
+	uint64_t *pg_info1 = NULL, *pg_info = NULL;
+	vemva_t tmp_addr = -1;
 	int count = 0, idx = 0, act_count = 0;
 	*same = true;
 	dir_t dir_num = 0;
@@ -2059,13 +2060,13 @@ uint64_t *amm_get_pgmod_info(vemva_t vaddr,
 			start_pgmod = pgmod;
 
 		if (pgmod == PG_HP) {
-			tmp_addr = tmp_addr + PAGE_64MB;
+			tmp_addr = (vemva_t)(tmp_addr + PAGE_64MB);
 			count = count - HUGE_PAGE_IDX;
 		} else {
-			tmp_addr = tmp_addr + PAGE_2MB;
+			tmp_addr = (vemva_t)(tmp_addr + PAGE_2MB);
 			--count;
 		}
-		pg_info[idx] = pgmod;
+		pg_info[idx] = (uint64_t)pgmod;
 		++idx;
 	}
 	if (act_count != idx) {
@@ -2733,7 +2734,7 @@ int veos_share_vemva_region(pid_t owner, vemva_t own_vemva,
 
 	own_pgmod = ps_getpgsz(&own_mm->atb.dir[dir_num]);
 
-	pgsz = pgmod_to_pgsz(own_pgmod);
+	pgsz = (size_t)pgmod_to_pgsz(own_pgmod);
 	/*check whether requested size is available or not*/
 	count = size / pgsz;
 	tc = count;
@@ -3217,7 +3218,7 @@ ret_t update_mapping_desc(vemva_t vaddr, pgno_t *pgno,
 
 
 	VEOS_TRACE("invoked");
-	file_size = file->stat.st_size;
+	file_size = (uint64_t)file->stat.st_size;
 
 	memset((void *)pg_no, 0xff, sizeof(pg_no));
 	pgsz = pgmod_to_pgsz(pgmod);
@@ -4113,7 +4114,7 @@ done:
 handl_malloc:
 	pthread_mutex_lock_unlock(&jid_globl.mtx, UNLOCK,
 			"Failed to release jid lock");
-	free(plist);
+	if (plist) free(plist);
 	return -1;
 }
 /**
@@ -4245,7 +4246,7 @@ void amm_init_heap_struct(void)
 bool increaserefcnt(int idx)
 {
 	VEOS_TRACE("invoked");
-	if (0 > idx || idx >= MAX_JID_PROCESS) {
+	if (0 > idx || idx > MAX_JID_PROCESS) {
 		VEOS_DEBUG("Invalid index");
 		errno = EINVAL;
 		return 1;
@@ -4268,7 +4269,7 @@ bool decreaserefcnt(int idx)
 {
 
 	VEOS_TRACE("invoked");
-	if (0 > idx || idx >= MAX_JID_PROCESS) {
+	if (0 > idx || idx > MAX_JID_PROCESS) {
 		VEOS_DEBUG("Invalid index");
 		errno = EINVAL;
 		return (bool)1;
@@ -4685,7 +4686,7 @@ int amm_recv_data(pid_t pid, vemva_t address, size_t len, void *data)
 	memset(as, '\0', sizeof(struct addr_struct));
 
 	as->top_address = address;
-	as->bottom_address = address + len;
+	as->bottom_address = (vemva_t)(address + len);
 
 	/* calc VEMVA addresses */
 	calc_addr(as);
