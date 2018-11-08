@@ -948,8 +948,22 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 	sys_prepar_clear_all_vhshm_resource();
 
 	/* Create new child process */
+	retval = pthread_rwlock_wrlock(&sync_fork_dma);
+	if (retval) {
+		PSEUDO_ERROR("failed to acquire write lock to"
+				" synchronise dma %s", strerror(retval));
+		fprintf(stderr, "Internal resource usage error\n");
+		pseudo_abort();
+	}
 	child_pid = pid =  fork();
 	if (0 < pid) {
+		retval = pthread_rwlock_unlock(&sync_fork_dma);
+		if (retval) {
+			PSEUDO_ERROR("failed to release write lock to"
+					" synchronize dma %s", strerror(retval));
+			fprintf(stderr, "Internal resource usage error\n");
+			pseudo_abort();
+		}
 		/* In Parent VH Context */
 		PSEUDO_DEBUG("Child PID = %d Parent PID = %ld",
 				pid, syscall(SYS_gettid));
@@ -1032,6 +1046,16 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 		if (!log4c_category_get("veos.pseudo_process.core")) {
 			pseudo_abort();
 		}
+		retval = pthread_rwlock_unlock(&sync_fork_dma);
+		if (retval) {
+			PSEUDO_ERROR("failed to release write lock to"
+					" synchronize dma %s", strerror(retval));
+			fprintf(stderr, "Internal resource usage error\n");
+			pseudo_abort();
+		}
+
+		/* After fork() re-initalize the syscall trap field in child */
+		sys_enter_trap = false;
 
 		if (clone_args[0] & CLONE_VFORK) {
 			/* Get new VEDL handle for vforked child*/
@@ -1257,6 +1281,13 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 		 */
 		pse_exception_handler(handle, NULL);
 	} else {
+		retval = pthread_rwlock_unlock(&sync_fork_dma);
+		if (retval) {
+			PSEUDO_ERROR("failed to release write lock to"
+					" synchronize dma %s", strerror(retval));
+			fprintf(stderr, "Internal resource usage error\n");
+			pseudo_abort();
+		}
 		retval = -errno;
 		PSEUDO_ERROR("VH fork() failed for PID %ld",
 				syscall(SYS_gettid));
@@ -3906,22 +3937,11 @@ ret_t ve_set_tid_address(int syscall_num, char *syscall_name, veos_handle *handl
 		PSEUDO_DEBUG("addr_rcvd : %lx",
 				(unsigned long)addr_rcvd);
 
-		if (-1 == tid_counter) {
-			tid_counter++;
-			index = tid_counter;
-			global_tid_info[index].tid_val = tid;
-			global_tid_info[index].flag = 0;
-			global_tid_info[index].mutex =
-				(pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
-			global_tid_info[index].cond =
-				(pthread_cond_t)PTHREAD_COND_INITIALIZER;
-		} else {
-			index = find_global_array_index(tid);
-			if (index == VEOS_MAX_VE_THREADS) {
-				PSEUDO_ERROR("TID %d not found", tid);
-				fprintf(stderr, "Inconsistent thread details\n");
-				pseudo_abort();
-			}
+		index = find_global_array_index(tid);
+		if (index == VEOS_MAX_VE_THREADS) {
+			PSEUDO_ERROR("TID %d not found", tid);
+			fprintf(stderr, "Inconsistent thread details\n");
+			pseudo_abort();
 		}
 
 		PSEUDO_DEBUG("index : %d", index);
@@ -4304,6 +4324,9 @@ ret_t ve_exit_group(int syscall_num, char *syscall_name, veos_handle *handle)
 
 	munmap((void *)PTRACE_PRIVATE_DATA,4096);
 
+	if (pthread_rwlock_destroy(&sync_fork_dma)) {
+		PSEUDO_ERROR("Failed to destroy read write lock");
+	}
 	/* Invoking VH exit_group() syscall */
 	retval = syscall(syscall_num, args);
 

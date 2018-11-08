@@ -1645,29 +1645,42 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 					"Failed to release task lock");
 		}
 	}
-	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
-			"Failed to release tasklist_lock lock");
-	pthread_mutex_lock_unlock(&(del_task_struct->ve_task_lock), LOCK,
-			"Failed to acquire task lock");
 
-	/* If task is vforked child and its parent exists, then wake up parent */
-	if (true == del_task_struct->vforked_proc &&
-			del_task_struct->wake_up_parent == true) {
-
+	/* If task is vforked child and its parent exists, then wake up
+	 * parent. There is no point in waking up exiting parent
+	 * As we have acquired task list lock so we can freely access
+	 * real parent.
+	 */
+	if (true == del_task_struct->vforked_proc
+			&& del_task_struct->wake_up_parent == true) {
 		del_task_real_parent = del_task_struct->real_parent;
+		pthread_mutex_lock_unlock(&del_task_real_parent->ref_lock,
+				LOCK, "Failed to acquire task reference lock");
+		if (del_task_real_parent->exit_status == EXITING
+				|| del_task_real_parent->exit_status == DELETING) {
+			pthread_mutex_lock_unlock(
+					&del_task_real_parent->ref_lock,
+					UNLOCK, "Failed to acquire task reference lock");
+			VEOS_DEBUG("No need to wake up exiting/deleting parent");
+			goto skip_wakeup;
+		}
+		pthread_mutex_lock_unlock(
+				&del_task_real_parent->ref_lock,
+				UNLOCK, "Failed to acquire task reference lock");
 
 		VEOS_DEBUG("vforked process execution completed");
-		pthread_rwlock_lock_unlock(
+		if (del_task_real_parent->core_id != del_task_struct->core_id)
+			pthread_rwlock_lock_unlock(
 				&(del_task_real_parent->p_ve_core->ve_core_lock),
-				WRLOCK,	"Failed to acquire core lock");
-		pthread_mutex_lock_unlock(
-				&(del_task_real_parent->ve_task_lock), LOCK,
-				"Failed to acquire task lock");
+					WRLOCK,	"Failed to acquire core lock");
 
 		/* If parent process has not served UNBLOCK yet then
 		 * do not change task state here let, UNBLOCK request
 		 * make the decision.
 		 */
+		pthread_mutex_lock_unlock(
+				&(del_task_real_parent->ve_task_lock), LOCK,
+				"Failed to acquire task lock");
 		if (del_task_real_parent->ve_task_state != STOP &&
 				del_task_real_parent->block_status
 					== UNBLOCK_SERVED) {
@@ -1679,11 +1692,16 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 		pthread_mutex_lock_unlock(
 				&(del_task_real_parent->ve_task_lock), UNLOCK,
 				"failed to release task lock");
+		if (del_task_real_parent->core_id != del_task_struct->core_id)
 		pthread_rwlock_lock_unlock(
 				&(del_task_real_parent->p_ve_core->ve_core_lock),
 				UNLOCK,	"Failed to release core lock");
 	}
-
+skip_wakeup:
+	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
+			"Failed to release tasklist_lock lock");
+	pthread_mutex_lock_unlock(&(del_task_struct->ve_task_lock), LOCK,
+			"Failed to acquire task lock");
 	/* resetting vfork related states */
 	del_task_struct->vfork_state = VFORK_C_INVAL;
 	del_task_struct->vforked_proc = false;

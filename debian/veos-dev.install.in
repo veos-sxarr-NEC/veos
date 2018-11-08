@@ -1,0 +1,4 @@
+.@libdir@/*.a
+.@libdir@/*.la
+.@libdir@/*.so
+.@prefix@/include/*.h

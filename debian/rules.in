@@ -1,0 +1,32 @@
+#!/usr/bin/make -f
+SHELL=/bin/bash
+export DH_VERBOSE = 1
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all,-format
+export DEB_VENDOR = "NEC Corporation"
+export PREFIX = "@prefix@"
+export SYSCONFDIR = "@sysconfdir@"
+export LOCALSTATEDIR = "@localstatedir@"
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	dh_auto_configure -- --with-ve-musl-includedir=/opt/nec/ve/musl/include \
+			--with-vemm-agent-includedir=/opt/nec/ve/veos/include \
+			--with-binfmtdir=/usr/lib/binfmt.d \
+			--prefix=${PREFIX} \
+			--libdir=${PREFIX}/lib64 \
+			--libexecdir=${PREFIX}/libexec \
+			--sysconfdir=${SYSCONFDIR} \
+			--localstatedir=${LOCALSTATEDIR} \
+			--with-limitsdir=@limitsdir@ \
+			--with-sysctldir=@sysctldir@ \
+			--with-release-id=@RELEASE@
+	chmod a+x debian/rules
+	rm -rf debian/*.in
+
+override_dh_install:
+	dh_install
+
+override_dh_systemd_start:
+	dh_systemd_start -p @PACKAGE@ ve-ived.service

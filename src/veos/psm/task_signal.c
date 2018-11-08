@@ -368,7 +368,7 @@ void psm_start_ve_process(struct ve_task_struct *p_ve_task)
 		VEOS_DEBUG("Setting state WAIT for pid %d "
 				"due to MONC processing is in progress.",
 				p_ve_task->pid);
-		p_ve_task->ve_task_state = WAIT;
+		psm_set_task_state(p_ve_task, WAIT);
 	} else if (RUNNING != p_ve_task->ve_task_state) {
 		VEOS_DEBUG("Setting task state to RUNNING for pid %d",
 				p_ve_task->pid);
@@ -1003,7 +1003,9 @@ int on_sig_stack(struct ve_task_struct *current)
 	int result = 0;
 
 	VEOS_TRACE("Entering");
-	if (current->p_ve_core->curr_ve_task == current) {
+	if (current->p_ve_core->curr_ve_task == current &&
+		current->reg_dirty) {
+		VEOS_DEBUG("Getting actual values of SR11: %d", current->pid);
 		if (vedl_get_usr_reg(VE_HANDLE(current->node_id),
 				VE_CORE_USR_REG_ADDR(current->node_id,
 						current->core_id),
@@ -1013,6 +1015,7 @@ int on_sig_stack(struct ve_task_struct *current)
 			veos_abort("failed to get user registers");
 		}
 	} else {
+		VEOS_DEBUG("Reading SR11 from soft copy: %d", current->pid);
 		sp = current->p_ve_thread->SR[11];
 	}
 

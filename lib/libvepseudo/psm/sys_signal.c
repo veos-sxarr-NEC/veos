@@ -1008,6 +1008,11 @@ ret_t ve_tkill(int syscall_num, char *syscall_name, veos_handle *handle)
 			((SIGRTMIN - 2) == args[1])) {
 		PSEUDO_DEBUG("Reserved signal %ld encountered",
 				args[1]);
+		siginfo.si_pid = getpid();
+		siginfo.si_errno = 0;
+		siginfo.si_code = SI_TKILL;
+		siginfo.si_signo = args[1];
+		siginfo.si_uid = getuid();
 		if (!syscall(syscall_num, args[0], 0)) {
 			PSEUDO_DEBUG("Request veos to serve library"
 					" reserved signal %ld",
@@ -1162,6 +1167,11 @@ ret_t ve_tgkill(int syscall_num, char *syscall_name, veos_handle *handle)
 			((SIGRTMIN - 2) == args[2])) {
 		PSEUDO_DEBUG("Reserved signal %ld encountered",
 				args[2]);
+		siginfo.si_pid = getpid();
+		siginfo.si_errno = 0;
+		siginfo.si_code = SI_TKILL;
+		siginfo.si_signo = args[2];
+		siginfo.si_uid = getuid();
 		if (!syscall(syscall_num, args[0], args[1], 0)) {
 			PSEUDO_DEBUG("Request veos to serve library"
 					" reserved signal %ld",

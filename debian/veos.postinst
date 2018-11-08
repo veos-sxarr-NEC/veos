@@ -1,0 +1,16 @@
+#!/bin/bash
+set -e
+ldconfig
+if [ -d /run/systemd/system ]; then
+	if [ -z "$2" ]; then
+		systemctl restart systemd-binfmt.service
+	fi
+fi
+
+if [ "$1" == "configure" ]; then
+	sysctl --system >/dev/null 2>&1
+fi
+
+#DEBHELPER#
+
+exit 0

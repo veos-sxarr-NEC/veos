@@ -124,6 +124,14 @@ void ve_syscall_trace(veos_handle *handle, bool in)
 		goto hndl_return;
 	}
 
+	/* Syscall tracing is disabled for grow syscall, so SIGTRAP signal
+	 * is not generated when ve_grow() syscall is invoked.
+	 */
+	if (315 == vedl_get_syscall_num(handle->ve_handle)) {
+		PSEUDO_DEBUG("grow() is invoked so not tracing it");
+		goto hndl_return;
+	}
+
 	/* If SIGTRAP is not generated while entering system call, then
 	 * SIGTRAP is not generated send while exiting system call even
 	 * if SYSTEM CALL Trace is enabled.

@@ -72,6 +72,8 @@
 #define PAGE_MASK      (~(PAGE_SIZE-1))
 #define MAX_RW_COUNT (INT_MAX & PAGE_MASK)
 
+#define NOTIFY_COOKIE_LEN       32
+
 #define EP_MAX_EVENTS (INT_MAX / sizeof(struct epoll_event))
 
 /* nanoseconds in a second */

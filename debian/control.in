@@ -1,0 +1,82 @@
+Source: @PACKAGE@
+Section: otherosfs
+Priority: extra
+Maintainer: NEC Corporation
+Build-Depends:  debhelper (>=10),
+                dh-autoreconf,
+                dh-systemd,
+                libved-dev,
+                velayout-dev,
+                libprotobuf-c-dev,
+                liblog4c-dev,
+                libsystemd-dev,
+                uuid-dev,
+                libcap-dev,
+                libprocps-dev,
+                protobuf-c-compiler,
+                protobuf-compiler,
+                ve-memory-mapping-dev,
+                libdhash-dev
+Standards-Version: 3.9.8
+
+Package: @PACKAGE@
+Architecture: any
+Multi-Arch: same
+Depends: ${misc:Depends},
+         ${shlibs:Depends},
+         python (>= 2.7),
+         systemd,
+         libc6,
+         libved,
+         velayout,
+         python-protobuf,
+         libdhash1
+Description: VE Operating System
+ VEOS is a set of daemons and commands providing operating system
+ functionality to VE programs.
+
+Package: @PACKAGE@-libveptrace
+Architecture: any
+Multi-Arch: same
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: VE ptrace library
+ This package contains the VE ptrace library.
+
+Package: @PACKAGE@-dev
+Architecture: any
+Multi-Arch: same
+Depends: ${misc:Depends},
+         @PACKAGE@ (= @VERSION@-@RELEASE@),
+         @PACKAGE@-libveptrace (= @VERSION@-@RELEASE@)
+Description: Headers for VEOS
+ This package contains the files required to build system software
+ which uses VEOS functionality.
+ This package is not required to build VE programs or libraries.
+
+Package: @PACKAGE@-headers
+Architecture: any
+Multi-Arch: same
+Depends: ${misc:Depends}
+Description: Headers for VEOS
+ This package contains the header files of definitions of VEOS.
+ VE programs or libraries include them if required.
+
+Package: @PACKAGE@-musl-headers
+Architecture: any
+Multi-Arch: same
+Depends: ${misc:Depends}
+Description: Headers for VEOS
+ This package contains the header files of definitions of VEOS.
+ VE programs or libraries include them if required.
+
+Package: @PACKAGE@-libvepseudo-headers
+Architecture: any
+Multi-Arch: same
+Depends: ${misc:Depends},
+         @PACKAGE@ (= @VERSION@-@RELEASE@),
+         libved-dev,
+         velayout-dev
+Description: Headers for libvepseudo
+ This package contains the header files of definition of libvepseudo.
+ VH programs or libraries using internal functions in libvepseudo
+ include them.

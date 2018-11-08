@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([veos], [1.3.0])
+AC_INIT([veos], [1.3.2])
 AC_CONFIG_SRCDIR([lib/libvepseudo/psm/exception.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([./build-aux])
@@ -101,6 +101,10 @@ AC_CHECK_PROGS([REALPATH], [realpath], [no])
 if test "x$REALPATH" = xno; then
   AC_MSG_ERROR([realpath is not found.])
 fi
+AC_PATH_PROG([UDEVADM], [udevadm], [no])
+if test "x$UDEVADM" = xno; then
+  AC_MSG_ERROR([udevadm is not found.])
+fi
 # Checks for libraries.
 LDFLAGS="$LDFLAGS -L${prefix}/lib -L${prefix}/lib64"
 AC_CHECK_LIB(ved, vedl_wait_exception, [have_libved=yes], [have_libved=no])
@@ -181,5 +185,13 @@ AC_CONFIG_FILES([Makefile
 		src/veos/main/Makefile
 		src/veos/psm/Makefile
 		src/veos/psm/ve_coredump_helper.h
-		src/veos/vemm/Makefile])
+		src/veos/vemm/Makefile
+		debian/control
+		debian/rules
+		debian/veos-dev.install
+		debian/veos-headers.install
+		debian/veos.install
+		debian/veos-libvepseudo-headers.install
+		debian/veos-libveptrace.install
+		debian/veos-musl-headers.install])
 AC_OUTPUT

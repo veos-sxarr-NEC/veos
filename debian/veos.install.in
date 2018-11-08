@@ -1,0 +1,15 @@
+.@sysconfdir@/log4crc
+usr/lib/binfmt.d/ve.conf
+.@sysconfdir@/ve-os-launcher.d/ve-ived.options
+.@sysconfdir@/ve-os-launcher.d/veos_timer.options
+.@ve_bindir@/*
+.@prefix@/sbin/*
+.@ve_libexecdir@/*
+.@prefix@/lib/python2.7/site-packages/*
+.@prefix@/lib/python2.7/site-packages/*/*
+.@prefix@/libexec/ve_exec
+.@prefix@/libexec/ve_coredump_helper
+.@prefix@/libexec/ve_release_resource
+.@prefix@/lib64/libvepseudo.so.*
+.@limitsdir@/10-veos.conf
+.@sysctldir@/10-veos.conf

@@ -1062,6 +1062,8 @@ int do_ve_fork(unsigned long clone_flags,
 	if (clone_flags & CLONE_VFORK) {
 		new_task->p_ve_mm->shm_lhm_addr =
 			new_task->parent->p_ve_mm->shm_lhm_addr;
+		new_task->p_ve_mm->shm_lhm_addr_vhsaa =
+			new_task->parent->p_ve_mm->shm_lhm_addr_vhsaa;
 		new_task->sighand->lshm_addr =
 			(uint64_t)shmat(new_task->parent->lshmid, NULL, 0);
 		if ((void *)-1 == (void *)new_task->sighand->lshm_addr) {

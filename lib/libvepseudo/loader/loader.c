@@ -301,7 +301,7 @@ int pse_load_binary(char *filename, veos_handle *handle,
 					ve_info.heap_start =
 						(((uint64_t)ve_info.heap_start
 						  & ~(default_page_size - 1))
-						 + default_page_size);
+						 + (default_page_size << 1));
 				}
 				ve_info.heap_top = ve_info.heap_start;
 				PSEUDO_DEBUG("VE process heap start : %lx"

@@ -4,5 +4,5 @@ SUBDIRS = conf lib src include scripts
 EXTRA_DIST = \
 	COPYING \
 	README \
-	doc
-
+	doc \
+	debian

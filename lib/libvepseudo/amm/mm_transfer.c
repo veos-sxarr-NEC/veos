@@ -553,11 +553,20 @@ int __ve_recv_data(veos_handle *handle, uint64_t address,
 		   size_t datasize, void *data, pid_t tid)
 {
 	int ret = 0;
+	int local_ret = 0;
 	struct dma_args dma_param = {0};
 
 	PSEUDO_TRACE("Invoked");
 	PSEUDO_DEBUG("SRC Addr: %p Dest Addr: %p Length: %d",
 			(void *)address, (void *)data, (int)datasize);
+
+	ret = pthread_rwlock_rdlock(&sync_fork_dma);
+	if (ret) {
+		PSEUDO_DEBUG("Failed to acquire read lock for "
+				"dma: %s", strerror(ret));
+		fprintf(stderr, "Internal resource usage error\n");
+		pseudo_abort();
+	}
 
 	dma_param.srctype = VE_DMA_VEMVA;
 	dma_param.dsttype = VE_DMA_VHVA;
@@ -568,8 +577,18 @@ int __ve_recv_data(veos_handle *handle, uint64_t address,
 	ret = amm_dma_xfer_req((uint8_t *)&dma_param, handle, tid);
 	if (0 > ret) {
 		PSEUDO_DEBUG("error while Posting DMA request");
-		ret = -EFAULT;
+		local_ret = -EFAULT;
 	}
+
+	ret = pthread_rwlock_unlock(&sync_fork_dma);
+	if (ret) {
+		PSEUDO_DEBUG("Failed to release read lock for "
+				"dma: %s", strerror(ret));
+		fprintf(stderr, "Internal resource usage error\n");
+		pseudo_abort();
+	}
+	if (local_ret)
+		ret = local_ret;
 
 	PSEUDO_DEBUG("returned with %d", ret);
 	PSEUDO_TRACE("returned");

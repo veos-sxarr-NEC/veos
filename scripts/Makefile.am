@@ -8,7 +8,8 @@ edit = sed -e 's|@ve_libexecdir[@]|$(ve_libexecdir)|g' \
            -e 's|@localstatedir[@]|$(localstatedir)|g' \
            -e 's|@VERSION[@]|$(VERSION)|g' \
            -e 's|@pythondir[@]|$(pythondir)|g' \
-           -e 's|@libexecdir[@]|$(libexecdir)|g'
+           -e 's|@libexecdir[@]|$(libexecdir)|g' \
+           -e 's|@UDEVADM[@]|$(UDEVADM)|g'
 
 ve_exec: $(srcdir)/ve_exec.in
 	$(edit) $< > $@

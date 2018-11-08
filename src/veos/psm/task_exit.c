@@ -977,10 +977,27 @@ hndl_reparent:
 
 		VEOS_DEBUG("vforked process execution completed");
 
-		/* If task is vforked child and its parent exists, then wake up parent */
+		/* If task is vforked child and its parent exists, then wake
+		 * up parent. There is no point in waking up exiting parent.
+		 * As we have acquired task list lock so we can freely access
+		 * real parent.
+		 **/
 		if (true == group_leader->vforked_proc &&
 				group_leader->wake_up_parent == true) {
 			real_parent = group_leader->real_parent;
+			pthread_mutex_lock_unlock(&real_parent->ref_lock,
+					LOCK, "Failed to acquire task reference lock");
+			if (real_parent->exit_status == EXITING
+					|| real_parent->exit_status == DELETING) {
+				pthread_mutex_lock_unlock(
+						&real_parent->ref_lock,
+						UNLOCK, "Failed to acquire task reference lock");
+				VEOS_DEBUG("No need to wakup exiting/deleting parent");
+				goto skip_wakup;
+			}
+			pthread_mutex_lock_unlock(
+					&real_parent->ref_lock,
+					UNLOCK, "Failed to acquire task reference lock");
 
 			/* Acquire core lock as we can update number of active
 			 * task on core */
@@ -1011,7 +1028,7 @@ hndl_reparent:
 						&(real_parent->p_ve_core->ve_core_lock),
 						UNLOCK, "Failed to acquire core lock");
 		}
-
+skip_wakup:
 		/* task's children list and its children's thread group list
 		 * will be accessed now. Hence task lock and thread group lock
 		 * of child processes will be acquired inside

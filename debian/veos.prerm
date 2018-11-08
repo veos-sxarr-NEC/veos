@@ -1,0 +1,15 @@
+#!/bin/bash
+set -e
+for dev in /dev/veslot*; do
+	if [ $dev == '/dev/veslot*' ]; then
+		break
+	fi
+	sysfs_path=/sys`udevadm info -q path $dev`/os_state
+	os_state=`cat $sysfs_path`
+	if [ $os_state != "1" ]; then
+		echo "Error: OS state is not offline"
+		exit 1
+	fi
+done
+
+exit 0

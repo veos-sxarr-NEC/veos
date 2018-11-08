@@ -80,36 +80,20 @@ char *unsupported_vmflgas[] = {"pf", "dw", "lo", "io",
  */
 void veos_sysinfo(int node_id, struct sysinfo *sys)
 {
-	struct ve_node_struct *vnode = VE_NODE(node_id);
-	uint64_t i = 0, count = 0;
+	struct velib_meminfo mem_info = {0};
 
-	VEOS_TRACE("invoked for node %d and syinfo %p", node_id, sys);
+	VEOS_TRACE("Invoked");
 
-	if (NULL == sys) {
-		VEOS_DEBUG("sysinfo is NULL");
-		return;
-	}
-	sys->totalram = vnode->mem.ve_mem_size;
+	/*Get the VE memory information*/
+	veos_meminfo(&mem_info);
 
-	sys->freeram = count*PAGE_SIZE_2MB;
-	count = 0;
-	for (i = 0; i < vnode->nr_pages; i++) {
-		if (NULL != VE_PAGE(vnode, i)) {
-			if ((PG_SHM & VE_PAGE(vnode, i)->flag) ||
-					(MAP_SHARED & VE_PAGE(vnode, i)->flag)) {
-				count = count + VE_PAGE(vnode, i)->pgsz;
-				VEOS_TRACE("VE page %lx is shared", i);
-			}
-		VEOS_TRACE("VE page no %lx not shared", i);
-		}
-
-	}
-
-	sys->sharedram = count;
+	sys->totalram = mem_info.kb_main_total; /*Total used VE memory*/
+	sys->freeram =	mem_info.kb_main_free; /*Total free VE memory*/
+	sys->sharedram = mem_info.kb_main_shared; /*Total shared VE memory*/
+	sys->mem_unit = 1;	/*VE memory unit size in bytes*/
 	sys->bufferram = 0;	/*this is data is not supported for VE*/
 	sys->totalhigh = 0;	/*this is data is not supported for VE*/
 	sys->freehigh = 0;	/*this is data is not supported for VE*/
-	sys->mem_unit = 0;	/*this is data is not supported for VE*/
 	sys->totalswap = 0;	/*this is data is not supported for VE*/
 	sys->freeswap = 0;	/*this is data is not supported for VE*/
 	VEOS_DEBUG("Total RAM %lx\nFree RAM "

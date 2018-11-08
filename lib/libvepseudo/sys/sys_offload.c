@@ -35,10 +35,6 @@
 #include "ve_socket.h"
 #include "signal_comm.h"
 #include "process_mgmt_comm.h"
-#include "vh_mem_alloc.h"
-#include "vemva_mgmt.h"
-
-#define SIZE_512	0x200
 
 /**
  * @brief Generic Handler for write() and pwrite64() system call for VE.
@@ -92,21 +88,22 @@ ret_t ve_hndl_write_pwrite64(int syscall_num, char *syscall_name,
 
 	if (args[1]) {
 		/* allocate memory to store write data */
-		flags = fcntl(args[0],F_GETFL,0);
+		flags = fcntl(args[0], F_GETFL, 0);
+		if (-1 == flags) {
+			PSEUDO_ERROR("Failed to get the file access mode "
+				"and the file status flags: %s", strerror(errno));
+			retval = -errno;
+			goto hndl_return;
+		}
 		if (flags & O_DIRECT) {
-			if (!IS_ALIGNED(args[1], SIZE_512)) {
-				PSEUDO_DEBUG("O_DIRECT set and VE buffer is unaligned");
-				retval = -EINVAL;
-				goto hndl_return;
-			}
 			/* Under Linux 2.6, alignment to 512-byte boundaries suffices
 			 * e.g -
 			 * 1 --> posix_memalign(&write_buff,512,recv_size);
 			 * 2 --> memalign(sysconf(_SC_PAGESIZE),size);
 			 */
-			write_buff = (char *)vh_alloc_buf(recv_size, true);
+			write_buff = (char *)valloc(recv_size);
 		} else {
-			write_buff = (char *)vh_alloc_buf(recv_size, false);
+			write_buff = (char *)calloc(recv_size, sizeof(char));
 		}
 
 		if (NULL == write_buff) {
@@ -161,7 +158,7 @@ ret_t ve_hndl_write_pwrite64(int syscall_num, char *syscall_name,
 	PSEUDO_DEBUG("Blocked signals for post-processing");
 
 hndl_return1:
-	vh_free_buf(write_buff);
+	free(write_buff);
 hndl_return:
 	/* write return value */
 	PSEUDO_TRACE("Exiting");
@@ -244,7 +241,7 @@ ret_t ve_hndl_writev_pwritev(int syscall_num, char *syscall_name,
 	}
 
 	/* local memory buffer to store writev data */
-	vh_iov = (struct iovec *)vh_alloc_buf(iovcnt * sizeof(struct iovec), false);
+	vh_iov = (struct iovec *)calloc(iovcnt, sizeof(struct iovec));
 	if (NULL == vh_iov) {
 		retval = -ENOSPC;
 		PSEUDO_ERROR("Failed to create local memory buffer");
@@ -284,7 +281,7 @@ ret_t ve_hndl_writev_pwritev(int syscall_num, char *syscall_name,
 	}
 
 	/* create VH buffers */
-	vh_buff_addr = vh_alloc_buf(iovcnt * (sizeof(uint64_t)), false);
+	vh_buff_addr = calloc(iovcnt, (sizeof(uint64_t)));
 	if (NULL == vh_buff_addr) {
 		retval = -ENOSPC;
 		PSEUDO_ERROR("Failed to create internal memory buffer");
@@ -307,18 +304,10 @@ ret_t ve_hndl_writev_pwritev(int syscall_num, char *syscall_name,
 		if ((NULL != (void *)vh_iov[i].iov_base) &&
 				(0 != (ssize_t)vh_iov[i].iov_len)) {
 			if (dio_flag) {
-				if (!IS_ALIGNED(args[1], SIZE_512)) {
-					PSEUDO_DEBUG("O_DIRECT set and"
-							" VE buffer is unaligned");
-					retval = -EINVAL;
-					goto hndl_return2;
-				}
-				vh_buff_addr[i] =
-					(uint64_t *)vh_alloc_buf(
-							vh_iov[i].iov_len, true);
+				vh_buff_addr[i] = (uint64_t *)valloc(vh_iov[i].iov_len);
 			} else {
-				vh_buff_addr[i] = (uint64_t *)vh_alloc_buf
-					((vh_iov[i].iov_len), false);
+				vh_buff_addr[i] = (uint64_t *)calloc
+					((vh_iov[i].iov_len), sizeof(char));
 			}
 
 			if (NULL != (void *)vh_buff_addr[i]) {
@@ -376,11 +365,11 @@ ret_t ve_hndl_writev_pwritev(int syscall_num, char *syscall_name,
 hndl_return2:
 	for (i = 0; i < iovcnt; i++) {
 		if (NULL != (void *)vh_buff_addr[i])
-			vh_free_buf(vh_buff_addr[i]);
+			free(vh_buff_addr[i]);
 	}
-	vh_free_buf(vh_buff_addr);
+	free(vh_buff_addr);
 hndl_return1:
-	vh_free_buf(vh_iov);
+	free(vh_iov);
 hndl_return:
 	/* write return value */
 	PSEUDO_TRACE("Exiting");
@@ -2908,6 +2897,8 @@ hndl_return:
 ret_t do_accept(int syscall_num, char *syscall_name, veos_handle *handle)
 {
 	ret_t retval = -1;
+	int val = 0;
+	struct stat st = {0};
 
 	/* Structure large enough to hold any socket address
 	 * as used by Linux kernel
@@ -2915,6 +2906,7 @@ ret_t do_accept(int syscall_num, char *syscall_name, veos_handle *handle)
 	struct sockaddr_storage addr = {0};
 
 	socklen_t addr_len = 0;
+	socklen_t len = sizeof(val);
 	uint64_t args[4] = {0};
 	sigset_t signal_mask = { {0} };
 
@@ -2928,6 +2920,24 @@ ret_t do_accept(int syscall_num, char *syscall_name, veos_handle *handle)
 		retval = -EFAULT;
 		goto hndl_return;
 	}
+	/* Check to Validate the decriptor */
+	if (-1 == fcntl(args[0], F_GETFL))
+	{
+		retval = -EBADF;
+		PSEUDO_ERROR("Decriptor(args[0]) is not valid  %s failed %d",
+				SYSCALL_NAME, (int)retval);
+		goto hndl_return;
+	}
+        /* Check if descriptor is socket descriptor type */
+	(void)fstat(args[0], &st);
+	if (0 == S_ISSOCK(st.st_mode))
+	{
+		retval = -ENOTSOCK;
+		PSEUDO_ERROR("Decriptor(args[0]) is not a socket descriptor %s failed %d",
+				SYSCALL_NAME, (int)retval);
+		goto hndl_return;
+	}
+
 	/*
 	 * if sock addr is received as NULL from VE pass NULL as sock addr to
 	 * kernel system call. sock addr len is deliberatley passed as NULL
@@ -2957,7 +2967,11 @@ ret_t do_accept(int syscall_num, char *syscall_name, veos_handle *handle)
 				PSEUDO_DEBUG("Failed(%s) to receive %s"
 						" argument[2] from ve",
 					strerror(errno), SYSCALL_NAME);
-				retval = -EFAULT;
+				(void)getsockopt(args[0], SOL_SOCKET, SO_ACCEPTCONN, &val, &len);
+				if (0 == val)
+					retval = -EINVAL; /* Socket is not in listening mode */
+				else
+					retval = -EFAULT; /* socket length address(args[2]) is not a valid address */
 				goto hndl_return;
 			}
 
@@ -10446,7 +10460,17 @@ ret_t ve_mq_notify(int syscall_num, char *syscall_name, veos_handle *handle)
 	ret_t retval = -1;
 	uint64_t args[2] = {0};
 	struct sigevent sigev = { {0} };
-	static const char zeros[32] = {0};
+
+	union notify_data
+	{
+		struct
+		{
+			void (*fct) (union sigval); /* The function to run.  */
+			union sigval param;         /* The parameter to pass.  */
+			pthread_attr_t *attr;
+		};
+		char raw[NOTIFY_COOKIE_LEN];
+	}data;
 
 	PSEUDO_TRACE("Entering");
 	/* get system call arguments */
@@ -10471,8 +10495,16 @@ ret_t ve_mq_notify(int syscall_num, char *syscall_name, veos_handle *handle)
 			goto hndl_return;
 		}
 
-		if (sigev.sigev_notify == SIGEV_THREAD)
-			sigev.sigev_value.sival_ptr = (void *)&zeros;
+		if (sigev.sigev_notify == SIGEV_THREAD) {
+			if (0 > ve_recv_data(handle, (uint64_t)sigev.sigev_value.sival_ptr,
+						sizeof(union notify_data), &data)) {
+				PSEUDO_ERROR("failed to receive data from VE memory");
+				retval = -EINVAL;
+				goto hndl_return;
+			}
+
+			sigev.sigev_value.sival_ptr = &data;
+		}
 	}
 
 	/* call VH system call */

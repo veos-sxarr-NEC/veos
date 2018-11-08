@@ -21,6 +21,7 @@ import fcntl, os, sys, subprocess, signal, errno
 from time import sleep
 
 VEDRV_CMD_DELETE_ALL_TASK = (0xf500 + 17)
+UDEVADM='@UDEVADM@'
 
 def delete_all_task(devfile):
     fd = os.open(devfile, os.O_RDWR)
@@ -39,7 +40,7 @@ def do_kill_process(line):
     return num
 
 def kill_process(devfile):
-    output = subprocess.check_output(['/usr/bin/udevadm', 'info', '-q', 'path', devfile])
+    output = subprocess.check_output([UDEVADM, 'info', '-q', 'path', devfile])
     path = '/sys' + output.rstrip('\n') + '/task_id_all'
     while True:
         found = 0

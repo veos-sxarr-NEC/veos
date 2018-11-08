@@ -1,0 +1,8 @@
+.@prefix@/include/libvepseudo/*.h
+.@prefix@/include/libvepseudo/amm/*.h
+.@prefix@/include/libvepseudo/common/handle.h
+.@prefix@/include/libvepseudo/common/sys_common.h
+.@prefix@/include/libvepseudo/common/ve_syscall_no.h
+.@prefix@/include/libvepseudo/loader/loader.h
+.@prefix@/include/libvepseudo/psm/*.h
+.@prefix@/include/libvepseudo/common/list.h

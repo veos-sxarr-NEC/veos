@@ -177,9 +177,15 @@ static int veos_vhshm_check_huge(uint64_t vhsaa)
 	PFN = vhsaa / page_size;
 	offset = PFN * sizeof(uint64_t);
 
+hndl_retry:
 	errno = 0;
 	fd = open(KPAGEFLAG, O_RDONLY);
-	if (fd == -1) {
+	if ((fd == -1) && (errno == ENOENT)) {
+		IVED_DEBUG(log4cat_veos_ived, "Failed to open %s due to %s, "
+						"retry to open it",
+						KPAGEFLAG, strerror(errno));
+		goto hndl_retry;
+	} else if (fd == -1) {
 		IVED_ERROR(log4cat_veos_ived, "Failed to open %s due to %s",
 						KPAGEFLAG, strerror(errno));
 		goto hndl_return;

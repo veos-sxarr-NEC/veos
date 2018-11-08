@@ -47,6 +47,7 @@ struct addr_struct {
         size_t new_datasize;
 };
 
+extern pthread_rwlock_t sync_fork_dma;
 
 int amm_dma_xfer_req(uint8_t *, veos_handle *, pid_t tid);
 int ve_send_data(veos_handle *, uint64_t, size_t, void *);

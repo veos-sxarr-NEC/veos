@@ -1,0 +1,380 @@
+Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: veos
+Source: https://github.com/veos-sxarr-NEC
+
+Files:     include/ve_list.h
+           lib/libveptrace/ptrace_comm.c
+           lib/libveptrace/ptrace_comm.h
+           lib/libveptrace/ptrace_log.c
+           lib/libveptrace/ptrace_log.h
+           lib/libveptrace/sys_ptrace.c
+           lib/libveptrace/ve_ptrace.h
+           src/ived/cr_core.c
+           src/ived/cr_core.h
+           src/ived/cr_ipc.c
+           src/ived/cr_ipc.h
+           src/ived/ived_core.c
+           src/ived/ived_core.h
+           src/ived/ived_cr_core.h
+           src/ived/ived_ipc_func.c
+           src/ived/ived_ipc_func.h
+           src/ived/ived_main.c
+           src/ived/ived_main.h
+           src/ived/ived_veshm_core.h
+           src/ived/veshm_core.c
+           src/ived/veshm_core.h
+           src/ived/veshm_ipc.c
+           src/ived/veshm_ipc.h
+           src/veos/amm/cr_api.c
+           src/veos/amm/cr_api.h
+           src/veos/amm/dma_api.c
+           src/veos/amm/dmaatb_api.c
+           src/veos/amm/dmaatb_api.h
+           src/veos/amm/elf_dump.c
+           src/veos/amm/mm_comm.c
+           src/veos/amm/mm_stat.h
+           src/veos/amm/pciatb_api.c
+           src/veos/amm/pciatb_api.h
+           src/veos/amm/ve_mem.c
+           src/veos/amm/ve_mem.h
+           src/veos/amm/ve_shm.c
+           src/veos/amm/ve_shm.h
+           src/veos/amm/vehva_mgmt.c
+           src/veos/amm/vehva_mgmt.h
+           src/veos/external/rpm_comm.c
+           src/veos/external/rpm_comm.h
+           src/veos/ived/veos_cr.c
+           src/veos/ived/veos_cr.h
+           src/veos/ived/veos_ived.c
+           src/veos/ived/veos_ived.h
+           src/veos/ived/veos_ived_common.c
+           src/veos/ived/veos_ived_common.h
+           src/veos/ived/veos_ived_misc.c
+           src/veos/ived/veos_ived_misc.h
+           src/veos/ived/veos_veshm.c
+           src/veos/ived/veos_veshm.h
+           src/veos/ived/veos_veshm_core.h
+           src/veos/ived/veos_veshm_interface.c
+           src/veos/ived/veos_veshm_interface.h
+           src/veos/ived/veos_veshm_ipc.c
+           src/veos/ived/veos_veshm_ipc.h
+           src/veos/ived/veos_vhshm.c
+           src/veos/ived/veos_vhshm.h
+           src/veos/main/mm_common.h
+           src/veos/main/veos_handler.c
+           src/veos/main/veos_handler.h
+           src/veos/main/veos_init.c
+           src/veos/main/veos_ipc.c
+           src/veos/main/veos_main.c
+           src/veos/psm/clone_handler.c
+           src/veos/psm/locking_handler.c
+           src/veos/psm/locking_handler.h
+           src/veos/psm/psm_comm.c
+           src/veos/psm/psm_comm.h
+           src/veos/psm/psm_stat.c
+           src/veos/psm/psm_stat.h
+           src/veos/psm/ptrace_req.c
+           src/veos/psm/ptrace_req.h
+           src/veos/psm/task_exit.c
+           src/veos/psm/task_mgmt.c
+           src/veos/psm/task_mgmt.h
+           src/veos/psm/task_sched.c
+           src/veos/psm/task_sched.h
+           src/veos/psm/task_signal.c
+           src/veos/psm/task_signal.h
+           src/veos/psm/ve_clone.h
+           src/veos/psm/ve_coredump_helper.c
+           src/veos/ptrace/ptrace_comm.c
+           src/veos/ptrace/ptrace_comm.h
+           src/veos/vemm/vemmagent_fallback.h
+           src/veos/vemm/veos_vemm.c
+           src/veos/vemm/veos_vemm.h
+           src/veos/vemm/veos_vemm_handler.c
+           src/veos/vemm/veos_vemm_handler.h
+           src/veos/vemm/veos_vemm_log.h
+           src/veos/amm/buddy.c
+           src/veos/main/sysve.c
+           src/veos/main/veos.h
+           lib/libveptrace/internal.h
+           src/veos/amm/pmap.c
+           scripts/ve_delete_process.in
+           scripts/ve_delete_process.py
+           scripts/ve_release_remote_resource.in
+           scripts/ve_release_remote_resource.py
+           scripts/ve_release_resource.in
+           src/veos/main/vesync.h
+           src/ived/ived.h
+           src/veos/amm/mm_stat.c
+           src/veos/amm/pgtbl.c
+           src/veos/main/userdma.c
+           src/veos/amm/buddy.h
+           src/veos/amm/pmap.h
+           src/veos/main/vesync.c
+Copyright: 2017-2018 NEC Corporation
+License:   GPL-2.0+
+ This file is part of the VEOS.
+ .
+ The VEOS is free software; you can redistribute it and/or
+ modify it under the terms of the GNU General Public License
+ as published by the Free Software Foundation; either version 2
+ of the License, or (at your option) any later version.
+ .
+ The VEOS is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public
+ License along with the VEOS; if not, see
+ <http://www.gnu.org/licenses/>.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ Version 2 can be found in `/usr/share/common-licenses/GPL-2'.
+
+Files:     include/comm_request.h
+           include/ived_request.h
+           include/mm_type.h
+           include/ve_atomic.h
+           include/ve_memory.h
+           lib/libived/ived_common.h
+           lib/libived/ived_ipc.c
+           lib/libived/ived_ipc.h
+           lib/libived/ived_misc.c
+           lib/libived/ived_misc.h
+           lib/libvepseudo/amm/mm_transfer.c
+           lib/libvepseudo/amm/mm_transfer.h
+           lib/libvepseudo/amm/sys_mm.c
+           lib/libvepseudo/amm/sys_mm.h
+           lib/libvepseudo/amm/sys_shm.c
+           lib/libvepseudo/amm/sys_shm.h
+           lib/libvepseudo/amm/vemva_mgmt.c
+           lib/libvepseudo/amm/vemva_mgmt.h
+           lib/libvepseudo/common/debugtool.h
+           lib/libvepseudo/common/sys_common.c
+           lib/libvepseudo/common/sys_common.h
+           lib/libvepseudo/common/syscall_impl.h
+           lib/libvepseudo/common/sysve_os.c
+           lib/libvepseudo/common/sysve_os.h
+           lib/libvepseudo/common/ve_socket.c
+           lib/libvepseudo/common/ve_socket.h
+           lib/libvepseudo/common/vhcall_os.c
+           lib/libvepseudo/common/vhcall_os.h
+           lib/libvepseudo/ived/pseudo_cr.c
+           lib/libvepseudo/ived/pseudo_cr.h
+           lib/libvepseudo/ived/pseudo_ived_common.c
+           lib/libvepseudo/ived/pseudo_ived_common.h
+           lib/libvepseudo/ived/pseudo_vemm.c
+           lib/libvepseudo/ived/pseudo_veshm.c
+           lib/libvepseudo/ived/pseudo_veshm.h
+           lib/libvepseudo/ived/pseudo_veshm_pgmode.c
+           lib/libvepseudo/ived/pseudo_veshm_pgmode.h
+           lib/libvepseudo/ived/pseudo_vhshm.c
+           lib/libvepseudo/ived/pseudo_vhshm.h
+           lib/libvepseudo/psm/process_mgmt_comm.c
+           lib/libvepseudo/psm/process_mgmt_comm.h
+           lib/libvepseudo/psm/pseudo_ptrace.c
+           lib/libvepseudo/psm/pseudo_ptrace.h
+           lib/libvepseudo/psm/signal_comm.c
+           lib/libvepseudo/psm/signal_comm.h
+           lib/libvepseudo/psm/sys_process_mgmt.h
+           lib/libvepseudo/psm/sys_signal.c
+           lib/libvepseudo/psm/ve_signal.h
+           lib/libvepseudo/sys/sys_offload.c
+           lib/libvepseudo/sys/sys_offload.h
+           src/pseudo/pseudo_process.c
+           src/veos/dma/dma_api.c
+           src/veos/dma/dma_deallocator.c
+           src/veos/dma/dma_deallocator.h
+           src/veos/dma/dma_hw.c
+           src/veos/dma/dma_hw.h
+           src/veos/dma/dma_intr.c
+           src/veos/dma/dma_intr.h
+           src/veos/dma/dma_log.c
+           src/veos/dma/dma_log.h
+           src/veos/dma/dma_private.h
+           src/veos/dma/dma_reqlist.c
+           src/veos/dma/dma_reqlist.h
+           src/veos/dma/dma_reqlist_private.h
+           src/veos/dma/vedma_hw.h
+           lib/libvepseudo/psm/exception.c
+           lib/libvepseudo/psm/exception.h
+           lib/libvepseudo/common/handle.h
+           lib/libvepseudo/loader/loader.h
+           lib/libvepseudo/loader/loader.c
+           lib/libvepseudo/common/debugtool.c
+           lib/libvepseudo/common/libvepseudo.h
+           src/veos/dma/dma.h
+           lib/libvepseudo/psm/sys_process_mgmt.c
+Copyright: 2017-2018 NEC Corporation
+License:   LGPL-2.1+
+ This file is part of the VEOS.
+ .
+ The VEOS is free software; you can redistribute it and/or
+ modify it under the terms of the GNU Lesser General Public
+ License as published by the Free Software Foundation; either version
+ 2.1 of the License, or (at your option) any later version.
+ .
+ The VEOS is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ GNU Lesser General Public License for more details.
+ .
+ You should have received a copy of the GNU Lesser General Public
+ License along with the VEOS; if not, see
+ <http://www.gnu.org/licenses/>.
+ .
+ On Debian systems, the complete text of the GNU Lesser General Public License
+ Version 2.1 can be found in `/usr/share/common-licenses/LGPL-2.1'.
+
+Files:     Makefile.am
+           README
+           conf/Makefile.am
+           conf/ve-ived.options
+           conf/ve.conf
+           conf/veos_timer.options
+           config.h.in
+           configure.ac
+           doc/Doxyfile.el6
+           doc/Doxyfile.el7
+           include/Makefile.am
+           lib/Makefile.am
+           lib/libived/Makefile.am
+           lib/libveosprotoc/Makefile.am
+           lib/libveosprotoc/ived.proto
+           lib/libveosprotoc/proto_buff_schema.proto
+           lib/libveosprotoc/veosproto/Makefile.am
+           lib/libveosprotoc/veosproto/__init__.py
+           lib/libveosprotoc/veosproto/ived_pb2.py
+           lib/libvepseudo/Makefile.am
+           lib/libvepseudo/amm/Makefile.am
+           lib/libvepseudo/common/Makefile.am
+           lib/libvepseudo/common/syscall.tbl
+           lib/libvepseudo/common/syscalltbl.sh
+           lib/libvepseudo/ived/Makefile.am
+           lib/libvepseudo/loader/Makefile.am
+           lib/libvepseudo/psm/Makefile.am
+           lib/libvepseudo/sys/Makefile.am
+           lib/libveptrace/Makefile.am
+           lib/libveptrace/veos_ptrace_comm.h.in
+           scripts/Makefile.am
+           src/Makefile.am
+           src/ived/Makefile.am
+           src/pseudo/Makefile.am
+           src/veos/Makefile.am
+           src/veos/amm/Makefile.am
+           src/veos/dma/Makefile.am
+           src/veos/external/Makefile.am
+           src/veos/ived/Makefile.am
+           src/veos/main/Makefile.am
+           src/veos/psm/Makefile.am
+           src/veos/psm/ve_coredump_helper.h.in
+           src/veos/ptrace/Makefile.am
+           src/veos/vemm/Makefile.am
+           veos.spec
+           veos.spec.in
+           scripts/ve_exec.in
+Copyright: 2017-2018 NEC Corporation
+License:   GPL-2+ or LGPL-2+ or BSD-2-clause+ or MIT
+
+Files:     Makefile.in
+           aclocal.m4
+           build-aux/ar-lib
+           build-aux/compile
+           build-aux/config.guess
+           build-aux/config.sub
+           build-aux/depcomp
+           build-aux/install-sh
+           build-aux/ltmain.sh
+           build-aux/missing
+           build-aux/py-compile
+           conf/Makefile.in
+           configure
+           include/Makefile.in
+           lib/Makefile.in
+           lib/libived/Makefile.in
+           lib/libveosprotoc/Makefile.in
+           lib/libveosprotoc/veosproto/Makefile.in
+           lib/libvepseudo/Makefile.in
+           lib/libvepseudo/amm/Makefile.in
+           lib/libvepseudo/common/Makefile.in
+           lib/libvepseudo/ived/Makefile.in
+           lib/libvepseudo/loader/Makefile.in
+           lib/libvepseudo/psm/Makefile.in
+           lib/libvepseudo/sys/Makefile.in
+           lib/libveptrace/Makefile.in
+           m4/libtool.m4
+           m4/ltoptions.m4
+           m4/ltsugar.m4
+           m4/ltversion.m4
+           m4/lt~obsolete.m4
+           scripts/Makefile.in
+           src/Makefile.in
+           src/ived/Makefile.in
+           src/pseudo/Makefile.in
+           src/veos/Makefile.in
+           src/veos/amm/Makefile.in
+           src/veos/dma/Makefile.in
+           src/veos/external/Makefile.in
+           src/veos/ived/Makefile.in
+           src/veos/main/Makefile.in
+           src/veos/psm/Makefile.in
+           src/veos/ptrace/Makefile.in
+           src/veos/vemm/Makefile.in
+Copyright: 1992-2016 Free Software Foundation, Inc.
+           1994 X Consortium
+License:   __AUTO_PERMISSIVE__
+ Autogenerated files with permissive licenses.
+
+Files:     include/sysve.h
+           include/vecr_defs.h
+           include/veos_defs.h
+           include/veshm_defs.h
+           include/vhcall.h
+           include/vhshm_defs.h
+Copyright: 2017-2018 NEC Corporation
+License:   Expat
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to
+ deal in the Software without restriction, including without limitation the
+ rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ sell copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in
+ all copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ IN THE SOFTWARE.
+
+Files:     lib/libvepseudo/common/list.h
+Copyright: 2010 Isilon Systems, Inc.
+           2010 Panasas, Inc.
+           2010 iX Systems, Inc.
+License:   BSD-2-clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+ 1. Redistributions of source code must retain the above copyright
+ notice unmodified, this list of conditions, and the following
+ disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright
+ notice, this list of conditions and the following disclaimer in the
+ documentation and/or other materials provided with the distribution.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+ INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ .
+ Changes by NEC Corporation for the VEOS, 2018

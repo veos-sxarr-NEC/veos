@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2018 by NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -38,7 +38,6 @@
 #include "handle.h"
 #include "sys_common.h"
 #include "mm_transfer.h"
-#include "vh_mem_alloc.h"
 
 #define VH_AIO_HASH_SIZE 512
 #define VE_AIO_OP_READ 0
@@ -61,12 +60,14 @@ static void ve_aio_constructor(void)
 	if (HASH_SUCCESS != ret) {
 		PSEUDO_ERROR("VEAIO: Fail to initialize hash table (%s)",
 				hash_error_string(ret));
+		fprintf(stderr, "VEAIO: Fail to initialize hash table\n");
 		pseudo_abort();
 	}
 
 	ret = pthread_attr_init(&thread_attr);
 	if (0 != ret) {
 		PSEUDO_ERROR("VEAIO: Fail to initialize thread attribute");
+		fprintf(stderr, "VEAIO: Fail to initialize thread attribute\n");
 		errno = ret;
 		pseudo_abort();
 	}
@@ -75,6 +76,7 @@ static void ve_aio_constructor(void)
 			PTHREAD_CREATE_DETACHED);
 	if (0 != ret) {
                 PSEUDO_ERROR("VEAIO: Fail to set thread attribute");
+		fprintf(stderr, "VEAIO: Fail to set thread attribute\n");
                 errno = ret;
                 pseudo_abort();
         }
@@ -119,15 +121,17 @@ vh_aio_hash_delete(struct vh_aio_ctx *vh_ctx)
 	hash_key_t key;
         hash_value_t value;
 
-	PSEUDO_DEBUG("VEAIO: delete entry{vh_ctx:%lx, ve_ctx:%lx} from vh_aio_hash",
-			(long unsigned int)vh_ctx,
-                        (long unsigned int)vh_ctx->ve_ctx);
+	PSEUDO_DEBUG("VEAIO: enter vh_aio_hash_delete");
 
         key.type = HASH_KEY_ULONG;
         key.ul = (unsigned long)vh_ctx->ve_ctx;
         pthread_mutex_lock(&vh_aio_hash_lock);
         vh_ctx->refcnt--;
         if (0 == vh_ctx->refcnt) {
+		PSEUDO_DEBUG("VEAIO: delete entry{vh_ctx:%lx, ve_ctx:%lx} from vh_aio_hash",
+				(long unsigned int)vh_ctx,
+				(long unsigned int)vh_ctx->ve_ctx);
+
                 /* Look up and delete entry in hash */
                 ret = hash_lookup(vh_aio_hash, &key, &value);
                 switch (ret) {
@@ -172,6 +176,7 @@ _sys_ve_aio_read(void *varg)
 	 * and pseudo process exit immidietly*/
 	if (handle == NULL) {
 		PSEUDO_ERROR("VEAIO: Fail to create veos handle");
+		fprintf(stderr, "VEAIO: Fail to open socket or device file\n");
 		pseudo_abort();
 	}
 
@@ -222,6 +227,7 @@ hndl_return:
 	if (0 > ve_send_data_tid(handle, (uint64_t)&vh_ctx->ve_ctx->status,
 			sizeof(int), &status, vh_ctx->tid)) {
 		PSEUDO_ERROR("VEAIO: Fail to send AIO read status to VE memory");
+		fprintf(stderr, "VEAIO: Fail to send AIO read status to VE memory\n");
 		pseudo_abort();
 	}
 
@@ -262,6 +268,7 @@ _sys_ve_aio_write(void *varg)
 	 * and pseudo process exit immidietly */
         if (handle == NULL) {
                 PSEUDO_ERROR("VEAIO: Fail to create veos handle");
+		fprintf(stderr, "VEAIO: Fail to open socket or device file\n");
                 pseudo_abort();
         }
 
@@ -270,7 +277,7 @@ _sys_ve_aio_write(void *varg)
 
         /* Preparing for pwrite64() systemcall  */
         if (vh_ctx->buf) {
-                write_buff = (char *)vh_alloc_buf(vh_ctx->count*sizeof(char), false);
+                write_buff = (char *)malloc(vh_ctx->count*sizeof(char));
                 if (NULL == write_buff) {
 			send.errnoval = EIO;
 			send.retval = -1;
@@ -308,6 +315,7 @@ hndl_return:
         if (0 > ve_send_data_tid(handle, (uint64_t)&vh_ctx->ve_ctx->status,
                         sizeof(int), &status, vh_ctx->tid)) {
                 PSEUDO_ERROR("VEAIO: Fail to send AIO write status to VE memory");
+		fprintf(stderr, "VEAIO: Fail to send AIO write status to VE memory\n");
 		pseudo_abort();
 	}
 
@@ -320,7 +328,7 @@ hndl_return:
         /* Resource release  */
 	if (0 == vh_aio_hash_delete(vh_ctx))
 		free_vh_aio_ctx(vh_ctx);
-	vh_free_buf(write_buff);
+	free(write_buff);
         veos_handle_free(handle);
 
         return NULL;
@@ -408,18 +416,18 @@ do_aio(veos_handle *handle, struct ve_aio_ctx *ve_ctx, int fd,
                 break;
         case HASH_ERROR_BAD_KEY_TYPE:
         case HASH_ERROR_BAD_VALUE_TYPE:
-                PSEUDO_ERROR("VEAIO: Cannot add to hash table \"%s\" (%s)", key.str,
+                PSEUDO_ERROR("VEAIO: Cannot add to hash table \"%lx\" (%s)", key.ul,
                                 hash_error_string(ret));
                 ret = -EINVAL;
                 goto ctx_free;
         case HASH_ERROR_NO_MEMORY:
-                PSEUDO_ERROR("VEAIO: Cannot add to hash table \"%s\" (%s)", key.str,
+                PSEUDO_ERROR("VEAIO: Cannot add to hash table \"%lx\" (%s)", key.ul,
                                 hash_error_string(ret));
                 ret = -ENOMEM;
                 goto ctx_free;
         default:
-                PSEUDO_ERROR("VEAIO: Cannot add to hash table \"%s\" unexpected (%s)",
-                                key.str, hash_error_string(ret));
+                PSEUDO_ERROR("VEAIO: Cannot add to hash table \"%lx\" unexpected (%s)",
+                                key.ul, hash_error_string(ret));
                 ret = -EAGAIN;
                 goto ctx_free;
         }
@@ -513,6 +521,8 @@ sys_ve_aio_wait(veos_handle *handle, struct ve_aio_ctx *ve_ctx)
 	int error; /* For functions of hash table */
 	struct vh_aio_ctx *vh_ctx;
 
+	PSEUDO_DEBUG("VEAIO: enter sys_ve_aio_wait");
+
 	if (NULL == ve_ctx)
 		return -EINVAL;
 
@@ -524,7 +534,7 @@ sys_ve_aio_wait(veos_handle *handle, struct ve_aio_ctx *ve_ctx)
 	error = hash_lookup(vh_aio_hash, &key, &value);
 	switch (error) {
 	case HASH_ERROR_KEY_NOT_FOUND:
-		PSEUDO_DEBUG("VEAIO: can not lookup synchronized context from hash table \"%lx\" (%s)",
+		PSEUDO_DEBUG("VEAIO: can not lookup context from hash table \"%lx\" (%s)",
 				key.ul, hash_error_string(error));
 		pthread_mutex_unlock(&vh_aio_hash_lock);
 		return 0;
@@ -532,6 +542,8 @@ sys_ve_aio_wait(veos_handle *handle, struct ve_aio_ctx *ve_ctx)
 		vh_ctx = (struct vh_aio_ctx *)value.ptr;
 		vh_ctx->refcnt++;
 		pthread_mutex_unlock(&vh_aio_hash_lock);
+		PSEUDO_DEBUG("VEAIO: lookup context from hash table \"%lx\" ",
+				key.ul);
 		break;
 	default:
 		PSEUDO_ERROR("VEAIO: Unexpected error of hash table, key:\"%lx\" err:(%s)",

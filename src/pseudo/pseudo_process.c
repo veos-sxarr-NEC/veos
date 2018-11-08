@@ -64,6 +64,7 @@ __thread struct _ve_page_info ve_page_info;
 
 struct tid_info global_tid_info[VEOS_MAX_VE_THREADS];
 pthread_mutex_t tid_counter_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_rwlock_t sync_fork_dma;
 
 bool ve_trace_me;
 log4c_category_t *cat_pseudo_core;
@@ -235,6 +236,50 @@ out_error:
 out_error1:
 	PSEUDO_TRACE("Exiting");
 	return retval;
+}
+
+/**
+* @brief This function initiazes a lock which will be used to synchronize
+* request related to DMA(reading data from VE memory) and creating new
+* process(fork/vfork). Execution of both requests parallely leads to
+* memory curruption.
+*
+* @return abort on failure.
+*/
+void init_rwlock_to_sync_dma_fork()
+{
+	int ret = -1;
+	pthread_rwlockattr_t sync_fork_dma_attr;
+
+	ret = pthread_rwlockattr_init(&sync_fork_dma_attr);
+	if (ret) {
+		PSEUDO_ERROR("Failed to initialize attribute %s",
+				strerror(ret));
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
+
+	ret = pthread_rwlockattr_setkind_np(&sync_fork_dma_attr,
+			PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
+	if (ret) {
+		PSEUDO_ERROR("Failed to set rwlock attribute: %s",
+				strerror(ret));
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
+
+	ret = pthread_rwlock_init(&sync_fork_dma, &sync_fork_dma_attr);
+	if (ret) {
+		PSEUDO_ERROR("Failed to init rwlock %s", strerror(ret));
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
+
+	ret = pthread_rwlockattr_destroy(&sync_fork_dma_attr);
+	if (ret) {
+		PSEUDO_ERROR("Failed to destroy rwlock attribute: %s",
+				strerror(ret));
+	}
 }
 
 /**
@@ -617,6 +662,15 @@ int main(int argc, char *argv[], char *envp[])
 	/* Update global tid array for main thread with vefd */
 	global_tid_info[0].vefd = g_handle->ve_handle->vefd;
 	global_tid_info[0].veos_hndl = g_handle;
+	tid_counter=0;
+	global_tid_info[0].tid_val = getpid();
+	global_tid_info[0].flag = 0;
+	global_tid_info[0].mutex =
+		(pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+	global_tid_info[0].cond =
+		(pthread_cond_t)PTHREAD_COND_INITIALIZER;
+
+	init_rwlock_to_sync_dma_fork();
 
 	PSEUDO_DEBUG("TID struct vefd : %d, VE driver fd %d",
 			global_tid_info[0].vefd, g_handle->ve_handle->vefd);
@@ -800,6 +854,7 @@ int main(int argc, char *argv[], char *envp[])
 		}
 	}
 	memcpy(&ve_proc_sigmask, &curr_ve_mask, sizeof(sigset_t));
+
 	/* start VE program and wait for exception */
 	pse_exception_handler(handle, NULL);
 
