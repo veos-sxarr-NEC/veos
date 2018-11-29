@@ -41,6 +41,7 @@
 #include "pseudo_veshm.h"
 #include "pseudo_vhshm.h"
 #include "sys_veaio.h"
+#include "sys_pci.h"
 
 /**
  * @brief This function will be invoked to handle the MONC interrupt
@@ -1456,6 +1457,22 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 		break;
 	case VE_SYSVE_AIO_WAIT:
 		retval = sys_ve_aio_wait(handle, (void *)args[1]);
+		break;
+	case VE_SYSVE_REGISTER_VEMVA_TO_PCIATB:
+		retval = ve_sys_pcireq(handle,(uint64_t)args[1],
+			(size_t)args[2], REGIS_PCIATB);
+		break;
+	case VE_SYSVE_UNREGISTER_VHSAA_FROM_PCIATB:
+		retval = ve_sys_pcireq(handle,(uint64_t)args[1],
+			(size_t)args[2], UNREG_PCIATB);
+		break;
+	case VE_SYSVE_REGISTER_VHSAA_TO_DMAATB:
+		retval = ve_sys_pcireq(handle,(uint64_t)args[1],
+			(size_t)args[2], REGIS_DMAATB);
+		break;
+	case VE_SYSVE_UNREGISTER_VEHVA_FROM_DMAATB:
+		retval = ve_sys_pcireq(handle,(uint64_t)args[1],
+			(size_t)args[2], UNREG_DMAATB);
 		break;
 	default:
 		/* write return value */

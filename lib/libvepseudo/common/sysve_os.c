@@ -597,12 +597,12 @@ static int ve_sys_map_reg(uint64_t reg)
  *
  * @author libsysve
  */
-int ve_request_veos(veos_handle *handle, 
+int64_t ve_request_veos(veos_handle *handle, 
 		enum pseudo_veos_msg_id id,
 		ProtobufCBinaryData *data,
 		PseudoVeosMessage **reply_msg)
 {
-	int ret;
+	int64_t ret;
 	PseudoVeosMessage msg = PSEUDO_VEOS_MESSAGE__INIT;
 	PseudoVeosMessage *recv_msg;
 	size_t msg_len;
@@ -674,12 +674,13 @@ int ve_request_veos(veos_handle *handle,
 	} else {
 		pseudo_veos_message__free_unpacked(recv_msg, NULL);
 	}
+
 	ret = recv_msg->syscall_retval;
 
 	free(msg_buf);
 err_ret_nofree:
 	PSEUDO_TRACE("Exiting");
-	
+
 	return ret;
 }
 

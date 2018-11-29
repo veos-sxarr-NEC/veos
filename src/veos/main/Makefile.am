@@ -4,11 +4,13 @@ libvemain_a_SOURCES = \
 	veos.h \
 	veos_init.c \
 	veos_ipc.c \
+	veos_ipc.h \
 	veos_handler.c \
 	veos_handler.h \
 	veos_main.c \
 	sysve.c \
-	userdma.c
+	userdma.c \
+	pci.c
 
 libvemain_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 \
