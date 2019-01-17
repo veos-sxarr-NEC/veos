@@ -16,27 +16,31 @@
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
-
 /**
- * @file pseudo_veshm.h  
- * @brief Header for VESHM in psedo process
- *
- * @internal
- * @author VESHM
+ * @file sys_accelerated_io.h
+ * @brief Header file for "sys_accelerated_io.c" file.
  */
 
+#ifndef __SYS_ACCELERATED_IO_H
+#define __SYS_ACCELERATED_IO_H
 
-#ifndef __PSEUDO_VESHM_H
-#define __PSEUDO_VESHM_H
+#include "libved.h"
 
-#include <inttypes.h>
-#include "sys_common.h"
-#include "handle.h"
+#define VESHM_MAX_ARGS  5
 
-int pseudo_veshm_get_pgmode(veos_handle *handle,
-			    uint8_t, pid_t, uint64_t); /* ve_get_pgmode */
-ret_t ve_veshm(veos_handle *handle, uint64_t *);
+#define VE_ACCELERATED_IO_ADDR_MASK 0x3fffffffffffffff 
 
-int64_t pseudo_veshm_attach(uint64_t *, veos_handle *handle);
-int pseudo_veshm_detach(uint64_t *, veos_handle *handle);
+#define SIZE_2MB        (2*1024*1024)
+#define SIZE_8MB        (8*1024*1024)
+#define SIZE_64MB       (64*1024*1024)
+
+#define CHANGE_MASK_2MB   0xFFFFFFFFFFE00000ULL
+#define CHANGE_MASK_64MB  0xFFFFFFFFFC000000ULL
+
+int sys_accelerated_io_init(veos_handle *, void **, uint64_t *, void *,
+				uint64_t *, int);
+int sys_accelerated_io_register_dmaatb(veos_handle *, void *, uint64_t *,
+				void *, uint64_t *, int);
+void sys_accelerated_unregister_ve_buf_vehva(veos_handle *);
+void sys_accelerated_free_vh_buf(void);
 #endif

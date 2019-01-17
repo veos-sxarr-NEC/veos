@@ -417,15 +417,15 @@ struct ve_context_info {
 };
 
 struct ve_address_space_info_cmd {
-	vemva_t heap_start;            /*!< Start address of heap */
-	vemva_t heap_top;              /*!< Heap top of VE Process */
+	uint64_t heap_start;            /*!< Start address of heap */
+	uint64_t heap_top;              /*!< Heap top of VE Process */
 	uint64_t stack_limit;           /*!< Max stack limit for a VE Process.
 					 * value = 0 in case of UNLIMITED,
 					 * value = 'X' in case of User-Defined
 					 * or default(Currently 10MB).
 					 */
-	vemva_t stack_bottom;          /*!< Stack bottom of a VE Process */
-	vemva_t stack_pointer_aligned; /*!< Page size aligned actual stack
+	uint64_t stack_bottom;          /*!< Stack bottom of a VE Process */
+	uint64_t stack_pointer_aligned; /*!< Page size aligned actual stack
 					 * pointer of a VE process. */
 };
 

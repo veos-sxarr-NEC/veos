@@ -387,7 +387,8 @@ int ve_recv_data_tid(veos_handle *handle, uint64_t address,
 	int ret = 0;
 	struct addr_struct *as = NULL;
 	void *src = NULL;
-	uint64_t *buf = NULL, vemva = 0, vehva = (uint64_t)data;
+	uint64_t *buf = NULL, vehva = (uint64_t)data;
+	vemva_t vemva = 0;
 	size_t remain_sz = 0, data_xfer_sz = 0;
 	bool one_cycle_xfer = true;
 	bool first_cycle = true, last_cycle = false;
@@ -405,8 +406,8 @@ int ve_recv_data_tid(veos_handle *handle, uint64_t address,
 		goto exit_func1;
 	}
 
-	as->top_address = address;
-	as->bottom_address = address + datasize;
+	as->top_address = (vemva_t)address;
+	as->bottom_address = (vemva_t)(address + datasize);
 
 	/* Aligning the VEMVA and size */
 	calc_address(as);

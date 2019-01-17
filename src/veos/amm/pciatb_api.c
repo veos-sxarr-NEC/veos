@@ -589,7 +589,7 @@ int veos_alloc_vdso_pcientry(uint8_t pairnum, uint64_t sync)
 	vedl_handle *handle = VE_HANDLE(0);
 	uint64_t pcientry = -1, pci_addr = -1;
 	pciatb_entry_t *p_entry = NULL;
-	uint64_t vdso_pgno = vnode->vdso_pfn;
+	uint64_t vdso_pgno = (uint64_t)vnode->vdso_pfn;
 	uint64_t vdso_addr = -1;
 	int ret = 0;
 

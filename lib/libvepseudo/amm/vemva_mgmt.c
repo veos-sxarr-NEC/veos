@@ -306,11 +306,11 @@ void *avail_vemva(veos_handle *handle, uint64_t vaddr,
 		required_dir_count++;
 
 	if (flag & MAP_ADDR_SPACE)
-		required_type = (flag & MAP_64MB) ?
-			ADDR_SPACE_64MB : ADDR_SPACE_2MB;
+		required_type = (uint8_t)((flag & MAP_64MB) ?
+			ADDR_SPACE_64MB : ADDR_SPACE_2MB);
 	else
-		required_type = (flag & MAP_64MB) ?
-			ANON_SPACE_64MB : ANON_SPACE_2MB;
+		required_type = (uint8_t)((flag & MAP_64MB) ?
+			ANON_SPACE_64MB : ANON_SPACE_2MB);
 
 	PSEUDO_TRACE("invoked");
 	PSEUDO_DEBUG("invoked with addr: %p Size: %lx flags: %lx req_type %d",
@@ -863,11 +863,11 @@ void *scan_vemva_dir_list(veos_handle *handle, uint64_t count, uint64_t flag)
 	struct list_head *temp_list_head = NULL;
 
 	if (flag & MAP_ADDR_SPACE)
-		required_type = (flag & MAP_64MB) ?
-			ADDR_SPACE_64MB : ADDR_SPACE_2MB;
+		required_type = (uint8_t)((flag & MAP_64MB) ?
+			ADDR_SPACE_64MB : ADDR_SPACE_2MB);
 	else
-		required_type = (flag & MAP_64MB) ?
-			ANON_SPACE_64MB : ANON_SPACE_2MB;
+		required_type = (uint8_t)((flag & MAP_64MB) ?
+			ANON_SPACE_64MB : ANON_SPACE_2MB);
 
 	PSEUDO_TRACE("invoked");
 	PSEUDO_DEBUG("invoked with count %ld", count);
@@ -1313,13 +1313,13 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *v
 		vemva_tmp->dir_size = ve_page_info.page_size *
 			ENTRIES_PER_DIR;
 		if (flag & MAP_ADDR_SPACE)
-			vemva_tmp->type = (ve_page_info.page_size ==
+			vemva_tmp->type = (uint8_t)((ve_page_info.page_size ==
 				PAGE_SIZE_2MB) ?
-				ADDR_SPACE_2MB : ADDR_SPACE_64MB;
+				ADDR_SPACE_2MB : ADDR_SPACE_64MB);
 		else
-			vemva_tmp->type = (ve_page_info.page_size ==
+			vemva_tmp->type = (uint8_t)((ve_page_info.page_size ==
 				PAGE_SIZE_2MB) ?
-				ANON_SPACE_2MB : ANON_SPACE_64MB;
+				ANON_SPACE_2MB : ANON_SPACE_64MB);
 
 		vemva_tmp->used_count = 0;
 

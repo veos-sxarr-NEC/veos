@@ -40,6 +40,9 @@
 #include <proc/readproc.h>
 #include <sys/statvfs.h>
 #include "pseudo_vhshm.h"
+#include "pseudo_veshm.h"
+#include "sys_accelerated_io.h"
+#include "veshm_defs.h"
 
 int tid_counter = -1;
 pthread_mutex_t readproc_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -170,7 +173,7 @@ void process_thread_cleanup(veos_handle *handle, int exit_code)
 
 	/* send FUTEX_WAKE on clear_child_tid address.*/
 	if (tid_addr) {
-		ve_send_data(handle, tid_addr, sizeof(uint64_t),
+		ve_send_data(handle, tid_addr, sizeof(pid_t),
 				(uint64_t *)(&ctid_status));
 		/* Change VH memory permission into READ and WRITE */
 		retval = mprotect((void *)(tid_addr & ADDR_MASK),
@@ -260,6 +263,9 @@ ret_t ve_exit(int syscall_num, char *syscall_name, veos_handle *handle)
 				(SIGTRAP | (PTRACE_EVENT_EXIT << 8)),
 				NULL);
 	}
+
+	PSEUDO_DEBUG("Unregister ve buffer from DMAATB for accelerated io");
+	sys_accelerated_unregister_ve_buf_vehva(handle);
 
 	PSEUDO_DEBUG("Acquiring lock for ve_exit() syscall");
 	if (pthread_mutex_lock(&(global_tid_info[0].mutex)) != 0) {
@@ -1276,6 +1282,9 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 		retval = 0;
 		*shared_var = DO_FORK_SUCCESS;
 
+		/* Free the VH buffer of acc IO */
+		sys_accelerated_free_vh_buf();
+
 		/* Handle return of the fork/vfork system call
 		 * Call exception handler with new handle
 		 */
@@ -1460,7 +1469,9 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 	uint64_t args[3] = {0};
 	struct statvfs st = {0};
 	struct stat sb = {0};
-
+	char ve_env[][16] = {"VE_EXEC_PATH=", "PWD=", "LOG4C_RCPATH=", "HOME="};
+	int indx = 0;
+	int ve_env_given[4] = {0};
 	/* To fetch VE pointers */
 	char *execve_arg[EXECVE_MAX_ARGS] = {NULL};
 	char *execve_envp[EXECVE_MAX_ENVP] = {NULL};
@@ -1727,53 +1738,75 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 			retval = -EFAULT;
 			goto hndl_fail2;
 		}
+		/* Check and maintain which VE specific environment variables
+		 * exist in environment variable array received as argument
+		 * to execve()
+		 * */
+		if (exe_flag) {
+			for (indx = 0; indx < 4; indx++) {
+				if (!strncmp(execve_vh_envp[cntr],
+					ve_env[indx], strlen(ve_env[indx]))) {
+					ve_env_given[indx] = 1;
+					break;
+				}
+			}
+		}
 	}
 
-	if (cntr >= EXECVE_MAX_ENVP-4) {
+	if (cntr >= EXECVE_MAX_ENVP) {
 		PSEUDO_ERROR("Environment variable count exceeded");
 		retval = -E2BIG;
 		goto hndl_fail2;
 	}
 
 	/* Pass ve specific environment variables inherited
-	 * from current process to execve'ed process */
-	if (exe_flag == 1) {
-		execve_vh_envp[cntr] = (char *)malloc(PATH_MAX * sizeof(char));
-		if (NULL == execve_vh_envp[cntr]) {
-			retval = -errno;
-			goto hndl_fail2;
-		}
-		memset(execve_vh_envp[cntr], '\0', PATH_MAX);
-		sprintf(execve_vh_envp[cntr], "VE_EXEC_PATH=%s", getenv("VE_EXEC_PATH"));
-		execve_vh_envp[++cntr] = NULL;
+	 * from current process to execve'ed process if not already passed
+	 * in environment variable array received as argument to execve().
+	 * */
+	if (exe_flag) {
+		for (indx = 0; indx < 4; indx++) {
+			if (ve_env_given[indx])
+				continue;
 
-		execve_vh_envp[cntr] = (char *)malloc(PATH_MAX * sizeof(char));
-		if (NULL == execve_vh_envp[cntr]) {
-			retval = -errno;
-			goto hndl_fail2;
+			if (cntr >= EXECVE_MAX_ENVP) {
+				PSEUDO_ERROR("Environment variable count exceeded");
+				retval = -E2BIG;
+				goto hndl_fail2;
+			}
+			execve_vh_envp[cntr] = (char *)malloc(PATH_MAX
+					* sizeof(char));
+			if (NULL == execve_vh_envp[cntr]) {
+				retval = -errno;
+				goto hndl_fail2;
+			}
+			memset(execve_vh_envp[cntr], '\0', PATH_MAX);
+			switch(indx) {
+			case 0:
+				sprintf(execve_vh_envp[cntr],
+						"VE_EXEC_PATH=%s",
+						getenv("VE_EXEC_PATH"));
+				execve_vh_envp[++cntr] = NULL;
+				break;
+			case 1:
+				sprintf(execve_vh_envp[cntr],
+						"PWD=%s", getenv("PWD"));
+				execve_vh_envp[++cntr] = NULL;
+				break;
+			case 2:
+				sprintf(execve_vh_envp[cntr],
+						"LOG4C_RCPATH=%s",
+						getenv("LOG4C_RCPATH"));
+				execve_vh_envp[++cntr] = NULL;
+				break;
+			case 3:
+				sprintf(execve_vh_envp[cntr],
+						"HOME=%s", getenv("HOME"));
+				execve_vh_envp[++cntr] = NULL;
+				break;
+			}
 		}
-		memset(execve_vh_envp[cntr], '\0', PATH_MAX);
-		sprintf(execve_vh_envp[cntr], "LOG4C_RCPATH=%s", getenv("LOG4C_RCPATH"));
-		execve_vh_envp[++cntr] = NULL;
-
-		execve_vh_envp[cntr] = (char *)malloc(PATH_MAX * sizeof(char));
-		if (NULL == execve_vh_envp[cntr]) {
-			retval = -errno;
-			goto hndl_fail2;
-		}
-		memset(execve_vh_envp[cntr], '\0', PATH_MAX);
-		sprintf(execve_vh_envp[cntr], "HOME=%s", getenv("HOME"));
-		execve_vh_envp[++cntr] = NULL;
-
-		execve_vh_envp[cntr] = (char *)malloc(PATH_MAX * sizeof(char));
-		if (NULL == execve_vh_envp[cntr]) {
-			retval = -errno;
-			goto hndl_fail2;
-		}
-		memset(execve_vh_envp[cntr], '\0', PATH_MAX);
-		sprintf(execve_vh_envp[cntr], "PWD=%s", getenv("PWD"));
-		execve_vh_envp[++cntr] = NULL;
 	}
+
 	for (cntr = 0; cntr < EXECVE_MAX_ARGS; cntr++) {
 		if (0 == execve_vh_envp[cntr])
 			break;
@@ -4322,11 +4355,6 @@ ret_t ve_exit_group(int syscall_num, char *syscall_name, veos_handle *handle)
 		PSEUDO_ERROR("Failed to Sync Host Virtual addresses");
 	}
 
-	munmap((void *)PTRACE_PRIVATE_DATA,4096);
-
-	if (pthread_rwlock_destroy(&sync_fork_dma)) {
-		PSEUDO_ERROR("Failed to destroy read write lock");
-	}
 	/* Invoking VH exit_group() syscall */
 	retval = syscall(syscall_num, args);
 

@@ -67,10 +67,10 @@
 #define CHUNK_512MB_MASK      (CHUNK_512MB - 1)
 #define CHUNK_16GB_MASK      (CHUNK_16GB - 1)
 
-#define ANON_SPACE_2MB	(uint8_t)((uint8_t)1 << 0)
-#define ADDR_SPACE_2MB	(uint8_t)((uint8_t)1 << 1)
-#define ANON_SPACE_64MB (uint8_t)((uint8_t)1 << 2)
-#define ADDR_SPACE_64MB (uint8_t)((uint8_t)1 << 3)
+#define ANON_SPACE_2MB		((uint8_t)1 << 0)
+#define ADDR_SPACE_2MB		((uint8_t)1 << 1)
+#define ANON_SPACE_64MB		((uint8_t)1 << 2)
+#define ADDR_SPACE_64MB		((uint8_t)1 << 3)
 
 
 /* Mapping control flags */

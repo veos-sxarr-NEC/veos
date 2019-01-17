@@ -35,6 +35,1412 @@
 #include "ve_socket.h"
 #include "signal_comm.h"
 #include "process_mgmt_comm.h"
+#include "sys_accelerated_io.h"
+#include "veacc_io_defs.h"
+#include "vemva_mgmt.h"
+#include <linux/sockios.h>
+
+/* Under Linux 2.6, alignment to 512-byte boundaries suffices */
+static uint64_t align_sz = 512;
+#define ALIGN_SZ align_sz
+
+/* Global variable controlls atomic io.
+** By default non-atomic mode is enabled
+** to reduce the memory consumption on vh
+** side.
+*/
+bool ve_atomic_io = 0;
+
+/**
+ * @brief Generic handler for read() and pread64() system call for VE.
+ *
+ *	This function receives the data and arguments from VEMVA/VEHVA and
+ *	offloads the functionality to VH OS read()/pread64() system call in
+ *	non-atomic mode. This function after receiving the data from VH OS
+ *	call copies the	data to VEMVA using VE driver interface per IO cycle.
+ *
+ *	Following system calls use this generic handler:
+ *	ve_read(),
+ *	ve_pread64().
+ *
+ * @param[in] syscall_num System Call number.
+ * @param[in] syscall_name System Call name.
+ * @param[in] handle VEOS handle.
+ *
+ * @return system call value to VE process.
+ */
+ret_t ve_hndl_read_pread64_nonatomic(int syscall_num, char *syscall_name,
+						veos_handle *handle)
+{
+         ret_t retval = -1;
+         char *read_buff = NULL;
+         size_t read_size = 0;
+         uint64_t args[4] = {0};
+         sigset_t signal_mask = { {0} };
+         int flags = 0;
+
+         non_atomic_msg_t* non_atomic_io = NULL;
+
+         PSEUDO_TRACE("Entering");
+         /* get arguments */
+         retval = vedl_get_syscall_args(handle->ve_handle, args, 4);
+         if (retval < 0) {
+                 PSEUDO_ERROR("failed to fetch syscall "
+                         "arguments, (%s) returned %d",
+                                 SYSCALL_NAME, (int)retval);
+                 retval = -EFAULT;
+                 goto hndl_return;
+         }
+
+         if (syscall_num == SYS_pread64) {
+                 if ((loff_t)args[3] < 0) {
+                         retval = -EINVAL;
+                         goto hndl_return;
+                 }
+         }
+
+	 /* Check the fd */
+	 if((ssize_t)args[0] < 0)
+		 return -EBADF;
+
+         /* receive read() buffer size from VE memory */
+         read_size = args[2];
+         if ((ssize_t) read_size < 0) {
+                 retval = -EFAULT;
+                 goto hndl_return;
+         }
+
+	 if((uint64_t)args[1] & VE_ACCELERATED_IO_FLAG)
+		 return ve_hndl_read_pread64(syscall_num, syscall_name, handle);
+
+         if (read_size > MAX_RW_COUNT)
+                 read_size = MAX_RW_COUNT;
+
+	/* Create non-io structures to complete the operation */
+         non_atomic_io = (non_atomic_msg_t*)calloc(1,sizeof(non_atomic_msg_t));
+         if(non_atomic_io == NULL)
+         {
+                 retval = -errno;
+                 goto hndl_return;
+         }
+         if(read_size > MAX_IO_PER_CYCLES)
+         {
+                 non_atomic_io->io_req_size = read_size;
+                 non_atomic_io->io_cycles = (non_atomic_io->io_req_size / MAX_IO_PER_CYCLES);
+                 non_atomic_io->io_rem = (non_atomic_io->io_req_size % MAX_IO_PER_CYCLES);
+                 non_atomic_io->io_size = 0;
+                 non_atomic_io->io_offset = 0;
+                 read_size = MAX_IO_PER_CYCLES;
+         }
+         else
+         {
+                 non_atomic_io->io_req_size = read_size;
+                 non_atomic_io->io_cycles = 1;
+                 non_atomic_io->io_rem = 0;
+                 non_atomic_io->io_size = 0;
+                 non_atomic_io->io_offset = 0;
+         }
+
+         /* allocate memory to store read data */
+         if (args[1]) {
+		 if(0 == ve_is_valid_address(handle, args[1])) {
+			 flags = fcntl(args[0],F_GETFL,0);
+			 if ((flags > 0) && (flags & O_DIRECT)) {
+				 if (!IS_ALIGNED((uint64_t)args[1], ALIGN_SZ))
+				 {
+					 retval = -EINVAL;
+					 goto hndl_return;
+				 }
+				 if(posix_memalign((void *)&read_buff, ALIGN_SZ, read_size*sizeof(char)))
+				 {
+					 retval = -ENOMEM;
+					 goto hndl_return;
+				 }
+			 } else {
+				 read_buff = (char *)malloc(read_size*sizeof(char));
+			 }
+			 if (NULL == read_buff) {
+				 retval = -EIO;
+				 PSEUDO_ERROR("Failed to create internal memory"
+						 " buffer");
+				 PSEUDO_DEBUG("read_buff : calloc %s failed %s",
+						 SYSCALL_NAME, strerror(errno));
+				 goto hndl_return;
+			 }
+			 memset(read_buff,0x00,read_size);
+		 }
+		 else {
+			 retval = -EFAULT;
+			 goto hndl_return;
+		 }
+         }
+
+         while(non_atomic_io->io_size < non_atomic_io->io_req_size)
+         {
+		if((non_atomic_io->io_req_size - non_atomic_io->io_size) >= MAX_IO_PER_CYCLES)
+			read_size = MAX_IO_PER_CYCLES;
+		else
+			read_size = non_atomic_io->io_req_size - non_atomic_io->io_size;
+
+		if(read_buff != NULL)
+			memset(read_buff,0x00,read_size);
+
+		/* unblock all signals except the one actualy blocked by VE process */
+		PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+		sigfillset(&signal_mask);
+		pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+
+                 /* call VH system call */
+                 if (syscall_num == SYS_pread64)
+                         retval = syscall(syscall_num, args[0],
+                                         args[1] ? (char *)read_buff : NULL, read_size,
+                                         args[3]+non_atomic_io->io_offset);
+                 else
+                         retval = syscall(syscall_num, args[0],
+                                         args[1] ? (char *)read_buff : NULL, read_size, args[3]);
+
+		 /* Post-processing of syscall started, blocking signals */
+		 PSEUDO_DEBUG("Blocked signals for post-processing");
+		 pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+
+		 if(!retval)
+			 break;
+
+                 if (-1 == retval) {
+                         retval = -errno;
+                         PSEUDO_ERROR("syscall %s failed %s",
+                                         SYSCALL_NAME, strerror(errno));
+                         goto hndl_return1;
+                 } else {
+                         PSEUDO_DEBUG("syscall = %s read_buf= %s\n read %lu bytes",
+                                         SYSCALL_NAME, (char *)read_buff, retval);
+                 }
+
+                 /* send the read buffer */
+                 if (args[1] && retval) {
+                         if (0 > ve_send_data(handle, args[1]+non_atomic_io->io_size,
+                                                 retval, (uint64_t *)read_buff)) {
+                                 PSEUDO_ERROR("Failed to send data to VE memory");
+                                 PSEUDO_DEBUG("%s Failed(%s) to send data:"
+                                                 " args[1]", SYSCALL_NAME,
+                                                 strerror(errno));
+                                 retval = -EFAULT;
+                                 goto hndl_return1;
+                         }
+                 }
+                 non_atomic_io->io_size += retval;
+                 non_atomic_io->io_offset += retval;
+		 if(retval < read_size)
+			 break;/* looks like less data is available */
+         }
+
+ hndl_return1:
+         free(read_buff);
+ hndl_return:
+         if(retval >= 0)
+                 retval = non_atomic_io->io_size;
+         if(non_atomic_io != NULL)
+                 free(non_atomic_io);
+         /* write return value */
+         PSEUDO_TRACE("Exiting");
+         return retval;
+}
+
+/**
+ * @brief Generic handler for readv() and preadv() system call for VE.
+ *
+ *	This function receives the data and arguments from VEMVA/VEHVA and
+ *	offloads the functionality to VH OS readv()/preadv() system call in
+ *	non-atomic mode. This function after receiving the data from VH OS
+ *	call copies the data to	VEMVA using VE driver interface per IO cycle.
+ *
+ *	Following system calls use this generic handler:
+ *	ve_readv(),
+ *	ve_preadv().
+ *
+ * @param[in] syscall_num System Call number.
+ * @param[in] syscall_name System Call name.
+ * @param[in] handle VEOS handle.
+ *
+ * @return system call value to VE process.
+ */
+ret_t ve_hndl_readv_preadv_nonatomic(int syscall_num, char *syscall_name,
+					veos_handle *handle)
+{
+	ret_t retval = -1;
+	struct iovec *vh_iov = NULL;
+	int iovcnt = 0, i = 0;
+	uint64_t args[4] = {0};
+	uint64_t *ve_buff_addr = NULL;
+	sigset_t signal_mask = { {0} };
+	int dio_flag = -1;
+	int cnt = 0;
+	int iovec_offset = 0;
+
+	non_atomic_msg_t* non_atomic_io = NULL;
+
+	PSEUDO_TRACE("Entering");
+	/* get arguments */
+	retval = vedl_get_syscall_args(handle->ve_handle, args, 4);
+	if (0 > retval) {
+		PSEUDO_ERROR("failed to fetch syscall "
+				"arguments,(%s) returned %d",
+				SYSCALL_NAME, (int)retval);
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+
+	/* Check the fd */
+	if((ssize_t)args[0] < 0)
+		return -EBADF;
+
+	/* receive readv()iovcnt from VE memory */
+	iovcnt = args[2];
+	/* Validate the input arguments */
+	if ((UIO_MAXIOV < iovcnt) ||
+			(iovcnt <= 0) ||
+			(NULL == (void *)args[1])) {
+		if (NULL == (void *)args[1])
+			retval = -EFAULT;
+		else if(0 == iovcnt)
+			retval = 0;
+		else
+			retval = -EINVAL;
+		goto hndl_return;
+	}
+	/* Create local memory to store readv data */
+	vh_iov = (struct iovec *)calloc(iovcnt, sizeof(struct iovec));
+	if (NULL == vh_iov) {
+		retval = -EIO;
+		PSEUDO_ERROR("Failed to create internal memory buffer");
+		PSEUDO_DEBUG("vh_iov : calloc %s failed %s",
+				SYSCALL_NAME, strerror(errno));
+		goto hndl_return;
+	}
+
+	/* Receive environment for readv from VE */
+	if (0 > ve_recv_data(handle, args[1],
+				(iovcnt*sizeof(struct iovec)),
+				(uint64_t *)(vh_iov))) {
+		PSEUDO_DEBUG("Failed(%s) to receive %s arguments from ve",
+				strerror(errno), SYSCALL_NAME);
+		retval = -EFAULT;
+		goto hndl_return1;
+	}
+
+	/* Validate the buffer and length */
+	retval = 0;
+	ssize_t len,diff = 0;
+	for (i = 0; i < iovcnt; i++) {
+
+		len = vh_iov[i].iov_len;
+
+		if (vh_iov[0].iov_base == NULL)
+			retval = -EFAULT;
+		else if ((ssize_t)vh_iov[i].iov_len < 0)
+			retval = -EINVAL;
+		else if((ssize_t)vh_iov[i].iov_len > MAX_RW_COUNT) {
+			len = vh_iov[i].iov_len = MAX_RW_COUNT;
+		}
+		else if (len > MAX_RW_COUNT - diff) {
+			len = MAX_RW_COUNT - diff;
+			vh_iov[i].iov_len = len;
+		}
+		else
+			;
+		if (retval != 0)
+			goto hndl_return1;
+		diff += len;
+	}
+
+	/* create buffer to store VE buffer addresses */
+	ve_buff_addr = calloc(iovcnt, sizeof(uint64_t));
+	if (NULL == ve_buff_addr) {
+		retval = -EIO;
+		PSEUDO_ERROR("Failed to create internal memory buffer");
+		PSEUDO_DEBUG("ve_buff_addr : calloc %s failed %s",
+				SYSCALL_NAME, strerror(errno));
+		goto hndl_return1;
+	}
+
+	dio_flag = fcntl(args[0], F_GETFL, 0);
+	if ((dio_flag > 0) && (dio_flag & O_DIRECT))
+		dio_flag = 1;
+	else
+		dio_flag = 0;
+
+	non_atomic_io = (non_atomic_msg_t*)calloc(iovcnt,sizeof(non_atomic_msg_t));
+	if(non_atomic_io == NULL)
+	{
+		retval = -EIO;
+		goto hndl_return2;
+	}
+
+	for (i = 0; i < iovcnt; i++) {
+		non_atomic_io[i].io_size = 0;
+		non_atomic_io[i].io_req_size = (ssize_t)vh_iov[i].iov_len;
+
+		if((ssize_t)vh_iov[i].iov_len > MAX_IO_PER_CYCLES)
+		{
+			non_atomic_io[i].io_cycles = (vh_iov[i].iov_len / MAX_IO_PER_CYCLES);
+			non_atomic_io[i].io_rem = (vh_iov[i].iov_len % MAX_IO_PER_CYCLES);
+			vh_iov[i].iov_len = MAX_IO_PER_CYCLES;
+		}
+		else
+		{
+			non_atomic_io[i].io_cycles = 1;
+			non_atomic_io[i].io_rem = 0;
+		}
+		non_atomic_io[i].io_offset += iovec_offset;
+		iovec_offset = 0;
+
+		ve_buff_addr[i] = (uint64_t)vh_iov[i].iov_base;
+		vh_iov[i].iov_base = NULL;
+		if(0 == ve_is_valid_address(handle, (uint64_t)ve_buff_addr[i]))
+		{
+			if (dio_flag) {
+				if (!IS_ALIGNED((uint64_t)ve_buff_addr[i], ALIGN_SZ))
+				{
+					retval = -EINVAL;
+					goto hndl_return3;
+				}
+				if(posix_memalign((void *)&vh_iov[0].iov_base, ALIGN_SZ, vh_iov[i].iov_len))
+				{
+					retval = -ENOMEM;
+					goto hndl_return3;
+				}
+			} else {
+				vh_iov[0].iov_base = (void *)malloc
+					((vh_iov[i].iov_len)*sizeof(char));
+			}
+			if (NULL == (void *) vh_iov[0].iov_base) {
+				retval = -EIO;
+				PSEUDO_ERROR("Failed to create internal memory"
+						" buffer");
+				PSEUDO_DEBUG("Error(%s) for calloc in "
+						"buffer %d", strerror(errno), i);
+				goto hndl_return3;
+			}
+			memset(vh_iov[0].iov_base,0x00,vh_iov[i].iov_len);
+		}
+		else if (!(void*)ve_buff_addr[i])
+		{
+			/* skip and got to next iovec */
+			continue;
+		}
+		else
+		{
+			retval = -EFAULT;
+			goto hndl_return3;
+		}
+
+		cnt++;
+
+		while (non_atomic_io[i].io_size < non_atomic_io[i].io_req_size)
+		{
+			if((non_atomic_io[i].io_req_size - non_atomic_io[i].io_size) >= MAX_IO_PER_CYCLES)
+				vh_iov[0].iov_len = MAX_IO_PER_CYCLES;
+			else
+				vh_iov[0].iov_len = (non_atomic_io[i].io_req_size - non_atomic_io[i].io_size);
+
+			memset(vh_iov[0].iov_base,0x00,vh_iov[0].iov_len);
+
+			/* unblock all signals except the one actualy blocked by VE process */
+			PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+			sigfillset(&signal_mask);
+			pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+
+			/* All things is ready now its time to call linux VH system call */
+			if(syscall_num == SYS_preadv)
+				retval = syscall(syscall_num, args[0], vh_iov, 1,
+						args[3]+non_atomic_io[i].io_offset);
+			else
+				retval = syscall(syscall_num, args[0], vh_iov, 1, args[3]);
+
+			/* Post-processing of syscall started, blocking signals */
+			PSEUDO_DEBUG("Blocked signals for post-processing");
+			pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+
+			if(!retval)
+				break;
+
+			if (-1 == retval) {
+				retval = -errno;
+				PSEUDO_ERROR("syscall %s failed %s",
+						SYSCALL_NAME, strerror(errno));
+				if (EINTR == -retval)
+					/* If VHOS syscall is interrupted by signal
+					 * set retval to -VE_ERESTARTSYS. VE process
+					 * will restart the syscall if SA_RESTART
+					 * flag is provided for signal
+					 * */
+					retval = -VE_ERESTARTSYS;
+				goto hndl_return3;
+			} else {
+				PSEUDO_DEBUG("syscall %s readv %lu bytes",
+						SYSCALL_NAME, retval);
+			}
+
+			if (ve_buff_addr[i] && vh_iov[0].iov_len) {
+				if (0 > ve_send_data(handle,
+							(uint64_t)(ve_buff_addr[i])+non_atomic_io[i].io_size,
+							retval, (uint64_t *)vh_iov[0].iov_base)) {
+					PSEUDO_DEBUG("Failed to send"
+							" data to VE memory");
+					PSEUDO_DEBUG("%s Failed(%s) to"
+							" send data:"
+							" %d", SYSCALL_NAME,
+							strerror(errno), i);
+					retval = -EFAULT;
+					goto hndl_return3;
+				} else {
+					PSEUDO_DEBUG("buffer %d send to ve ", i);
+					non_atomic_io[i].io_size += retval;
+					non_atomic_io[i].io_offset += retval;
+					if(retval < vh_iov[0].iov_len)
+						break;/* looks like less data is available */
+				}
+			}
+		}
+
+		if ((void*)vh_iov[0].iov_base != NULL)
+		{
+			free(vh_iov[0].iov_base);
+			vh_iov[0].iov_base = NULL;
+		}
+		iovec_offset += non_atomic_io[i].io_offset;
+	}
+
+hndl_return3:
+	if(retval >= 0)
+	{
+		retval = 0;
+		for (i = 0; i < iovcnt; i++)
+			retval += non_atomic_io[i].io_size;
+	}
+	if(non_atomic_io != NULL)
+		free(non_atomic_io);
+hndl_return2:
+	free(ve_buff_addr);
+hndl_return1:
+	free(vh_iov);
+hndl_return:
+	/* write return value */
+	PSEUDO_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Generic Handler for write() and pwrite64() system call for VE.
+ *
+ *	This function receives the data and arguments from VEMVA/VEHVA using
+ *	VE driver interface and then offloads the functionality to VH OS
+ *	write()/pwrite64() system call in non-atomic mode.
+ *
+ * @param[in] syscall_num System Call number.
+ * @param[in] syscall_name System Call name.
+ * @param[in] handle VEOS handle.
+ *
+ * @return system call value to VE process.
+ */
+ret_t ve_hndl_write_pwrite64_nonatomic(int syscall_num, char *syscall_name,
+					veos_handle *handle)
+{
+	ret_t retval = -1;
+	char *write_buff = NULL;
+	size_t recv_size = 0;
+	uint64_t args[4] = {0};
+	sigset_t signal_mask = { {0} };
+	int flags = 0;
+
+	non_atomic_msg_t* non_atomic_io = NULL;
+
+	PSEUDO_TRACE("Entering");
+	retval = vedl_get_syscall_args(handle->ve_handle, args, 4);
+	if (retval < 0) {
+		PSEUDO_ERROR("failed to fetch syscall "
+				"arguments, (%s) returned %d\n",
+				SYSCALL_NAME, (int)retval);
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+
+	if (syscall_num == SYS_pwrite64) {
+		if ((loff_t)args[3] < 0) {
+			retval = -EINVAL;
+			goto hndl_return;
+		}
+	}
+
+	/* Check the fd */
+	if((ssize_t)args[0] < 0)
+		return -EBADF;
+
+	/* receive write buffer size from VE memory */
+	recv_size = args[2];
+	if ((ssize_t) recv_size < 0) {
+		retval = -EFAULT; /* Mapped as per the kernel implementation for refrence access_ok */
+		goto hndl_return;
+	}
+
+	if((uint64_t)args[1] & VE_ACCELERATED_IO_FLAG)
+		return ve_hndl_write_pwrite64(syscall_num, syscall_name, handle);
+
+	if (recv_size > MAX_RW_COUNT)
+		recv_size = MAX_RW_COUNT;
+
+	non_atomic_io = (non_atomic_msg_t*)calloc(1,sizeof(non_atomic_msg_t));
+	if(non_atomic_io == NULL)
+	{
+		retval = -errno;
+		goto hndl_return;
+	}
+	if (recv_size > MAX_IO_PER_CYCLES)
+	{
+		non_atomic_io->io_req_size = recv_size;
+		non_atomic_io->io_cycles = non_atomic_io->io_req_size / MAX_IO_PER_CYCLES;
+		non_atomic_io->io_rem = non_atomic_io->io_req_size % MAX_IO_PER_CYCLES;
+		non_atomic_io->io_size = 0;
+		non_atomic_io->io_offset = 0;
+		recv_size = MAX_IO_PER_CYCLES;
+	}
+	else
+	{
+		non_atomic_io->io_req_size = recv_size;
+		non_atomic_io->io_cycles = 1;
+		non_atomic_io->io_rem = 0;
+		non_atomic_io->io_size = 0;
+		non_atomic_io->io_offset = 0;
+	}
+
+	if (args[1]) {
+		if(0 == ve_is_valid_address(handle, args[1])) {
+			/* allocate memory to store write data */
+			flags = fcntl(args[0],F_GETFL,0);
+			if ((flags > 0) && (flags & O_DIRECT)) {
+				if (!IS_ALIGNED((uint64_t)args[1], ALIGN_SZ))
+				{
+					retval = -EINVAL;
+					goto hndl_return1;
+				}
+				/* Under Linux 2.6, alignment to 512-byte boundaries suffices
+				 * e.g -
+				 * 1 --> posix_memalign(&write_buff,512,recv_size);
+				 * 2 --> memalign(sysconf(_SC_PAGESIZE),size);
+				 */
+				if(posix_memalign((void *)&write_buff, ALIGN_SZ, recv_size*sizeof(char)))
+				{
+					retval = -ENOMEM;
+					goto hndl_return1;
+				}
+			} else {
+				write_buff = (char *)malloc(recv_size*sizeof(char));
+			}
+			if (NULL == write_buff) {
+				retval = -ENOSPC;
+				PSEUDO_ERROR("Failed to create internal memory"
+						" buffer");
+				PSEUDO_DEBUG("Failed(%s) to create buffer to"
+						" store argumentsi, write_buff",
+						strerror(errno));
+				goto hndl_return1;
+			}
+			memset(write_buff,0x00,recv_size);
+
+			while(non_atomic_io->io_size < non_atomic_io->io_req_size)
+			{
+				if((non_atomic_io->io_req_size - non_atomic_io->io_size) >= MAX_IO_PER_CYCLES)
+					recv_size = MAX_IO_PER_CYCLES;
+				else
+					recv_size = (non_atomic_io->io_req_size - non_atomic_io->io_size);
+
+				memset(write_buff,0x00,recv_size);
+				/* receive the write buffer */
+				if (0 > ve_recv_data(handle, args[1]+non_atomic_io->io_size,
+							recv_size, (uint64_t *)write_buff)) {
+					PSEUDO_ERROR("failed to receive data"
+							" from VE memory");
+					PSEUDO_DEBUG("Failed (%s) to receive"
+							" %s argument[0]",
+							strerror(errno), SYSCALL_NAME);
+					retval = -EFAULT;
+					goto hndl_return2;
+				}
+
+				/* unblock all signals except the one actualy blocked by VE process */
+				PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+				sigfillset(&signal_mask);
+				pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+
+				/* call VH system call */
+				if (syscall_num == SYS_pwrite64)
+					retval = syscall(syscall_num, args[0],(char *)write_buff,
+							recv_size, args[3]+non_atomic_io->io_offset);
+				else
+					retval = syscall(syscall_num, args[0],
+							(char *)write_buff, recv_size, args[3]);
+
+				/* Post-processing of syscall started, blocking signals */
+				PSEUDO_DEBUG("Blocked signals for post-processing");
+				pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+
+				if(!retval)
+					break;
+
+				if (-1 == retval) {
+					retval = -errno;
+					PSEUDO_ERROR("syscall %s failed %s",
+							SYSCALL_NAME, strerror(errno));
+					if (EINTR == -retval)
+						/* If VHOS syscall is interrupted by signal
+						 * set retval to -VE_ERESTARTSYS. VE process
+						 * will restart the syscall if SA_RESTART
+						 * flag is provided for signal
+						 * */
+						retval = -VE_ERESTARTSYS;
+					goto hndl_return2;
+				} else
+					PSEUDO_DEBUG("syscall %s returned %d data %s",
+							SYSCALL_NAME, (int)retval,(char*)write_buff);
+				non_atomic_io->io_offset += retval;
+				non_atomic_io->io_size += retval;
+
+				if(retval < recv_size)
+					break;/* looks like less data is available */
+			}
+		}
+		else
+		{
+			retval = -EFAULT;
+			goto hndl_return1;
+		}
+	}
+hndl_return2:
+	free(write_buff);
+hndl_return1:
+	if(retval >= 0)
+		retval = non_atomic_io->io_size;
+	if (non_atomic_io != NULL)
+		free(non_atomic_io);
+hndl_return:
+	/* write return value */
+	PSEUDO_TRACE("Exiting");
+	return retval;
+
+}
+
+/**
+ * @brief Generic Handler for writev() and pwritev() system calls for VE.
+ *
+ *	This function receives the data and arguments from VEMVA/VEHVA and
+ *	offloads the functionality to VH OS writev()/pwritev() system call
+ *	in non-atomic mode.It copies the data to VEMVA using VE driver
+ *	interface per IO cycle.
+ *
+ *	Following system calls use this generic handler:
+ *	ve_writev(),
+ *	ve_pwritev().
+ *
+ * @param[in] syscall_num System Call number.
+ * @param[in] syscall_name System Call name.
+ * @param[in] handle VEOS handle.
+ *
+ * @return system call value to VE process.
+ */
+ret_t ve_hndl_writev_pwritev_nonatomic(int syscall_num, char *syscall_name,
+						veos_handle *handle)
+{
+	ret_t retval = -1;
+	struct iovec *vh_iov = NULL;
+	int iovcnt = 0;
+	int i = 0;
+	uint64_t args[4] = {0};
+	uint64_t **vh_buff_addr = NULL;
+	sigset_t signal_mask = { {0} };
+	int dio_flag = -1;
+	int iovec_offset = 0;
+
+	non_atomic_msg_t* non_atomic_io = NULL;
+	struct iovec* non_atomic_iov = NULL;
+
+	PSEUDO_TRACE("Entering");
+
+	/* get arguments */
+	retval = vedl_get_syscall_args(handle->ve_handle, args, 4);
+	if (0 > retval) {
+		PSEUDO_ERROR("failed to fetch syscall "
+				"arguments,(%s) returned %d\n",
+				SYSCALL_NAME, (int)retval);
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+
+	/* Check the fd */
+	if((ssize_t)args[0] < 0)
+		return -EBADF;
+
+	/* writev() iovcnt from VE memory */
+	iovcnt = args[2];
+	PSEUDO_DEBUG("VE buffer count : %d", iovcnt);
+
+	/* Validate the input arguments */
+	if ((UIO_MAXIOV < iovcnt) || (0 >= iovcnt) || (NULL == (void *)args[1]))
+	{
+		if (NULL == (void *)args[1])
+			retval = -EFAULT;
+		else if(iovcnt == 0)
+			retval = 0;
+		else
+			retval = -EINVAL;
+		goto hndl_return;
+	}
+
+	/* local memory buffer to store writev data */
+	vh_iov = (struct iovec *)calloc(iovcnt, sizeof(struct iovec));
+	if (NULL == vh_iov) {
+		retval = -ENOSPC;
+		PSEUDO_ERROR("Failed to create local memory buffer");
+		PSEUDO_DEBUG("vh_iov : calloc %s failed %s",
+				SYSCALL_NAME, strerror(errno));
+		goto hndl_return;
+	}
+
+	/* receive writev() const struct iovec*  from VE memory */
+	if (0 > ve_recv_data(handle, args[1],
+				(iovcnt * sizeof(struct iovec)),
+				(uint64_t *)(vh_iov))) {
+		PSEUDO_ERROR("failed to receive data"
+				" from VE memory");
+		PSEUDO_DEBUG("Failed (%s) to receive"
+				" %s argument[0]",
+				strerror(errno), SYSCALL_NAME);
+		retval = -EFAULT;
+		goto hndl_return1;
+	}
+
+	/* Validate the the buffer and length */
+	/* Asume buffer and respective lengths are ok.*/
+	retval = 0;
+	ssize_t len,diff = 0;
+	for (i = 0; i < iovcnt; i++) {
+
+		len = vh_iov[i].iov_len;
+
+		if (vh_iov[0].iov_base == NULL)
+			retval = -EFAULT;
+		else if(((ssize_t)vh_iov[i].iov_len != 0) &&
+			ve_is_valid_address(handle,(uint64_t)vh_iov[i].iov_base))
+			retval = -EFAULT;
+		else if ((ssize_t)vh_iov[i].iov_len < 0)
+			retval = -EINVAL;
+		else if((ssize_t)vh_iov[i].iov_len > MAX_RW_COUNT)
+			vh_iov[i].iov_len = MAX_RW_COUNT;
+		else if (len > MAX_RW_COUNT - diff) {
+			len = MAX_RW_COUNT - diff;
+			vh_iov[i].iov_len = len;
+		}
+		else
+			;
+		if (retval != 0)
+			goto hndl_return1;
+		diff += len;
+	}
+
+	/* create VH buffers */
+	vh_buff_addr = calloc(iovcnt, (sizeof(uint64_t)));
+	if (NULL == vh_buff_addr) {
+		retval = -ENOSPC;
+		PSEUDO_ERROR("Failed to create internal memory buffer");
+		PSEUDO_DEBUG("vh_buff_addr : calloc %s failed %s",
+				SYSCALL_NAME, strerror(errno));
+		goto hndl_return1;
+	}
+
+	dio_flag = fcntl(args[0],F_GETFL,0);
+	if ((dio_flag > 0) && (dio_flag & O_DIRECT))
+		dio_flag = 1;
+	else
+		dio_flag = 0;
+	/* Create VH environment for writev() */
+	non_atomic_io = (non_atomic_msg_t*)calloc(iovcnt,sizeof(non_atomic_msg_t));
+	if(non_atomic_io == NULL)
+	{
+		retval = -ENOSPC;
+		goto hndl_return2;
+	}
+
+	non_atomic_iov = (struct iovec *)calloc(1, sizeof(struct iovec));
+	if(non_atomic_iov == NULL)
+	{
+		retval = -ENOSPC;
+		goto hndl_return3;
+	}
+
+	for (i = 0; i < iovcnt; i++) {
+		non_atomic_io[i].io_size = 0;
+		PSEUDO_DEBUG("VE data: buff: %d length :%lu data:%lu",
+				i, (unsigned long)(vh_iov[i].iov_len),
+				(unsigned long)vh_iov[i].iov_base);
+
+		if ((NULL != (void *)vh_iov[i].iov_base) &&
+				(0 != (ssize_t)vh_iov[i].iov_len)) {
+
+			non_atomic_io[i].io_req_size = (ssize_t)vh_iov[i].iov_len;
+
+			if((ssize_t)vh_iov[i].iov_len > MAX_IO_PER_CYCLES)
+			{
+				non_atomic_io[i].io_cycles = (vh_iov[i].iov_len / MAX_IO_PER_CYCLES);
+				non_atomic_io[i].io_rem = (vh_iov[i].iov_len % MAX_IO_PER_CYCLES);
+				vh_iov[i].iov_len = MAX_IO_PER_CYCLES;
+			}
+			else
+			{
+				non_atomic_io[i].io_cycles = 1;
+				non_atomic_io[i].io_rem = 0;
+			}
+			non_atomic_io[i].io_offset += iovec_offset;
+			iovec_offset = 0;
+
+			if(0 == ve_is_valid_address(handle, (uint64_t)vh_iov[i].iov_base))
+			{
+				if (dio_flag) {
+					if (!IS_ALIGNED((uint64_t)vh_iov[i].iov_base, ALIGN_SZ))
+					{
+						retval = -EINVAL;
+						goto hndl_return3;
+					}
+					if(posix_memalign((void *)&vh_buff_addr[i], ALIGN_SZ, vh_iov[i].iov_len))
+					{
+						retval = -ENOMEM;
+						goto hndl_return3;
+					}
+				} else {
+					vh_buff_addr[i] = (uint64_t *)malloc
+						((vh_iov[i].iov_len)*sizeof(char));
+				}
+				if(vh_buff_addr[i] == NULL)
+				{
+					retval = errno;
+					PSEUDO_ERROR("Failed to create internal memory"
+							" buffer");
+					PSEUDO_DEBUG("calloc %s failed %s",
+							SYSCALL_NAME, strerror(errno));
+					goto hndl_return3;
+				}
+				memset(vh_buff_addr[i],0x00,vh_iov[i].iov_len);
+			}
+			else
+			{
+				retval = -EFAULT;
+				goto hndl_return3;
+			}
+
+			while (non_atomic_io[i].io_size < non_atomic_io[i].io_req_size)
+			{
+				if((non_atomic_io[i].io_req_size - non_atomic_io[i].io_size) >= MAX_IO_PER_CYCLES)
+					vh_iov[i].iov_len = MAX_IO_PER_CYCLES;
+				else
+					vh_iov[i].iov_len = (non_atomic_io[i].io_req_size - non_atomic_io[i].io_size);
+
+				if (NULL != (void *)vh_buff_addr[i]) {
+
+					memset(vh_buff_addr[i],0x00,(vh_iov[i].iov_len));
+					if (0 > ve_recv_data(handle,
+								(uint64_t)(vh_iov[i].iov_base)+non_atomic_io[i].io_size,
+								(vh_iov[i].iov_len*sizeof(char)),
+								(uint64_t *)(vh_buff_addr[i]))) {
+						PSEUDO_DEBUG("Failed to receive args[%d] from ve", i);
+						PSEUDO_ERROR("Failed(%s) to"
+								" receive %s arguments from"
+								" ve", strerror(errno),
+								SYSCALL_NAME);
+						retval = -EFAULT;
+						goto hndl_return3;
+					}
+				} else {
+					retval = -ENOSPC;
+					PSEUDO_DEBUG("calloc fail for buffer %d\n",i+1);
+					goto hndl_return3;
+				}
+
+				non_atomic_iov[0].iov_base = (void *)vh_buff_addr[i];
+				non_atomic_iov[0].iov_len = vh_iov[i].iov_len;
+
+				/* unblock all signals except the one actualy blocked by VE process */
+				PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+				sigfillset(&signal_mask);
+				pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+
+				/* call VH system call */
+				if(syscall_num == SYS_pwritev)
+					retval = syscall(syscall_num, args[0], non_atomic_iov, 1,
+							args[3]+non_atomic_io[i].io_offset);
+				else
+					retval = syscall(syscall_num, args[0], non_atomic_iov, 1, args[3]);
+
+				/* Post-processing of syscall started, blocking signals */
+				PSEUDO_DEBUG("Blocked signals for post-processing");
+				pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+
+				if(!retval)
+					break;
+
+				if (-1 == retval) {
+					retval = -errno;
+					PSEUDO_DEBUG("syscall %s failed %s",SYSCALL_NAME,strerror(errno));
+					if (EINTR == -retval)
+						/* If VHOS syscall is interrupted by signal
+						 * set retval to -VE_ERESTARTSYS. VE process
+						 * will restart the syscall if SA_RESTART
+						 * flag is provided for signal
+						 **/
+						retval = -VE_ERESTARTSYS;
+					goto hndl_return3;
+				} else {
+					PSEUDO_DEBUG("syscall %s writev %lu bytes",
+							SYSCALL_NAME, retval);
+					non_atomic_io[i].io_size += retval;
+					non_atomic_io[i].io_offset += retval;
+
+					if(retval < vh_iov[i].iov_len)
+						break;/* looks like less data is available */
+				}
+			}
+
+			if(NULL != (void*)vh_buff_addr[i])
+			{
+				free(vh_buff_addr[i]);
+				vh_buff_addr[i] = NULL;
+			}
+		}
+		non_atomic_io[i].io_retval += non_atomic_io[i].io_size;
+		iovec_offset += non_atomic_io[i].io_offset;
+	}
+
+hndl_return3:
+	if(retval >= 0)
+	{
+		retval = 0;
+		for(i = 0; i < iovcnt; i++)
+			retval += non_atomic_io[i].io_retval;
+	}
+	if(non_atomic_io != NULL)
+		free(non_atomic_io);
+	if(non_atomic_iov != NULL)
+		free(non_atomic_iov);
+	/* cleaning local storage */
+hndl_return2:
+	for (i = 0; i < iovcnt; i++) {
+		if (NULL != (void *)vh_buff_addr[i])
+			free(vh_buff_addr[i]);
+	}
+	free(vh_buff_addr);
+hndl_return1:
+	free(vh_iov);
+hndl_return:
+	/* write return value */
+	PSEUDO_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Handles sendto() system call functionality for VE.
+ *
+ *	ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
+ *		const struct sockaddr *dest_addr, socklen_t addrlen);
+ *
+ *	This function receives data and arguments from VEMVA/VEHVA using VE
+ *	driver interface and invokes VH OS sendto() system call in non-atomic
+ *	mode. It returns the return value of system call back to the VEMVA/VEHVA
+ *	using VE driver interface per IO cycle.
+ *
+ * @param[in] syscall_num System call number.
+ * @param[in] syscall_name System call name.
+ * @param[in] handle VEOS handle.
+ *
+ * @return system call value to VE process.
+ */
+
+ret_t ve_hndl_sendto_nonatomic(int syscall_num, char *syscall_name, veos_handle *handle)
+{
+         ret_t retval = -1;
+         uint64_t args[6] = {0};
+         struct sockaddr_storage addr = {0};
+         char *send_buff = NULL;
+         size_t len = 0;
+         int addr_len = 0;
+         sigset_t signal_mask = { {0} };
+
+         non_atomic_msg_t* non_atomic_io = NULL;
+
+         PSEUDO_TRACE("Entering");
+         /* get system call arguments */
+         retval = vedl_get_syscall_args(handle->ve_handle, args, 6);
+         if (retval < 0) {
+                 PSEUDO_ERROR("failed to fetch syscall arguments, "
+                                 "%s returned %d",
+                                 SYSCALL_NAME, (int)retval);
+                 retval = -EFAULT;
+                 goto hndl_return;
+         }
+
+	 /* Check the fd */
+	 if((ssize_t)args[0] < 0)
+		 return -EBADF;
+
+	 len = args[2];
+
+	 if((ssize_t)len < 0)
+	 {
+		 retval = -EINVAL;
+		 goto hndl_return;
+	 }
+	 else if (len > MAX_RW_COUNT)
+		 len = MAX_RW_COUNT;
+
+         non_atomic_io = (non_atomic_msg_t*)calloc(1,sizeof(non_atomic_msg_t));
+         if(non_atomic_io == NULL)
+         {
+                 retval = -errno;
+                 goto hndl_return;
+         }
+         if(len > MAX_IO_PER_CYCLES)
+         {
+                 non_atomic_io->io_req_size = len;
+                 non_atomic_io->io_cycles = (non_atomic_io->io_req_size / MAX_IO_PER_CYCLES);
+                 non_atomic_io->io_rem = (non_atomic_io->io_req_size % MAX_IO_PER_CYCLES);
+                 non_atomic_io->io_size = 0;
+                 len = MAX_IO_PER_CYCLES;
+         }
+         else
+         {
+                 non_atomic_io->io_req_size = len;
+                 non_atomic_io->io_cycles = 1;
+                 non_atomic_io->io_rem = 0;
+                 non_atomic_io->io_size = 0;
+         }
+
+         addr_len = args[5];
+         if (addr_len < 0 || addr_len > sizeof(struct sockaddr_storage)) {
+                 retval = -EINVAL;
+                 goto hndl_return1;
+         }
+
+         if (args[4] && addr_len) {
+                 if (0 > ve_recv_data(handle, args[4], addr_len, &addr)) {
+                         PSEUDO_ERROR("failed to receive data from"
+                                         " VE memory");
+                         PSEUDO_DEBUG("Failed(%s) to receive %s"
+                                         " argument[4] from ve",
+                                         strerror(errno), SYSCALL_NAME);
+                         retval = -EFAULT;
+                         goto hndl_return1;
+                 }
+         }
+
+         if (args[1] && len) {
+		 if (0 == ve_is_valid_address(handle,
+					 (uint64_t)args[1])) {
+			 /* allocate memory for content of 2nd argument */
+			 send_buff = (char *)calloc(len, sizeof(char));
+			 if (send_buff == NULL) {
+				 retval = -errno;
+				 PSEUDO_ERROR("Failed to create internal memory"
+						 " buffer");
+				 PSEUDO_DEBUG("In sendto(): calloc failed(%s)",
+						 strerror(errno));
+				 goto hndl_return1;
+			 }
+		 }
+         }
+
+         while(non_atomic_io->io_size < non_atomic_io->io_req_size)
+         {
+		if((non_atomic_io->io_req_size - non_atomic_io->io_size) >= MAX_IO_PER_CYCLES)
+			len = MAX_IO_PER_CYCLES;
+		else
+			len = (non_atomic_io->io_req_size - non_atomic_io->io_size);
+
+		if(send_buff != NULL)
+			memset(send_buff,0x00,len);
+
+                 if (0 > ve_recv_data(handle, args[1]+non_atomic_io->io_size,
+                                         len, send_buff)) {
+                         PSEUDO_ERROR("failed to receive data from"
+                                         " VE memory");
+                         PSEUDO_DEBUG("Failed(%s) to receive %s"
+                                         " argument[1] from ve",
+                                         strerror(errno), SYSCALL_NAME);
+                                         retval = -EFAULT;
+                         goto hndl_return1;
+                 }
+
+		 /* unblock all signals except the one actualy blocked by VE process */
+		 sigfillset(&signal_mask);
+		 PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+		 pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+
+                 /* call VH system call */
+                 retval = syscall(syscall_num, args[0],
+                                         send_buff, len, args[3],
+                                         args[4] ? &addr : NULL, args[5]);
+
+		 /* Post-processing of syscall started, blocking signals */
+		 PSEUDO_DEBUG("Blocked signals for post-processing");
+		 pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+
+                 /*Check retval of system call*/
+                 if (retval == -1) {
+                         retval = -errno;
+                         PSEUDO_ERROR("syscall %s failed %s",
+                                         SYSCALL_NAME, strerror(errno));
+                         goto hndl_return1;
+                 }
+
+                 PSEUDO_DEBUG("%s syscall returned with %d",
+                         SYSCALL_NAME, (int)retval);
+                 non_atomic_io->io_size += retval;
+         }
+
+ hndl_return1:
+         if(retval >= 0)
+                 retval = non_atomic_io->io_size;
+         if(non_atomic_io != NULL)
+                 free(non_atomic_io);
+         if (send_buff != NULL) {
+                 free(send_buff);
+                 send_buff = NULL;
+         }
+ hndl_return:
+         /* write return value */
+         PSEUDO_TRACE("Exiting");
+         return retval;
+
+}
+
+/**
+ * @brief Handles recvfrom() system call functionality for VE.
+ *
+ *      ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
+ *              struct sockaddr *src_addr, socklen_t *addrlen);
+ *
+ *      This function receives data and arguments from VEMVA/VEHVA using
+ *      VE driver interface and invokes VH OS recvfrom() system call in
+ *      non-atomic mode. Buffered data from VH OS copied back to the VE
+ *      process using VE driver interface per IO cycle.
+ *
+ * @param[in] syscall_num System call number.
+ * @param[in] syscall_name System call name.
+ * @param[in] handle VEOS handle.
+ *
+ * @return system call value to VE process.
+ */
+ret_t ve_hndl_recvfrom_nonatomic(int syscall_num, char *syscall_name, veos_handle *handle)
+{
+         ret_t retval = -1;
+         uint64_t args[6] = {0};
+         sigset_t signal_mask = { {0} };
+         char *data_buff = NULL;
+         struct sockaddr_storage addr = {0};
+         socklen_t vh_addrlen = 0;
+         size_t len = 0;
+
+         non_atomic_msg_t* non_atomic_io = NULL;
+
+         PSEUDO_TRACE("Entering");
+         /* get system call arguments */
+         retval = vedl_get_syscall_args(handle->ve_handle, args, 6);
+         if (retval < 0) {
+                 PSEUDO_ERROR("failed to fetch syscall "
+                         "arguments, %s returned %d",
+                                 SYSCALL_NAME, (int)retval);
+                 retval = EFAULT;
+                 goto hndl_return;
+         }
+
+	 /* Check the fd */
+	 if((ssize_t)args[0] < 0)
+		 return -EBADF;
+
+         len = args[2];
+
+	 if (len == 0) {
+		 retval = 0;
+		 goto hndl_return;
+	 }
+	 else if((ssize_t)len < 0)
+	 {
+		 retval = -EINVAL;
+		 goto hndl_return;
+	 }
+	 else if (len > MAX_RW_COUNT)
+		 len = MAX_RW_COUNT;
+
+         non_atomic_io = (non_atomic_msg_t*)calloc(1,sizeof(non_atomic_msg_t));
+         if(non_atomic_io == NULL)
+         {
+                 retval = -errno;
+                 goto hndl_return;
+         }
+         if(len > MAX_IO_PER_CYCLES)
+         {
+                 non_atomic_io->io_req_size = len;
+                 non_atomic_io->io_cycles = (non_atomic_io->io_req_size / MAX_IO_PER_CYCLES);
+                 non_atomic_io->io_rem = (non_atomic_io->io_req_size % MAX_IO_PER_CYCLES);
+                 non_atomic_io->io_size = 0;
+                 len = MAX_IO_PER_CYCLES;
+         }
+         else
+         {
+                 non_atomic_io->io_req_size = len;
+                 non_atomic_io->io_cycles = 1;
+                 non_atomic_io->io_rem = 0;
+                 non_atomic_io->io_size = 0;
+         }
+
+	 if (args[1]) {
+		 if (0 == ve_is_valid_address(handle,
+					 (uint64_t)args[1])) {
+			 /* allocate memory for data from VH OS */
+			 data_buff = (char *)calloc(len, sizeof(char));
+			 if (data_buff == NULL) {
+				 retval = -errno;
+				 PSEUDO_ERROR("Failed to create internal memory"
+						 " buffer");
+				 PSEUDO_DEBUG("In recvfrom(): calloc "
+						 "failed(%s) for args[1]",
+						 strerror(errno));
+				 goto hndl_return1;
+			 }
+		 }
+	 }
+
+	 if (NULL != (void *)args[4])
+	 {
+		 if(0 == ve_is_valid_address(handle,args[4]))
+		 {
+			 /* receive content of 6th argument */
+			 if (NULL != (void *)args[5]) {
+				 if (0 > ve_recv_data(handle, args[5], sizeof(socklen_t),
+							 (uint64_t *)(&vh_addrlen))) {
+					 PSEUDO_ERROR("failed to receive data from"
+							 " VE memory");
+					 PSEUDO_DEBUG("Failed(%s) to receive %s"
+							 " argument[5] from ve",
+							 strerror(errno), SYSCALL_NAME);
+					 retval = -EFAULT;
+					 goto hndl_return1;
+				 }
+			 }
+		 }
+		 else
+		 {
+			 retval = ENOTSOCK;
+			 goto hndl_return1;
+		 }
+
+	 } else
+	 {
+		 args[5] = (uint64_t)NULL;
+	 }
+
+         while(non_atomic_io->io_size < non_atomic_io->io_req_size)
+         {
+		if((non_atomic_io->io_req_size - non_atomic_io->io_size) >= MAX_IO_PER_CYCLES)
+			len = MAX_IO_PER_CYCLES;
+		else
+			len = (non_atomic_io->io_req_size - non_atomic_io->io_size);
+
+		if(data_buff != NULL)
+	                memset(data_buff,0x00,len);
+
+		/* unblock all signals except the one actualy blocked by VE process */
+		sigfillset(&signal_mask);
+		PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+		pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+
+                 /* call VH system call */
+                 retval = syscall(syscall_num, args[0], data_buff,
+                                 (size_t)len, args[3],
+                                 args[4] ? (struct sockaddr *)&addr : NULL,
+                                 args[5] ? &vh_addrlen : NULL);
+
+		 /* Post-processing of syscall started, blocking signals */
+		 PSEUDO_DEBUG("Blocked signals for post-processing");
+		 pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+
+                 /*check retval of syscall*/
+                 if (retval < 0) {
+                         retval = -errno;
+                         PSEUDO_ERROR("syscall %s failed %s",
+                                         SYSCALL_NAME, strerror(errno));
+                         goto hndl_return1;
+                 }
+
+                 if (args[1]) {
+                         if (0 > ve_send_data(handle, args[1]+non_atomic_io->io_size,
+                                         len,(uint64_t *)(data_buff))) {
+                                 PSEUDO_ERROR("Failed to send data to VE memory");
+                                 PSEUDO_DEBUG("%s Failed(%s) to send data:"
+                                                 " args[1]", SYSCALL_NAME,
+                                                 strerror(errno));
+                                 retval = -EFAULT;
+                                 goto hndl_return1;
+                         }
+                 }
+                 PSEUDO_DEBUG("%s syscall returned with %d",
+                         SYSCALL_NAME, (int)retval);
+                 non_atomic_io->io_size += retval;
+
+		 if(retval < len)
+			 break;
+         }
+
+         /* send address buffered from VH to VEMVA and also
+          * length of the address
+          * */
+         if (args[4] && args[5]) {
+                 if (0 > ve_send_data(handle, args[4], vh_addrlen,
+                                         (uint64_t *)(&addr))) {
+                         PSEUDO_ERROR("Failed to send data to VE memory");
+                         PSEUDO_DEBUG("%s Failed(%s) to send data:"
+                                 " args[4]", SYSCALL_NAME,
+                                         strerror(errno));
+                         if (retval > 0 && errno == 0) /* Expeced and mapped to Kernel behaviour */
+                                 retval = retval;
+                         else
+                                 retval = -EFAULT;
+
+                         PSEUDO_DEBUG("%s syscall returned with %d",
+                                         SYSCALL_NAME, (int)retval);
+                         goto hndl_return1;
+                 }
+
+                 if (0 > ve_send_data(handle, args[5], sizeof(socklen_t),
+                                         (uint64_t *)(&vh_addrlen))) {
+                         PSEUDO_ERROR("Failed to send data to VE memory");
+                         PSEUDO_DEBUG("%s Failed(%s) to send data:"
+                                 " args[5]", SYSCALL_NAME,
+                                         strerror(errno));
+                         retval = -EFAULT;
+                         goto hndl_return1;
+                 }
+         }
+
+         PSEUDO_DEBUG("%s syscall returned with %d",
+                         SYSCALL_NAME, (int)retval);
+
+ hndl_return1:
+	 if(data_buff != NULL)
+		 free(data_buff);
+	 if(retval >= 0)
+		 retval = non_atomic_io->io_size;
+	 if(non_atomic_io != NULL)
+		 free(non_atomic_io);
+ hndl_return:
+         PSEUDO_TRACE("Exiting");
+         return retval;
+}
 
 /**
  * @brief Generic Handler for write() and pwrite64() system call for VE.
@@ -59,6 +1465,9 @@ ret_t ve_hndl_write_pwrite64(int syscall_num, char *syscall_name,
 	sigset_t signal_mask = { {0} };
 	int flags = 0;
 
+	uint64_t vhva_and_flag = 0;
+	int dma_flag = 0;
+
 	PSEUDO_TRACE("Entering");
 	retval = vedl_get_syscall_args(handle->ve_handle, args, 4);
 	if (retval < 0) {
@@ -68,6 +1477,10 @@ ret_t ve_hndl_write_pwrite64(int syscall_num, char *syscall_name,
 		retval = -EFAULT;
 		goto hndl_return;
 	}
+
+	/* Check the fd */
+	if((ssize_t)args[0] < 0)
+		return -EBADF;
 
 	if (syscall_num == SYS_pwrite64) {
 		if ((loff_t)args[3] < 0) {
@@ -86,6 +1499,20 @@ ret_t ve_hndl_write_pwrite64(int syscall_num, char *syscall_name,
 	if (recv_size > MAX_RW_COUNT)
 		recv_size = MAX_RW_COUNT;
 
+	/* get vhva and dma_flag */
+	vhva_and_flag = (uint64_t)args[1];
+	PSEUDO_DEBUG("vhva and flag is %lx", vhva_and_flag);
+
+	/* judgment dma_flag */
+	if ((vhva_and_flag & VE_ACCELERATED_IO_FLAG) == 0) {
+		PSEUDO_DEBUG("VE_ACCELERATED_IO_FLAG is not set");
+	} else {
+		dma_flag = 1;
+		PSEUDO_DEBUG("VE_ACCELERATED_IO_FLAG is set");
+		PSEUDO_DEBUG("vhva is %p", (void *)args[1]);
+		args[1] = args[1] & VE_ACCELERATED_IO_ADDR_MASK;
+	}
+
 	if (args[1]) {
 		/* allocate memory to store write data */
 		flags = fcntl(args[0], F_GETFL, 0);
@@ -95,17 +1522,29 @@ ret_t ve_hndl_write_pwrite64(int syscall_num, char *syscall_name,
 			retval = -errno;
 			goto hndl_return;
 		}
-		if (flags & O_DIRECT) {
-			/* Under Linux 2.6, alignment to 512-byte boundaries suffices
-			 * e.g -
-			 * 1 --> posix_memalign(&write_buff,512,recv_size);
-			 * 2 --> memalign(sysconf(_SC_PAGESIZE),size);
-			 */
-			write_buff = (char *)valloc(recv_size);
+		if (!dma_flag) {
+			if (flags & O_DIRECT) {
+				if (!IS_ALIGNED((uint64_t)args[1], ALIGN_SZ))
+				{
+					retval = -EINVAL;
+					goto hndl_return;
+				}
+				/* Under Linux 2.6, alignment to 512-byte boundaries suffices
+			 	* e.g -
+			 	* 1 --> posix_memalign(&write_buff,512,recv_size);
+			 	* 2 --> memalign(sysconf(_SC_PAGESIZE),size);
+			 	*/
+				if(posix_memalign((void *)&write_buff, ALIGN_SZ, recv_size*sizeof(char)))
+				{
+					retval = -ENOMEM;
+					goto hndl_return;
+				}
+			} else {
+				write_buff = (char *)calloc(recv_size, sizeof(char));
+			}
 		} else {
-			write_buff = (char *)calloc(recv_size, sizeof(char));
+			write_buff = (char *)args[1];
 		}
-
 		if (NULL == write_buff) {
 			retval = -ENOSPC;
 			PSEUDO_ERROR("Failed to create internal memory"
@@ -116,9 +1555,19 @@ ret_t ve_hndl_write_pwrite64(int syscall_num, char *syscall_name,
 			goto hndl_return;
 		}
 
+		/* check whether VE address is valid or invalid */
+		if (!dma_flag) {
+			retval = ve_is_valid_address(handle, args[1]);
+			if (retval < 0) {
+				retval = -EFAULT;
+				goto hndl_return1;
+			}
+			memset(write_buff,0x00,recv_size);
+		}
+
 		/* receive the write buffer */
-		if (0 > ve_recv_data(handle, args[1],
-					recv_size, (uint64_t *)write_buff)) {
+		if ((!dma_flag) && (0 > ve_recv_data(handle, args[1],
+					recv_size, (uint64_t *)write_buff))) {
 			PSEUDO_ERROR("failed to receive data"
 					" from VE memory");
 			PSEUDO_DEBUG("Failed (%s) to receive"
@@ -158,7 +1607,9 @@ ret_t ve_hndl_write_pwrite64(int syscall_num, char *syscall_name,
 	PSEUDO_DEBUG("Blocked signals for post-processing");
 
 hndl_return1:
-	free(write_buff);
+	if (!dma_flag) {
+		free(write_buff);
+	}
 hndl_return:
 	/* write return value */
 	PSEUDO_TRACE("Exiting");
@@ -181,7 +1632,10 @@ hndl_return:
  */
 ret_t ve_write(int syscall_num, char *syscall_name, veos_handle *handle)
 {
-	return ve_hndl_write_pwrite64(syscall_num, syscall_name, handle);
+	if(!VE_ATOMIC_IO)
+		return ve_hndl_write_pwrite64_nonatomic(syscall_num, syscall_name, handle);
+	else
+		return ve_hndl_write_pwrite64(syscall_num, syscall_name, handle);
 }
 
 /**
@@ -223,6 +1677,10 @@ ret_t ve_hndl_writev_pwritev(int syscall_num, char *syscall_name,
 		retval = -EFAULT;
 		goto hndl_return;
 	}
+
+	/* Check the fd */
+	if((ssize_t)args[0] < 0)
+		return -EBADF;
 
 	/* writev() iovcnt from VE memory */
 	iovcnt = args[2];
@@ -291,7 +1749,7 @@ ret_t ve_hndl_writev_pwritev(int syscall_num, char *syscall_name,
 	}
 
 	dio_flag = fcntl(args[0],F_GETFL,0);
-	if (dio_flag & O_DIRECT)
+	if ((dio_flag > 0) && (dio_flag & O_DIRECT))
 		dio_flag = 1;
 	else
 		dio_flag = 0;
@@ -303,31 +1761,47 @@ ret_t ve_hndl_writev_pwritev(int syscall_num, char *syscall_name,
 
 		if ((NULL != (void *)vh_iov[i].iov_base) &&
 				(0 != (ssize_t)vh_iov[i].iov_len)) {
-			if (dio_flag) {
-				vh_buff_addr[i] = (uint64_t *)valloc(vh_iov[i].iov_len);
-			} else {
-				vh_buff_addr[i] = (uint64_t *)calloc
-					((vh_iov[i].iov_len), sizeof(char));
-			}
-
-			if (NULL != (void *)vh_buff_addr[i]) {
-				if (0 > ve_recv_data(handle,
-					(uint64_t)(vh_iov[i].iov_base),
-					(vh_iov[i].iov_len*sizeof(char)),
-					(uint64_t *)(vh_buff_addr[i]))) {
+			if(0 == ve_is_valid_address(handle, (uint64_t)vh_iov[i].iov_base))
+			{
+				if (dio_flag) {
+					if (!IS_ALIGNED((uint64_t)vh_iov[i].iov_base, ALIGN_SZ))
+					{
+						retval = -EINVAL;
+						goto hndl_return2;
+					}
+					if(posix_memalign((void *)&vh_buff_addr[i], ALIGN_SZ, vh_iov[i].iov_len))
+					{
+						retval = -ENOMEM;
+						goto hndl_return2;
+					}
+				} else {
+					vh_buff_addr[i] = (uint64_t *)malloc((vh_iov[i].iov_len)*sizeof(char));
+				}
+				if (NULL != (void *)vh_buff_addr[i]) {
+					memset(vh_buff_addr[i],0x00,vh_iov[i].iov_len);
+					if (0 > ve_recv_data(handle,
+								(uint64_t)(vh_iov[i].iov_base),
+								(vh_iov[i].iov_len*sizeof(char)),
+								(uint64_t *)(vh_buff_addr[i]))) {
 						PSEUDO_DEBUG("Failed to receive"
-							" args[%d] from ve", i);
+								" args[%d] from ve", i);
 						PSEUDO_ERROR("Failed(%s) to"
-						" receive %s arguments from"
-						" ve", strerror(errno),
-						SYSCALL_NAME);
+								" receive %s arguments from"
+								" ve", strerror(errno),
+								SYSCALL_NAME);
 						retval = -EFAULT;
 						goto hndl_return2;
+					}
+				} else {
+					retval = -ENOSPC;
+					PSEUDO_ERROR("calloc fail for buffer %d",
+							i+1);
+					goto hndl_return2;
 				}
-			} else {
-				retval = -ENOSPC;
-				PSEUDO_ERROR("calloc fail for buffer %d",
-						i+1);
+			}
+			else
+			{
+				retval = -EFAULT;
 				goto hndl_return2;
 			}
 		}
@@ -419,6 +1893,10 @@ ret_t ve_hndl_readv_preadv(int syscall_num, char *syscall_name,
 		goto hndl_return;
 	}
 
+	/* Check the fd */
+	if((ssize_t)args[0] < 0)
+		return -EBADF;
+
 	/* receive readv()iovcnt from VE memory */
 	iovcnt = args[2];
 	/* Validate the input arguments */
@@ -480,7 +1958,7 @@ ret_t ve_hndl_readv_preadv(int syscall_num, char *syscall_name,
 	}
 
 	dio_flag = fcntl(args[0], F_GETFL, 0);
-	if (dio_flag & O_DIRECT)
+	if ((dio_flag > 0) && (dio_flag & O_DIRECT))
 		dio_flag = 1;
 	else
 		dio_flag = 0;
@@ -489,20 +1967,42 @@ ret_t ve_hndl_readv_preadv(int syscall_num, char *syscall_name,
 	for (i = 0; i < iovcnt; i++) {
 		ve_buff_addr[i] = (uint64_t)vh_iov[i].iov_base;
 		vh_iov[i].iov_base = NULL;
-		if (dio_flag) {
-			vh_iov[i].iov_base = (char *)valloc(vh_iov[i].iov_len);
-		} else {
-			vh_iov[i].iov_base = (void *)calloc
-				((vh_iov[i].iov_len), sizeof(char));
+		if(0 == ve_is_valid_address(handle, (uint64_t)ve_buff_addr[i]))
+		{
+			if (dio_flag) {
+				if (!IS_ALIGNED((uint64_t)vh_iov[i].iov_base, ALIGN_SZ))
+				{
+					retval = -EINVAL;
+					goto hndl_return2;
+				}
+				if(posix_memalign((void *)&vh_iov[i].iov_base, ALIGN_SZ, vh_iov[i].iov_len))
+				{
+					retval = -ENOMEM;
+					goto hndl_return2;
+				}
+			} else {
+				vh_iov[i].iov_base = (void *)malloc
+					((vh_iov[i].iov_len)*sizeof(char));
+			}
+			if (NULL == (void *) vh_iov[i].iov_base) {
+				retval = -EIO;
+				PSEUDO_ERROR("Failed to create internal memory"
+						" buffer");
+				PSEUDO_DEBUG("Error(%s) for calloc in "
+						"buffer %d", strerror(errno), i);
+				err_flag = 1;
+				goto hndl_return2;
+			}
+			memset(vh_iov[i].iov_base,0x00,vh_iov[i].iov_len);
 		}
-
-		if (NULL == (void *) vh_iov[i].iov_base) {
-			retval = -EIO;
-			PSEUDO_ERROR("Failed to create internal memory"
-					" buffer");
-			PSEUDO_DEBUG("Error(%s) for calloc in "
-					"buffer %d", strerror(errno), i);
-			err_flag = 1;
+		else if (!(void*)ve_buff_addr[i])
+		{
+			/* skip and got to next iovec */
+			continue;
+		}
+		else
+		{
+			retval = -EFAULT;
 			goto hndl_return2;
 		}
 		cnt++;
@@ -605,7 +2105,10 @@ hndl_return:
  */
 ret_t ve_readv(int syscall_num, char *syscall_name, veos_handle *handle)
 {
-	return ve_hndl_readv_preadv(syscall_num, syscall_name, handle);
+	if(!VE_ATOMIC_IO)
+		return ve_hndl_readv_preadv_nonatomic(syscall_num, syscall_name, handle);
+	else
+		return ve_hndl_readv_preadv(syscall_num, syscall_name, handle);
 }
 
 /**
@@ -624,7 +2127,10 @@ ret_t ve_readv(int syscall_num, char *syscall_name, veos_handle *handle)
  */
 ret_t ve_writev(int syscall_num, char *syscall_name, veos_handle *handle)
 {
-	return ve_hndl_writev_pwritev(syscall_num, syscall_name, handle);
+	if(!VE_ATOMIC_IO)
+		return ve_hndl_writev_pwritev_nonatomic(syscall_num, syscall_name, handle);
+	else
+		return ve_hndl_writev_pwritev(syscall_num, syscall_name, handle);
 }
 
 /**
@@ -655,7 +2161,12 @@ ret_t ve_hndl_read_pread64(int syscall_num, char *syscall_name,
 	sigset_t signal_mask = { {0} };
 	int flags = 0;
 
+	uint64_t vhva_and_flag = 0;
+	int dma_flag = 0;
+
+	struct pollfd fdec[1];
 	PSEUDO_TRACE("Entering");
+
 	/* get arguments */
 	retval = vedl_get_syscall_args(handle->ve_handle, args, 4);
 	if (retval < 0) {
@@ -673,6 +2184,10 @@ ret_t ve_hndl_read_pread64(int syscall_num, char *syscall_name,
 		}
 	}
 
+	/* Check the fd */
+	if((ssize_t)args[0] < 0)
+		return -EBADF;
+
 	/* receive read() buffer size from VE memory */
 	send_size = args[2];
 	if ((ssize_t) send_size < 0) {
@@ -683,20 +2198,61 @@ ret_t ve_hndl_read_pread64(int syscall_num, char *syscall_name,
 	if (send_size > MAX_RW_COUNT)
 		send_size = MAX_RW_COUNT;
 
+	/* get vhva and dma_flag */
+	vhva_and_flag = (uint64_t)args[1];
+	PSEUDO_DEBUG("vhva and flag is %lx", vhva_and_flag);
+
+	/* judgment dma_flag */
+	if ((vhva_and_flag & VE_ACCELERATED_IO_FLAG) == 0) {
+		PSEUDO_DEBUG("VE_ACCELERATED_IO_FLAG is not set");
+	} else {
+		dma_flag = 1;
+		PSEUDO_DEBUG("VE_ACCELERATED_IO_FLAG is set");
+		PSEUDO_DEBUG("vhva is %p", (void *)args[1]);
+		if ((vhva_and_flag & VE_SECOND_SYS_CALL_FLAG) == 0) {
+			PSEUDO_DEBUG("VE_SECOND_SYS_CALL_FLAG is not set");
+		} else {
+			PSEUDO_DEBUG("VE_SECOND_SYS_CALL_FLAG is set");
+			/* check whether the file descriptor can be read */
+			fdec[0].fd = args[0];
+			fdec[0].events = POLLIN;
+			if (0 >= poll(fdec, 1, 0)) {
+				retval = -errno;
+				PSEUDO_ERROR("Failed to check the state of the fd:%s",
+						strerror(errno));
+				goto hndl_return;
+			}
+		}
+		args[1] = args[1] & VE_ACCELERATED_IO_ADDR_MASK;
+	}
+
 	/* allocate memory to store read data */
 	if (args[1]) {
-		flags = fcntl(args[0],F_GETFL,0);
-		if (flags & O_DIRECT) {
-			/* Under Linux 2.6, alignment to 512-byte boundaries suffices
-			 * e.g -
-			 * 1 --> posix_memalign(&write_buff,512,send_size);
-			 * 2 --> memalign(sysconf(_SC_PAGESIZE),send_size);
-			 */
-			read_buff = (char *)valloc(send_size);
+		flags = fcntl(args[0], F_GETFL, 0);
+		if (!dma_flag) {
+			if (flags & O_DIRECT) {
+				if (!IS_ALIGNED((uint64_t)args[1], ALIGN_SZ))
+				{
+					retval = -EINVAL;
+					goto hndl_return;
+				}
+				/* Under Linux 2.6, alignment to 512-byte boundaries suffices
+				 * e.g -
+				 * 1 --> posix_memalign(&write_buff,512,send_size);
+				 * 2 --> memalign(sysconf(_SC_PAGESIZE),send_size);
+				 */
+				if(posix_memalign((void *)&read_buff, ALIGN_SZ, send_size*sizeof(char)))
+				{
+					retval = -ENOMEM;
+					goto hndl_return;
+				}
+			} else {
+				read_buff = (char *)calloc(send_size, sizeof(char));
+			}
 		} else {
-			read_buff = (char *)calloc(send_size, sizeof(char));
+			read_buff = (char *)args[1];
+			PSEUDO_DEBUG("read_buff = vhva");
 		}
-
 		if (NULL == read_buff) {
 			retval = -EIO;
 			PSEUDO_ERROR("Failed to create internal memory"
@@ -705,12 +2261,14 @@ ret_t ve_hndl_read_pread64(int syscall_num, char *syscall_name,
 					SYSCALL_NAME, strerror(errno));
 			goto hndl_return;
 		}
-
 		/* check whether VE address is valid or invalid */
-		retval = ve_is_valid_address(handle, args[1]);
-		if (retval < 0) {
-			retval = -EFAULT;
-			goto hndl_return1;
+		if (!dma_flag) {
+			retval = ve_is_valid_address(handle, args[1]);
+			if (retval < 0) {
+				retval = -EFAULT;
+				goto hndl_return1;
+			}
+			memset(read_buff,0x00,send_size);
 		}
 	}
 
@@ -736,14 +2294,14 @@ ret_t ve_hndl_read_pread64(int syscall_num, char *syscall_name,
 
 		goto hndl_return1;
 	} else {
-		PSEUDO_DEBUG("syscall = %s read_buf= %s\n read %lu bytes",
-				SYSCALL_NAME, (char *)read_buff, retval);
+		PSEUDO_DEBUG("syscall=%s read_buf=%p\n read %lu bytes",
+				SYSCALL_NAME, read_buff, retval);
 	}
 	PSEUDO_DEBUG("Blocked signals for post-processing");
 
-
 	/* send the read buffer */
-	if (args[1] && retval) {
+	if (args[1] && retval && !dma_flag) {
+		PSEUDO_DEBUG("send data to VE memory when VE_PDMA_IO");
 		if (0 > ve_send_data(handle, args[1],
 					retval, (uint64_t *)read_buff)) {
 			PSEUDO_ERROR("Failed to send data to VE memory");
@@ -756,7 +2314,9 @@ ret_t ve_hndl_read_pread64(int syscall_num, char *syscall_name,
 	}
 
 hndl_return1:
-	free(read_buff);
+	if (!dma_flag) {
+		free(read_buff);
+	}
 hndl_return:
 	/* write return value */
 	PSEUDO_TRACE("Exiting");
@@ -779,7 +2339,10 @@ hndl_return:
  */
 ret_t ve_read(int syscall_num, char *syscall_name, veos_handle *handle)
 {
-	return ve_hndl_read_pread64(syscall_num, syscall_name, handle);
+	if(!VE_ATOMIC_IO)
+		return ve_hndl_read_pread64_nonatomic(syscall_num, syscall_name, handle);
+	else
+		return ve_hndl_read_pread64(syscall_num, syscall_name, handle);
 }
 
 /**
@@ -1843,7 +3406,10 @@ hndl_return:
 */
 ret_t ve_pread64(int syscall_num, char *syscall_name, veos_handle *handle)
 {
-	return ve_hndl_read_pread64(syscall_num, syscall_name, handle);
+	if(!VE_ATOMIC_IO)
+		return ve_hndl_read_pread64_nonatomic(syscall_num, syscall_name, handle);
+	else
+		return ve_hndl_read_pread64(syscall_num, syscall_name, handle);
 }
 
 /**
@@ -1863,7 +3429,10 @@ ret_t ve_pread64(int syscall_num, char *syscall_name, veos_handle *handle)
 */
 ret_t ve_pwrite64(int syscall_num, char *syscall_name, veos_handle *handle)
 {
-	return ve_hndl_write_pwrite64(syscall_num, syscall_name, handle);
+	if(!VE_ATOMIC_IO)
+		return ve_hndl_write_pwrite64_nonatomic(syscall_num, syscall_name, handle);
+	else
+		return ve_hndl_write_pwrite64(syscall_num, syscall_name, handle);
 }
 
 /**
@@ -3093,7 +4662,7 @@ ret_t ve_accept(int syscall_num, char *syscall_name, veos_handle *handle)
  *
  * @return system call value to VE process.
  */
-ret_t ve_sendto(int syscall_num, char *syscall_name, veos_handle *handle)
+ret_t ve_hndl_sendto(int syscall_num, char *syscall_name, veos_handle *handle)
 {
 	ret_t retval = -1;
 	uint64_t args[6] = {0};
@@ -3196,6 +4765,14 @@ hndl_return:
 	return retval;
 }
 
+ret_t ve_sendto(int syscall_num, char *syscall_name, veos_handle *handle)
+{
+	if(!VE_ATOMIC_IO)
+		return ve_hndl_sendto_nonatomic(syscall_num, syscall_name, handle);
+	else
+		return ve_hndl_sendto(syscall_num, syscall_name, handle);
+}
+
 /**
  * @brief Handles recvfrom() system call functionality for VE.
  *
@@ -3213,7 +4790,7 @@ hndl_return:
  *
  * @return system call value to VE process.
  */
-ret_t ve_recvfrom(int syscall_num, char *syscall_name, veos_handle *handle)
+ret_t ve_hndl_recvfrom(int syscall_num, char *syscall_name, veos_handle *handle)
 {
 	ret_t retval = -1;
 	uint64_t args[6] = {0};
@@ -3353,6 +4930,14 @@ hndl_return:
 	return retval;
 }
 
+ret_t ve_recvfrom(int syscall_num, char *syscall_name, veos_handle *handle)
+{
+	if(!VE_ATOMIC_IO)
+		return ve_hndl_recvfrom_nonatomic(syscall_num, syscall_name, handle);
+	else
+		return ve_hndl_recvfrom(syscall_num, syscall_name, handle);
+}
+
 /**
  * @brief handles sendmsg() system call functionality for VE.
  *
@@ -3369,7 +4954,7 @@ hndl_return:
  *
  * @return system call value to VE process.
  */
-ret_t ve_sendmsg(int syscall_num, char *syscall_name, veos_handle *handle)
+ret_t ve_hndl_sendmsg(int syscall_num, char *syscall_name, veos_handle *handle)
 {
 	ret_t retval = -1;
 	uint64_t args[3] = {0};
@@ -3624,6 +5209,11 @@ hndl_return:
 	return retval;
 }
 
+ret_t ve_sendmsg(int syscall_num, char *syscall_name, veos_handle *handle)
+{
+	return ve_hndl_sendmsg(syscall_num, syscall_name, handle);
+}
+
 /**
  * @brief handles recvmsg() system call functionality for VE.
  *
@@ -3640,7 +5230,7 @@ hndl_return:
  *
  * @return system call value to VE process.
  */
-ret_t ve_recvmsg(int syscall_num, char *syscall_name, veos_handle *handle)
+ret_t ve_hndl_recvmsg(int syscall_num, char *syscall_name, veos_handle *handle)
 {
 	ret_t retval = -1;
 	uint64_t args[3] = {0};
@@ -3933,6 +5523,11 @@ hndl_return:
 		free(ve_iov);
 	PSEUDO_TRACE("Exiting");
 	return retval;
+}
+
+ret_t ve_recvmsg(int syscall_num, char *syscall_name, veos_handle *handle)
+{
+	return ve_hndl_recvmsg(syscall_num, syscall_name, handle);
 }
 
 /**
@@ -12687,7 +14282,10 @@ ret_t ve_inotify_init1(int syscall_num, char *syscall_name, veos_handle *handle)
  */
 ret_t ve_preadv(int syscall_num, char *syscall_name, veos_handle *handle)
 {
-	return ve_hndl_readv_preadv(syscall_num, syscall_name, handle);
+	if(!VE_ATOMIC_IO)
+		return ve_hndl_readv_preadv_nonatomic(syscall_num, syscall_name, handle);
+	else
+		return ve_hndl_readv_preadv(syscall_num, syscall_name, handle);
 }
 
 /**
@@ -12707,7 +14305,10 @@ ret_t ve_preadv(int syscall_num, char *syscall_name, veos_handle *handle)
  */
 ret_t ve_pwritev(int syscall_num, char *syscall_name, veos_handle *handle)
 {
-	return ve_hndl_writev_pwritev(syscall_num, syscall_name, handle);
+	if(!VE_ATOMIC_IO)
+		return ve_hndl_writev_pwritev_nonatomic(syscall_num, syscall_name, handle);
+	else
+		return ve_hndl_writev_pwritev(syscall_num, syscall_name, handle);
 }
 
 /**
@@ -12726,7 +14327,7 @@ ret_t ve_pwritev(int syscall_num, char *syscall_name, veos_handle *handle)
 *
 * @return system call value to VE process
 */
-ret_t ve_recvmmsg(int syscall_num, char *syscall_name, veos_handle *handle)
+ret_t ve_hndl_recvmmsg(int syscall_num, char *syscall_name, veos_handle *handle)
 {
 	ret_t retval = -1;
 	uint64_t args[5] = {0};
@@ -13128,6 +14729,11 @@ hndl_return:
 	return retval;
 }
 
+ret_t ve_recvmmsg(int syscall_num, char *syscall_name, veos_handle *handle)
+{
+	return ve_hndl_recvmmsg(syscall_num, syscall_name, handle);
+}
+
 /**
  * @brief Handles fanotify_init() system call functionality for VE.
  *
@@ -13514,7 +15120,7 @@ ret_t ve_syncfs(int syscall_num, char *syscall_name, veos_handle *handle)
  *
  * @return system call value to VE process.
  */
-ret_t ve_sendmmsg(int syscall_num, char *syscall_name, veos_handle *handle)
+ret_t ve_hndl_sendmmsg(int syscall_num, char *syscall_name, veos_handle *handle)
 {
 	ret_t retval = -1;
 	uint64_t args[4] = {0};
@@ -13904,4 +15510,9 @@ hndl_return:
 	/* write return value */
 	PSEUDO_TRACE("Exiting");
 	return retval;
+}
+
+ret_t ve_sendmmsg(int syscall_num, char *syscall_name, veos_handle *handle)
+{
+	return ve_hndl_sendmmsg(syscall_num, syscall_name, handle);
 }

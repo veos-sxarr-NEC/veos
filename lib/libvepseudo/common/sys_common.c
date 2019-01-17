@@ -41,6 +41,7 @@
 #include "pseudo_veshm.h"
 #include "pseudo_vhshm.h"
 #include "sys_veaio.h"
+#include "sys_accelerated_io.h"
 
 /**
  * @brief This function will be invoked to handle the MONC interrupt
@@ -1457,6 +1458,14 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 	case VE_SYSVE_AIO_WAIT:
 		retval = sys_ve_aio_wait(handle, (void *)args[1]);
 		break;
+        case VE_SYSVE_ACCELERATED_IO_INIT:
+                retval = sys_accelerated_io_init(handle,(void **)args[1],
+                                                 (uint64_t *)args[2], (void *)args[3], (uint64_t *)args[4], (int)args[5]);
+                break;
+        case VE_SYSVE_ACCELERATED_IO_REGISTER_DMAATB:
+                retval = sys_accelerated_io_register_dmaatb(handle,(void *)args[1],
+                                                 (uint64_t *)args[2], (void *)args[3], (uint64_t *)args[4], (int)args[5]);
+                break;
 	default:
 		/* write return value */
 		retval = -EINVAL;

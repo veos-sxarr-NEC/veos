@@ -382,7 +382,7 @@ void *buddy_non_compac_alloc(struct buddy_mempool *mp, int order)
 			VEOS_CRIT("calloc error while allocating budy block");
 			return BUDDY_FAILED;
 		}
-		alloc_block->order = order;
+		alloc_block->order = (unsigned long)order;
 		alloc_block->start = (uint64_t)vemaa;
 		VEOS_DEBUG("block allocated start %lx and order %ld",
 			alloc_block->start, alloc_block->order);
@@ -616,7 +616,7 @@ void buddy_free(struct buddy_mempool *mp, struct block *block)
 
 		++order;
 		free(buddy);
-		block->order = order;
+		block->order = (unsigned long)order;
 		VEOS_TRACE("updated blk start %lx and order %ld",
 				block->start, block->order);
 	}

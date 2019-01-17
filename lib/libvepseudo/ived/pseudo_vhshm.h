@@ -42,5 +42,6 @@ int64_t sys_vh_shmat(veos_handle *, int, const void *, int, void **);
 int sys_vh_shmdt(veos_handle *, const void *);
 void sys_prepar_clear_all_vhshm_resource(void);
 void sys_clear_all_vhshm_resource(pid_t);
-
+int64_t sys_vhshm_exchange_attach_request(veos_handle *,void *, size_t, int);
+int sys_vhshm_exchange_detach_request(veos_handle *, int64_t);
 #endif

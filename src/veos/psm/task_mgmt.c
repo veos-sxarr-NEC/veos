@@ -119,10 +119,20 @@ int psm_get_regval(struct ve_task_struct *tsk,
 				"Failed to acquire thread-group-mm-lock");
 		psm_halt_ve_core(0, core_id, &exception_reg, false);
 
-		if (!(exception_reg & VE_EXCEPTION))
-			psm_unassign_assign_task(p_ve_core->curr_ve_task);
-
 		core_stopped = true;
+		if (!(exception_reg & VE_EXCEPTION)) {
+			if (!psm_unassign_assign_task(p_ve_core->curr_ve_task)) {
+				/* Unassigning or assigning task on core failed.
+				 * We will now rely on scheduler to scheduler
+				 * to start VE core, by scheduling some task on it
+				 * */
+				core_stopped = false;
+				pthread_mutex_lock_unlock(&tsk->p_ve_mm->
+						thread_group_mm_lock, UNLOCK,
+						"Failed to release thread-group-mm-lock");
+			}
+		}
+
 	}
 
 	for (i = 0; i < numregs; i++) {

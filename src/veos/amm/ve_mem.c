@@ -3221,7 +3221,7 @@ ret_t update_mapping_desc(vemva_t vaddr, pgno_t *pgno,
 	file_size = (uint64_t)file->stat.st_size;
 
 	memset((void *)pg_no, 0xff, sizeof(pg_no));
-	pgsz = pgmod_to_pgsz(pgmod);
+	pgsz = (size_t)pgmod_to_pgsz(pgmod);
 	sent_size = off_s * pgsz;
 	if (file_size > sent_size)
 		rest_size = file_size - sent_size;
@@ -4246,7 +4246,7 @@ void amm_init_heap_struct(void)
 bool increaserefcnt(int idx)
 {
 	VEOS_TRACE("invoked");
-	if (0 > idx || idx > MAX_JID_PROCESS) {
+	if (0 > idx || idx >= MAX_JID_PROCESS) {
 		VEOS_DEBUG("Invalid index");
 		errno = EINVAL;
 		return 1;
@@ -4269,7 +4269,7 @@ bool decreaserefcnt(int idx)
 {
 
 	VEOS_TRACE("invoked");
-	if (0 > idx || idx > MAX_JID_PROCESS) {
+	if (0 > idx || idx >= MAX_JID_PROCESS) {
 		VEOS_DEBUG("Invalid index");
 		errno = EINVAL;
 		return (bool)1;

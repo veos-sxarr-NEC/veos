@@ -380,8 +380,8 @@ ret_t ve_shmat(int syscall_num, char *syscall_name, veos_handle *handle)
 	shmflag |= (pgmod == PG_2M) ? SHM_2MB : SHM_64MB;
 
 	memset(&ve_page_info, '\0', sizeof(ve_page_info));
-	ve_page_info.page_size = (pgmod == PG_2M) ? PAGE_SIZE_2MB :
-			PAGE_SIZE_64MB;
+	ve_page_info.page_size = (uint64_t)((pgmod == PG_2M) ? PAGE_SIZE_2MB :
+			PAGE_SIZE_64MB);
 
 	ve_page_info.page_mask = ve_page_info.page_size - 1;
 	ve_page_info.chunk_size = ve_page_info.page_size *

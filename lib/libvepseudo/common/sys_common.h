@@ -103,6 +103,24 @@
 extern log4c_category_t *cat_pseudo_core;
 extern const log4c_location_info_t locinfo;
 
+#define VE_ATOMIC_IO ve_atomic_io
+extern bool ve_atomic_io;
+#define MAX_IO_PER_CYCLES (64*1024*1024) /* 64 MB in Bytes*/
+typedef struct non_atomic_io
+{
+	ssize_t io_req_size;
+	ssize_t io_size;
+	ssize_t io_retval;
+	ssize_t io_cycles;
+	ssize_t io_offset;
+	ssize_t io_rem;
+}non_atomic_msg_t;
+
+typedef struct non_atomic_io_msghdr
+{
+	non_atomic_msg_t *non_atomic_io;
+}non_atomic_msghdr_t;
+
 typedef long int ret_t;
 
 void ve_syscall_handler(veos_handle *, int);

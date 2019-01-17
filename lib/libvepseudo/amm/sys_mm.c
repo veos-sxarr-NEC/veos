@@ -1278,7 +1278,7 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 		 * pointer aligned.
 		 */
 		if (pid == tid)
-			ve_info.stack_pointer_aligned = actual_new_bottom;
+			ve_info.stack_pointer_aligned = (uint64_t)actual_new_bottom;
 		/*
 		 * Update new_bottom to return value exclude stack area for
 		 * signal. But, update new_bottom to return actual value if
@@ -1318,7 +1318,7 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 			 * pointer aligned.
 			 */
 			if (pid == tid)
-				ve_info.stack_pointer_aligned = new_bottom;
+				ve_info.stack_pointer_aligned = (uint64_t)new_bottom;
 		} else
 			PSEUDO_DEBUG("Error while mapping new stack");
 	}

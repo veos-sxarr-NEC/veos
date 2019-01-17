@@ -243,7 +243,7 @@ static int64_t sys_vhshm_exchange_request(veos_handle *handle,
  *
  * @note Before calling this function, check all arguments.
  */
-static int64_t sys_vhshm_exchange_attach_request(veos_handle *handle,
+int64_t sys_vhshm_exchange_attach_request(veos_handle *handle,
 					void *vhva, size_t size, int shmflag)
 {
 	int64_t retval = 0;
@@ -275,7 +275,7 @@ static int64_t sys_vhshm_exchange_attach_request(veos_handle *handle,
  *
  * @note Before calling this function, check all arguments.
  */
-static int sys_vhshm_exchange_detach_request(veos_handle *handle, int64_t vehva)
+int sys_vhshm_exchange_detach_request(veos_handle *handle, int64_t vehva)
 {
 	int retval = 0;
 	struct vhshm_args arguments;

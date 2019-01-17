@@ -76,6 +76,7 @@ uint64_t default_page_size;
 struct ve_load_data load_elf;
 struct vemva_header vemva_header;
 
+
 /**
 * @brief Function to abort Pseudo Process.
 */
@@ -334,6 +335,7 @@ int main(int argc, char *argv[], char *envp[])
 	char log4c_home_file_path[NAME_MAX] = {0};
 	char log4c_curr_file_path[NAME_MAX] = {0};
 	const struct log4c_appender_type *type;
+	char *io_type = NULL;
 
 	/* Block all the signals till we successfully create VE process
 	 * also store the previous mask, storing previous mask will
@@ -424,6 +426,14 @@ int main(int argc, char *argv[], char *envp[])
 		fprintf(stderr, "VE process setup failed\n");
 		pseudo_abort();
 	}
+
+	/* Configure if atomic io is enabled/disabled */
+	if((io_type = getenv("VE_ATOMIC_IO")))
+		ve_atomic_io = atoi(io_type);
+	if(ve_atomic_io)
+		PSEUDO_DEBUG("PSEUDO-ATOMIC-IO-MODE-ENABLED");
+	else
+		PSEUDO_DEBUG("PSEUDO-ATOMIC-IO-MODE-DISABLED");
 
 	/* Copy arguments for ve program */
 	if ((argc * sizeof(char*)) > UINT_MAX) {
@@ -705,7 +715,7 @@ int main(int argc, char *argv[], char *envp[])
 	ve_proc.core_id = core_id;
 	ve_proc.traced_proc = ve_trace_me;
 	ve_proc.tracer_pid = getppid();
-	ve_proc.exec_path = (uint64_t)exec_path;
+	ve_proc.exec_path = (uint64_t)&exec_path[0];
 
 	memset(&(ve_proc.exe_name), '\0', ACCT_COMM + 1);
 	strncpy(ve_proc.exe_name, exe_base_name, ACCT_COMM);
