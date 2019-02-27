@@ -121,7 +121,8 @@ int psm_get_regval(struct ve_task_struct *tsk,
 
 		core_stopped = true;
 		if (!(exception_reg & VE_EXCEPTION)) {
-			if (!psm_unassign_assign_task(p_ve_core->curr_ve_task)) {
+			if (!psm_unassign_assign_task(p_ve_core->curr_ve_task,
+						true)) {
 				/* Unassigning or assigning task on core failed.
 				 * We will now rely on scheduler to scheduler
 				 * to start VE core, by scheduling some task on it
@@ -1006,10 +1007,8 @@ int psm_relocate_ve_task(int old_node_id, int old_core_id,
 	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), WRLOCK,
 			"Failed to acquire ve core write lock");
 	if (p_ve_core->curr_ve_task == p_ve_task) {
-
 		VEOS_DEBUG("Invoke psm_unassign_migrate_task");
 		psm_unassign_migrate_task(p_ve_task);
-
 		if (p_ve_task->reg_dirty) {
 			VEOS_DEBUG("Get process context");
 			psm_save_current_user_context(p_ve_task);
@@ -1038,6 +1037,7 @@ int psm_relocate_ve_task(int old_node_id, int old_core_id,
 	insert_ve_task(new_node_id, new_core_id, p_ve_task);
 
 	/* Update the neccesary fields in VE task struct */
+	p_ve_task->atb_dirty = true;
 	p_ve_task->node_id = new_node_id;
 	p_ve_task->core_id = new_core_id;
 	p_ve_task->p_ve_core = VE_CORE(new_node_id, new_core_id);

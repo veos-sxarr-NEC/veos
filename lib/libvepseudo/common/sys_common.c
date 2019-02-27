@@ -1466,6 +1466,11 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
                 retval = sys_accelerated_io_register_dmaatb(handle,(void *)args[1],
                                                  (uint64_t *)args[2], (void *)args[3], (uint64_t *)args[4], (int)args[5]);
                 break;
+
+	case VE_SYSVE_SYSTEM:
+		retval = sys_system(handle, args[1], args[2]);
+		break;
+
 	default:
 		/* write return value */
 		retval = -EINVAL;

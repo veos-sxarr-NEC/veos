@@ -222,3 +222,58 @@ int sys_vhcall_uninstall(veos_handle *handle, vhcall_handle vh)
 	}
 	return retval;
 }
+
+
+/**
+ * @brief Handler of SYSVE_SYSTEM:
+ *
+ *  Invoke system function on VH side whenever VE_SYSVE_SYSTEM command
+ *  received from VE side
+ *
+ * @param[in] handle : VEOS handle
+ * @param[in] line : Input buffer on VE side to receive command.
+ *          [If line is not NULL, data is copied in to VH]
+ * @param size : size of input buffer
+ *
+ * @return 0 on success. -1 on error.
+ */
+
+int sys_system(veos_handle *handle, uintptr_t line,
+		size_t size)
+{
+
+	int retval = 0, recv_data_status = 0;
+	void *command = NULL;
+	PSEUDO_DEBUG("sys_system is called\n");
+
+
+	/* allocate buffer */
+	if (line != 0L && size != 0) {
+		command = calloc(1, size);
+		if (NULL == command) {
+			PSEUDO_ERROR("calloc failed: %s\n",
+					strerror(errno));
+			retval = -1;
+			goto err_alloc_command;
+		}
+	}
+	/* copy in */
+	if (command != NULL) {
+		recv_data_status = ve_recv_data(handle, line, size,
+							 command);
+		if (recv_data_status < 0) {
+			PSEUDO_ERROR("ve_recv_data returned %d\n",
+					recv_data_status);
+			retval = -1;
+			goto err_recv_data;
+		}
+	}
+	retval = system(command);
+	PSEUDO_DEBUG("(command:%s), status[%d]", (char *)command,
+					retval);
+
+err_recv_data:
+	free(command);
+err_alloc_command:
+	return retval;
+}

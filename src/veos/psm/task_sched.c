@@ -94,15 +94,25 @@ void psm_handle_assign_failure(struct ve_task_struct *curr_ve_task,
  * @brief Unassign and assign task on core
  *
  * @param tsk Pointer to VE task struct
+ * @param retry_assign true, when retry mechanism is added
+ * 			to assign task on core (when get register
+ * 			request is received), else false
  *
  * @return true when unassign and assign is successful else false
  */
-bool psm_unassign_assign_task(struct ve_task_struct *tsk)
+bool psm_unassign_assign_task(struct ve_task_struct *tsk, bool retry_assign)
 {
 	bool ret = false;
 	int retval = -1;
+	int retry = 0;
+	int delay = 0;
 
 	VEOS_TRACE("Entering");
+
+	if (retry_assign)  {
+		retry = ASSIGN_RETRY_CNT;	/* number of retries when EAGAIN */
+		delay = ASSIGN_RETRY_DELAY;	/* start delay, doubles every retry */
+	}
 
 	/* Unassign task from core */
 	ret = psm_unassign_task(tsk);
@@ -120,31 +130,36 @@ bool psm_unassign_assign_task(struct ve_task_struct *tsk)
 	/* Assign task on core */
 	VEOS_DEBUG("Assigning task with pid: %d",
 			tsk->pid);
-	retval = vedl_assign_ve_task(VE_HANDLE(tsk->node_id),
-			tsk->p_ve_core->phys_core_num,
-			tsk->pid);
-	if (retval) {
-		if (EAGAIN == errno) {
-			VEOS_ERROR("Assign failed exception"
-					" not served PID %d",
-					tsk->pid);
-			ret = false;
-			goto hndl_ret;
-		} else {
-			/* errno is other than EAGAIN then there is
-			 * a bug/race in veos which is not handled
-			 * */
-			VEOS_DEBUG("Failed (%s) to assign PID %d",
-					strerror(errno),
-					tsk->pid);
-			veos_abort("Failed to assign task on core");
-		}
-	}
+	do {
+		retval = vedl_assign_ve_task(VE_HANDLE(tsk->node_id),
+				tsk->p_ve_core->phys_core_num,
+				tsk->pid);
+		if (retval) {
+			if (EAGAIN == errno) {
+				VEOS_ERROR("Assign failed exception"
+						" not served PID %d",
+						tsk->pid);
+				if (retry && retry_assign) {
+					retry--;
+					usleep(delay);
+					delay *= 2;
+				} else
+					return false;
+			} else {
+				/* errno is other than EAGAIN then there is
+				 * a bug/race in veos which is not handled
+				 * */
+				VEOS_ERROR("Failed (%s) to assign PID %d",
+						strerror(errno),
+						tsk->pid);
+				veos_abort("Failed to assign task on core");
+			}
+		} else
+			break;
+	} while(1);
 	tsk->assign_task_flag = TSK_ASSIGN;
-	ret = true;
-hndl_ret:
 	VEOS_TRACE("Exiting");
-	return ret;
+	return true;
 }
 
 /**
@@ -510,7 +525,8 @@ bool psm_check_sched_jid_core(uint64_t *core_set,
 			psm_halt_ve_core(0, core_loop, (arr_exs + core_loop), false);
 
 			if (!(*(arr_exs + core_loop) & VE_EXCEPTION) || reg_type == _DMAATB) {
-				if (psm_unassign_assign_task(p_ve_core->curr_ve_task)) {
+				if (psm_unassign_assign_task(p_ve_core->curr_ve_task,
+							false)) {
 					*core_set |= 1 << core_loop;
 					/* Set core state to HALT so that it cannot be
 					 * started until syncing finish */

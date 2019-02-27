@@ -32,6 +32,8 @@
 #include "task_signal.h"
 #include "task_mgmt.h"
 
+#define ASSIGN_RETRY_CNT	8
+#define ASSIGN_RETRY_DELAY	1
 #define VE_UDMA_OFFSET_OF_DMACTL(i) (offsetof(core_system_reg_t, dmactl[(i)]))
 #define VE_UDMA_OFFSET_OF_DMADESC(i) (offsetof(core_system_reg_t, dmades[(i)]))
 #define VE_CORE_OFFSET_OF_JIDR (offsetof(core_system_reg_t, JIDR))
@@ -120,7 +122,7 @@ void psm_rebalance_task_to_core(struct ve_core_struct *);
 void psm_unassign_migrate_task(struct ve_task_struct *);
 int psm_calc_task_exec_time(struct ve_task_struct *);
 bool psm_unassign_task(struct ve_task_struct *);
-bool psm_unassign_assign_task(struct ve_task_struct *);
+bool psm_unassign_assign_task(struct ve_task_struct *, bool);
 struct ve_task_struct *find_and_remove_task_to_rebalance(int, int);
 void insert_and_update_task_to_rebalance(int, int, struct ve_task_struct *);
 #endif

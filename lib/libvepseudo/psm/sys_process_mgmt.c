@@ -1469,9 +1469,9 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 	uint64_t args[3] = {0};
 	struct statvfs st = {0};
 	struct stat sb = {0};
-	char ve_env[][16] = {"VE_EXEC_PATH=", "PWD=", "LOG4C_RCPATH=", "HOME="};
+	char ve_env[][24] = {"VE_EXEC_PATH=", "PWD=", "LOG4C_RCPATH=", "HOME=","VE_LD_ORIGIN_PATH="};
 	int indx = 0;
-	int ve_env_given[4] = {0};
+	int ve_env_given[5] = {0};
 	/* To fetch VE pointers */
 	char *execve_arg[EXECVE_MAX_ARGS] = {NULL};
 	char *execve_envp[EXECVE_MAX_ENVP] = {NULL};
@@ -1743,7 +1743,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 		 * to execve()
 		 * */
 		if (exe_flag) {
-			for (indx = 0; indx < 4; indx++) {
+			for (indx = 0; indx < 5; indx++) {
 				if (!strncmp(execve_vh_envp[cntr],
 					ve_env[indx], strlen(ve_env[indx]))) {
 					ve_env_given[indx] = 1;
@@ -1764,7 +1764,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 	 * in environment variable array received as argument to execve().
 	 * */
 	if (exe_flag) {
-		for (indx = 0; indx < 4; indx++) {
+		for (indx = 0; indx < 5; indx++) {
 			if (ve_env_given[indx])
 				continue;
 
@@ -1801,6 +1801,11 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 			case 3:
 				sprintf(execve_vh_envp[cntr],
 						"HOME=%s", getenv("HOME"));
+				execve_vh_envp[++cntr] = NULL;
+				break;
+			case 4:
+				sprintf(execve_vh_envp[cntr],
+						"VE_LD_ORIGIN_PATH=%s", getenv("VE_LD_ORIGIN_PATH"));
 				execve_vh_envp[++cntr] = NULL;
 				break;
 			}

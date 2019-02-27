@@ -27,6 +27,11 @@ PATH_VE_EXEC="@ve_libexecdir@/ve_exec"
 
 export VE_EXEC_PATH=$PATH_VE_EXEC
 
+if [ -z "$VE_LD_ORIGIN_PATH" ]
+then
+       export VE_LD_ORIGIN_PATH=`pwd`
+fi
+
 flag_traceme=0
 
 VE_NODE=0
