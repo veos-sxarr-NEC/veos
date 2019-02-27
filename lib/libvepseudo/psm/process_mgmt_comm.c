@@ -1189,7 +1189,7 @@ int pseudo_psm_send_start_ve_proc_req(struct  ve_start_ve_req_cmd *start_ve_req,
 	start_ve_proc.pseudo_veos_cmd_id = START_VE_REQ;
 
 	start_ve_proc.has_pseudo_pid = true;
-	start_ve_proc.pseudo_pid = getpid();
+	start_ve_proc.pseudo_pid = syscall(SYS_gettid);
 
 	start_ve_proc_msg.len = sizeof(struct ve_start_ve_req_cmd);
 	start_ve_proc_msg.data = (uint8_t *)start_ve_req;
