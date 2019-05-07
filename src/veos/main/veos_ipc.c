@@ -434,3 +434,64 @@ hndl_return:
 	VEOS_TRACE("Exiting");
 	veos_abort("VEOS Main thread failure...");
 }
+
+int veos_reply(veos_thread_arg_t *pti, int64_t result,
+	ProtobufCBinaryData *data)
+{
+        int ret;
+        PseudoVeosMessage msg = PSEUDO_VEOS_MESSAGE__INIT;
+        size_t msg_len;
+        void *msg_buf;
+        pid_t pid;
+
+        assert(pti != NULL);
+
+        VEOS_TRACE("Entering");
+
+        pid = pti->cred.pid;
+
+        msg.has_syscall_retval = true;
+        msg.syscall_retval = result;
+        if (data != NULL) {
+                msg.has_pseudo_msg = true;
+                msg.pseudo_msg = *data;
+        }
+
+        /* pack a message */
+        msg_len = pseudo_veos_message__get_packed_size(&msg);
+        if (msg_len == 0) {
+                VEOS_ERROR("PID:%d:IPC message error(packed size)", pid);
+                ret = -ECANCELED;
+                goto err_ret_nofree;
+        }
+        msg_buf = malloc(msg_len);
+        if (msg_buf == NULL) {
+                ret = -errno;
+                VEOS_ERROR("PID:%d:Buffer allocation failed: %s",
+                        pid, strerror(-ret));
+                goto err_ret_nofree;
+        }
+        memset(msg_buf, 0x0, msg_len);
+        ret = pseudo_veos_message__pack(&msg, msg_buf);
+        if (ret <= 0) {
+                VEOS_ERROR("PID:%d:IPC message error(pack)", pid);
+                ret = -ECANCELED;
+                goto err_ret;
+        }
+
+        /* comunicate with Pseudo */
+        ret = psm_pseudo_send_cmd(pti->socket_descriptor, msg_buf, msg_len);
+        if (ret < 0) {
+                VEOS_ERROR("PID:%d:IPC message error(send cmd)", pid);
+                ret = -ECANCELED;
+                goto err_ret;
+        }
+
+        ret = 0;
+err_ret:
+        free(msg_buf);
+err_ret_nofree:
+        VEOS_TRACE("Exiting");
+
+        return ret;
+}

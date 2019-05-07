@@ -557,6 +557,14 @@ struct userdma {
 };
 
 /**
+ * @brief Structure to store to store information for PCI operation.
+ */
+struct pcicmd {
+	uint64_t addr;
+	size_t size;
+};
+
+/**
 * @brief command ID's used to communicate b/w VEOS and PSEUDO side
 */
 enum pseudo_veos_msg_id {
@@ -618,6 +626,10 @@ enum pseudo_veos_msg_id {
 	CMD_VHSHM,
 	MAP_DMADES,
 	UNMAP_DMADES,
+	REGIS_PCIATB,
+	UNREG_PCIATB,
+	REGIS_DMAATB,
+	UNREG_DMAATB,
 	PSEUDO_VEOS_MAX_MSG_NUM,
 	CMD_INVALID = -1,
 };

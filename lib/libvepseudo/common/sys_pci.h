@@ -1,5 +1,5 @@
-/*
- * Copyright (C) 2017-2018 NEC Corporation
+/**
+ * Copyright (C) 2018 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -11,30 +11,29 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU Lesser General Public License for more details.
- *
  * You should have received a copy of the GNU Lesser General Public
  * License along with the VEOS; if not, see
  * <http://www.gnu.org/licenses/>.
  */
+
 /**
- * @file sysve_os.h
- * @brief Header file for sysve functions in pseudo process side.
+ * @file pseudo_vepci.h
+ * @brief Header for VEPCI in psedo process
+ *
+ * @internal
+ * @author VEPCI
  */
 
-#ifndef __VE_SYSVE_OS_H
-#define __VE_SYSVE_OS_H
+#ifndef __PSEUDO_VEPCI_H
+#define __PSEUDO_VEPCI_H
 
+#include <sys/types.h>
 #include "sys_common.h"
-#include <veos_defs.h>
-#include "proto_buff_schema.pb-c.h"
 #include "comm_request.h"
 
-int ve_sys_get_pci_sync(veos_handle *, uint8_t, uint64_t *, uint64_t *);
-int ve_sys_get_fixed_vehva(veos_handle *, uint64_t, uint64_t *);
-int ve_sys_set_user_reg(veos_handle *, uint64_t, uint64_t);
-ssize_t ve_sys_get_ve_info(veos_handle *, char *, char *, size_t);
-int ve_sys_map_dmades(veos_handle *, uint64_t * ,uint64_t *);
-int ve_sys_unmap_dmades(veos_handle *, uint64_t );
-int64_t ve_request_veos(veos_handle *, enum pseudo_veos_msg_id, ProtobufCBinaryData *, PseudoVeosMessage **reply_msg);
+int64_t ve_sys_pcireq(veos_handle *, uint64_t, size_t, enum pseudo_veos_msg_id);
+int ve_sys_pciunmap(veos_handle *, uint64_t, size_t);
+int64_t ve_sys_map_pciatb(veos_handle *, uint64_t, size_t);
+int ve_sys_unmap_pciatb(veos_handle *, uint64_t, size_t);
 
 #endif
