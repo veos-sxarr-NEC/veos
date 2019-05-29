@@ -349,7 +349,7 @@ int amm_handle_shmget(veos_thread_arg_t *pti)
 	struct ve_shm_cmd req =  {0};
 	struct shm *shm = NULL;
 	struct shmid_ds buf = { {0} };
-	struct shm_seginfo *shm_info = NULL;
+	struct shm_seginfo shm_info = {0};
 	char ack[MAX_PROTO_MSG_SIZE] = {0};
 	ssize_t pseudo_msg_len = -1, msg_len = -1;
 	proc_t ve_proc_info = {0};
@@ -386,14 +386,6 @@ int amm_handle_shmget(veos_thread_arg_t *pti)
 		goto send_ack;
 	}
 
-	shm_info = calloc(1, sizeof(struct shm_seginfo));
-	if (NULL == shm_info) {
-		ret = -ENOMEM;
-		VEOS_CRIT("calloc error (%s) while allocating mem for shm object",
-				strerror(-ret));
-		goto send_ack;
-	}
-
 	/* Get the information of /proc/## for the given remote pid */
 	ret = psm_get_ve_proc_info(tsk->pid, &ve_proc_info);
 	if (-1 == ret) {
@@ -403,13 +395,8 @@ int amm_handle_shmget(veos_thread_arg_t *pti)
 		goto send_ack;
 	}
 
-	ret = shmctl(req.shmid, IPC_STAT, &buf);
-	if (0 > ret) {
-		ret = -errno;
-		VEOS_DEBUG("Error (%s) by host shmctl()"
-				"for shmid(0x%lx)", strerror(-ret), req.shmid);
-		goto send_ack;
-	}
+	/* get the stat from IPC received */
+	buf = req.shm_stat;
 
 	if ((buf.shm_perm.uid == ve_proc_info.euid &&
 				buf.shm_perm.uid == ve_proc_info.suid &&
@@ -434,21 +421,21 @@ int amm_handle_shmget(veos_thread_arg_t *pti)
 	}
 ok:
 	shm = amm_get_shm_segment(req.key, req.shmid, req.size,
-			req.flag, req.create);
+			req.flag, req.create, ve_proc_info.ns[IPCNS], buf);
 	if (NULL == shm) {
 		ret = -errno;
 		VEOS_ERROR("Error while getting shm segment for (pid :%d)", pid);
 	} else {
 		ret = 0;
-		shm_info->pgmod = shm->pgmod;
-		shm_info->size = shm->size;
+		shm_info.pgmod = shm->pgmod;
+		shm_info.size = shm->size;
 		VEOS_DEBUG("shm segment allocated to (pid :%d) successfull", pid);
 	}
 
 send_ack:
 	ve_shmget_ack.has_syscall_retval = true;
 	ve_shm_ack_msg.len = sizeof(struct shm_seginfo);
-	ve_shm_ack_msg.data = (uint8_t *)shm_info;
+	ve_shm_ack_msg.data = (uint8_t *)&shm_info;
 	ve_shmget_ack.has_pseudo_msg = true;
 	ve_shmget_ack.pseudo_msg = ve_shm_ack_msg;
 	ve_shmget_ack.syscall_retval = ret;
@@ -475,8 +462,6 @@ hndl_return:
 	if (tsk)
 		put_ve_task_struct(tsk);
 	VEOS_TRACE("returned");
-	if (shm_info)
-		free(shm_info);
 	return ret;
 }
 
@@ -537,13 +522,7 @@ int amm_handle_shmat(veos_thread_arg_t *pti)
 		goto send_ack;
 	}
 
-	ret = shmctl(req.shmid, IPC_STAT, &buf);
-	if (0 > ret) {
-		ret = -errno;
-		VEOS_DEBUG("Error (%s) by host shmctl()"
-				"for shmid(0x%lx)", strerror(-ret), req.shmid);
-		goto send_ack;
-	}
+	buf = req.shm_stat;
 
 	if ((buf.shm_perm.uid == ve_proc_info.euid &&
 				buf.shm_perm.uid == ve_proc_info.suid &&
@@ -571,7 +550,7 @@ int amm_handle_shmat(veos_thread_arg_t *pti)
 ok:
 
 	ret = amm_do_shmat(req.key, req.shmid, req.vaddr, req.size,
-			req.shmperm, tsk);
+			req.shmperm, tsk, ve_proc_info.ns[IPCNS], buf);
 	if (0 > ret)
 		VEOS_ERROR("error while attaching shm segment for (pid %d)", pid);
 	else
@@ -661,13 +640,7 @@ int amm_handle_shmctl(veos_thread_arg_t *pti)
 		goto send_ack;
 	}
 
-	ret = shmctl(req.shmid, IPC_STAT, &buf);
-	if (0 > ret) {
-		ret = -errno;
-		VEOS_DEBUG("Error (%s) by host shmctl()"
-				"for shmid(0x%lx)", strerror(-ret), req.shmid);
-		goto send_ack;
-	}
+	buf = req.shm_stat;
 
 	if ((buf.shm_perm.uid == ve_proc_info.euid) ||
 			(buf.shm_perm.cuid == ve_proc_info.euid)) {
@@ -683,7 +656,7 @@ int amm_handle_shmctl(veos_thread_arg_t *pti)
 	}
 ok:
 	VEOS_DEBUG("pid(%d) calling shmclt for shmid(%ld)", tsk->pid, req.shmid);
-	ret = amm_do_shmctl(req.shmid);
+	ret = amm_do_shmctl(req.shmid, ve_proc_info.ns[IPCNS]);
 	if (0 > ret)
 		VEOS_DEBUG("error while control operation on shm segment (pid:%d)", pid);
 	else
@@ -1255,7 +1228,7 @@ int amm_handle_process_vm_rw_req(veos_thread_arg_t *pti)
 	ssize_t pseudo_msg_len = -1, msg_len = -1;
 	proc_t ve_proc_info;
 	struct ve_process_rw_info ve_process_rw_info = {0};
-	pid_t pid = -1;
+	pid_t pid = -1, host_pid = -1;
 
 	VEOS_TRACE("invoked thread arg pti(%p)", pti);
 	PseudoVeosMessage ve_vm_rw_ack = PSEUDO_VEOS_MESSAGE__INIT;
@@ -1274,6 +1247,21 @@ int amm_handle_process_vm_rw_req(veos_thread_arg_t *pti)
 			 pseudo_msg).data,
 			length);
 
+	/* Convert namespace pid to host pid */
+	host_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
+			ve_process_rw_info.r_pid);
+	if (host_pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				ve_process_rw_info.r_pid,
+				strerror(errno));
+		ret = -errno;
+		goto send_ack;
+	}
+	ve_process_rw_info.r_pid = host_pid;
 
 	/* finds the ve_task_struct based on the pid received from
 	 * pseudo process.

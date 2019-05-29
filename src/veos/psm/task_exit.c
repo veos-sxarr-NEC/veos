@@ -94,7 +94,17 @@ void psm_do_execve_wait(struct ve_task_struct *del_task)
 			"Failed to acquire delete task's core write lock");
 	pthread_mutex_lock_unlock(&(del_task->ve_task_lock), LOCK,
 			"Failed to acquire task lock");
-	psm_set_task_state(del_task, EXIT_DEAD);
+	if (del_task->rpm_preserve_task == 1) {
+		/* don't mark the process as DEAD if it's a rpm created process
+		 * invoking execve() for its cleanup is going to be initiated
+		 * from RUSAGE request (trac #1597) */
+		VEOS_DEBUG("Not deleting RPM task invoking VH binary execve");
+		psm_set_task_state(del_task, ZOMBIE);
+	}
+	else {
+		psm_set_task_state(del_task, EXIT_DEAD);
+	}
+
 	pthread_mutex_lock_unlock(&(del_task->ve_task_lock), UNLOCK,
 			"Failed to release task lock");
 	pthread_rwlock_lock_unlock(&(del_task->p_ve_core->ve_core_lock),
@@ -247,7 +257,13 @@ int psm_del_sighand_struct(struct ve_task_struct *p_ve_task)
 	if (ref_count <= 0) {
 		pthread_mutex_destroy(&(sighand->siglock));
 		pthread_mutex_destroy(&(sighand->del_lock));
-		shmdt((void *)sighand->lshm_addr);
+
+		if (false == p_ve_task->vforked_proc)
+			munmap((void *)sighand->lshm_addr, PAGE_SIZE_4KB);
+		else
+			VEOS_DEBUG("vforked process(%d) not unmapping LHM/SHM",
+					p_ve_task->pid);
+
 		/* One might wonder what will happen when a task dumping core
 		 * has received SIGKILL signal and deleted while dupming core.
 		 * To her surprise we don't do coredumping and deletion of
@@ -655,7 +671,8 @@ void delete_entries(struct ve_task_struct *del_task_struct)
 	 * struct ve_acct in accounting file.
 	 */
 	if (veos_acct.active == true &&
-			del_task_struct->sighand->ref_count == 1)
+			del_task_struct->sighand->ref_count == 1 &&
+			!del_task_struct->dummy_task)
 		veos_acct_ve_proc(del_task_struct);
 
 	pid = del_task_struct->pid;
@@ -678,6 +695,8 @@ void delete_entries(struct ve_task_struct *del_task_struct)
 		VE_CORE(node_id, core_id)->ve_task_list = ve_task_list_head;
 
 		ve_atomic_dec(&(VE_NODE(node_id)->num_ve_proc));
+		ve_atomic_dec(&(VE_NODE(node_id)->
+			numa[del_task_struct->numa_node].num_ve_proc));
 		ve_atomic_dec(&(VE_CORE(node_id, core_id)->num_ve_proc));
 
 		pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
@@ -697,6 +716,8 @@ void delete_entries(struct ve_task_struct *del_task_struct)
 	}
 
 	ve_atomic_dec(&(VE_NODE(node_id)->num_ve_proc));
+	ve_atomic_dec(&(VE_NODE(node_id)->
+		numa[del_task_struct->numa_node].num_ve_proc));
 	ve_atomic_dec(&(VE_CORE(node_id, core_id)->num_ve_proc));
 
 	pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),

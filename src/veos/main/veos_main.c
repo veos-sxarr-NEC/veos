@@ -726,12 +726,12 @@ int main(int argc, char *argv[])
 						vemm_sock_file);
 
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
-					"Timer interval is %ld nano sec",
-					veos_timer_interval);
+					"Timer interval is %ld ms",
+					veos_timer_interval / (1000 * 1000));
 
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
-					"Time slice is %ld micro sec",
-					veos_time_slice);
+					"Time slice is %ld ms",
+					veos_time_slice / 1000);
 
 	if (opt_clean != 0) {
 		fprintf(stderr, "Cleaning up resources ...\n");

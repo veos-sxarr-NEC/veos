@@ -2324,12 +2324,93 @@ error_return:
 	return ret;
 }
 
-ret_t ve_remap_file_pages(int syscall_num, char *syscall_name, veos_handle *handle)
+/**
+ * @brief Handles the functionality of get_mempolicy system call for VE
+ *
+ * int get_mempolicy(int *mode, unsigned long *nodemask,
+ * 		unsigned long maxnode, unsigned long addr,
+ * 		unsigned long flags);
+ *
+ * @param[in] syscall_num System Call number
+ * @param[in] syscall_name System Call name
+ * @param[in] handle VEOS handle
+ *
+ * @return 0 on success, negative on failure.
+ *
+ * @author AMM / Memory Management
+ */
+ret_t ve_get_mempolicy(int syscall_num, char *syscall_name, veos_handle *handle)
 {
-	return 0;
+	ret_t retval = -1;
+	uint64_t args[5] = {0};
+
+	PSEUDO_TRACE("Entering");
+	PSEUDO_DEBUG("%s is called", syscall_name);
+
+	/* get arguments */
+	retval = vedl_get_syscall_args(handle->ve_handle, args, 5);
+	if (retval < 0) {
+		PSEUDO_ERROR("get_mempolicy() failure: "
+				"failed to fetch system call aguments");
+		PSEUDO_DEBUG("%s failure: "
+				"failed to fetch system call aguments,"
+				" return value: %d, mapped value: %d",
+				syscall_name, (int)retval, -EFAULT);
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+
+	if ((int *)args[0] == NULL) {
+		PSEUDO_DEBUG("get_mempolicy mode is NULL");
+		retval = 0;
+		goto hndl_return;
+	}
+
+	/* Currently we only support flag = 0 for get_mempolicy() */
+	if (args[4] != 0) {
+		PSEUDO_DEBUG("Invalid get_mempolicy argument flags %ld",
+				args[4]);
+		retval = -EINVAL;
+		goto hndl_return;
+	}
+
+	/* interact with PSM to get the mempolicy of the VE process
+	 * */
+	retval = pseudo_psm_send_get_mempolicy_req(handle->veos_sock_fd);
+	if (retval < 0) {
+		PSEUDO_DEBUG("retval: %d, mapped value: %d",
+				(int)retval, -EFAULT);
+		retval = -EFAULT;
+		PSEUDO_ERROR("get_mempolicy() failure: "
+				"veos request error, return value %d",
+				(int)retval);
+		goto hndl_return;
+	}
+
+	/* wait for acknowledgment from PSM */
+	retval = pseudo_psm_recv_get_mempolicy_ack(handle->veos_sock_fd);
+	if (retval < 0) {
+		PSEUDO_ERROR("get_mempolicy() failure: "
+				"veos acknowledgement error, return value %d",
+				(int)retval);
+		goto hndl_return;
+	}
+
+	retval = ve_send_data(handle, args[0], sizeof(int),
+			(uint64_t *)&retval);
+	if (0 > retval) {
+		PSEUDO_DEBUG("retval: %d, mapped value: %d", -errno, -EFAULT);
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+	retval = 0;
+hndl_return:
+	/* write return value */
+	PSEUDO_TRACE("Exiting");
+	return retval;
 }
 
-ret_t ve_get_mempolicy(int syscall_num, char *syscall_name, veos_handle *handle)
+ret_t ve_remap_file_pages(int syscall_num, char *syscall_name, veos_handle *handle)
 {
 	return 0;
 }

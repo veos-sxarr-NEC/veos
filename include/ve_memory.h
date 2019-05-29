@@ -82,7 +82,7 @@
 
 #define PG_ADDR		0x0000FFFFFFFFF000LL	/* physical page frame number. */
 #define PG_TYPE		0x0000000000000E00LL	/* type */
-#define PG_BYPS		0x0000000000000002LL	/* cashe bypass bit. */
+#define PG_BYPS		0x0000000000000002LL	/* cache bypass bit. */
 #define PG_WRITI	0x0000000000000004LL	/* write protection bit. */
 #define	PG_NP		0x0000000000000001LL	/* invalid bit. */
 #define JIDCLR		0x00000000000FF000LL
@@ -91,6 +91,7 @@
 
 #define	type_shft	9	/* type field */
 #define	prot_shft	2	/* write protection field */
+#define	bypass_shft	1	/* cache bypass field */
 
 #define PSSHFT4K	12	/* page field (4KB)  */
 #define PSSHFT		21	/* page field (2MB)  */
@@ -141,6 +142,13 @@
 /* Check: If P is write inhibit, return 1  */
 #define pg_isvalid(P)		(!((P)->data & PG_NP))
 /* Check: If P is valid, return 1  */
+
+#define	pg_setbypass(P)		((P)->data |= PG_BYPS)
+/* Set cache bypass bit. */
+#define	pg_unsetbypass(P)	((P)->data &= ~PG_BYPS)
+/* Unset cache bypass bit. */
+#define pg_isbypass(P)		(((P)->data & PG_BYPS)>>bypass_shft)
+/* Check: If P is cache bypassbit, return 1  */
 
 /* physical page address in page descriptor */
 #define pgaddr(P)	((uint64_t)(((P)->data) & PG_ADDR))

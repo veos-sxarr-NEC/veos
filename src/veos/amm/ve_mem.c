@@ -25,6 +25,8 @@
  */
 #include <unistd.h>
 #include <sys/mman.h>
+#include <fcntl.h>
+#include <sys/types.h>
 #include "ve_shm.h"
 #include "ve_mem.h"
 #include "mm_common.h"
@@ -39,13 +41,18 @@
 #include "pciatb_api.h"
 #include "pmap.h"
 #include "buddy.h"
+#include "mempolicy.h"
 
+
+#define CROSSES_NUMA_NODE -1
+#define INVALID_NUMA_NODE -2
 static bool mean_heap;
 heap heap_min_array[MAX_JID_PROCESS];
 int hash[MAX_JID_PROCESS];
 struct jid_data jid_globl = {.mtx = PTHREAD_MUTEX_INITIALIZER};
 static struct ve_dirty_page dirty_page;
 static pthread_t clear_mem_th;
+struct numa_sysfs_info numa_sys_info;
 
 /**
  * @brief structure for dirty pages
@@ -104,7 +111,8 @@ int amm_alloc_mm_struct(struct ve_mm_struct **mm)
 	 */
 	*mm = (struct ve_mm_struct *)calloc
 			(1, sizeof(struct ve_mm_struct));
-	if (NULL == *mm) {
+	if (*mm == NULL) {
+		ret = -errno;
 		VEOS_CRIT("failed to allocate mm struct");
 		return ret;
 	}
@@ -112,7 +120,7 @@ int amm_alloc_mm_struct(struct ve_mm_struct **mm)
 	VEOS_DEBUG("mm struct(%p) allocated", *mm);
 
 	ret =  __amm_alloc_mm_struct(mm);
-	if (0 > ret) {
+	if (ret < 0) {
 		VEOS_DEBUG("Fails to alloc mm struct");
 		goto amm_alloc_mm_error;
 	}
@@ -120,7 +128,7 @@ int amm_alloc_mm_struct(struct ve_mm_struct **mm)
 	 * Initializing pthread mutex for synchronization
 	 */
 	ret = pthread_mutex_init(&((*mm)->thread_group_mm_lock), NULL);
-	if (0 != ret) {
+	if (ret != 0) {
 		ret = -ret;
 		VEOS_DEBUG("Error (%s) while initializing mm lock",
 				strerror(-ret));
@@ -142,16 +150,21 @@ amm_alloc_mm_error:
 * @param[in,out] mm_new Double pointer to new mm_struct
 * @param[in] node_id Node ID
 * @param[in] flag Distinguish b/w thread or process and type of memory mapping
+* @param[in] numa_node NUMA node number of the VE process requires memories is
+*		 running on.
 *
 * @return On success return 0 and and negative of errno on failure.
 */
 int amm_copy_mm_struct(struct ve_mm_struct *mm_old,
 		struct ve_mm_struct **mm_new,
-		int flag)
+		int flag,
+		int numa_node)
 {
 	ret_t ret = 0;
 	struct ve_mm_struct *mm = NULL;
 	struct shm_map *shm_tmp = NULL, *tmp = NULL;
+	struct ve_node_struct *vnode = VE_NODE(0);
+	int index = 0;
 
 	VEOS_TRACE("invoked");
 	VEOS_TRACE("copy mm from(%p) to (%p)",
@@ -166,7 +179,8 @@ int amm_copy_mm_struct(struct ve_mm_struct *mm_old,
 		mm_old->ref_count++;
 		*mm_new = mm_old;
 		pthread_mutex_lock_unlock(&mm_old->thread_group_mm_lock,
-				UNLOCK, "Failed to release mm-thread-group-lock");
+					UNLOCK,
+					"Failed to release mm-thread-group-lock");
 		VEOS_DEBUG("old mm(%p) refcnt(%lu)",
 				mm_old, mm_old->ref_count);
 		break;
@@ -176,7 +190,7 @@ int amm_copy_mm_struct(struct ve_mm_struct *mm_old,
 		 * Allocation for new mm_struct
 		 */
 		ret = amm_alloc_mm_struct(mm_new);
-		if (0 > ret) {
+		if (ret < 0) {
 			VEOS_CRIT("fails to allocate mm struct");
 			return ret;
 		}
@@ -195,33 +209,37 @@ int amm_copy_mm_struct(struct ve_mm_struct *mm_old,
 			return ret;
 		}
 
-		ret = amm_copy_atb_private(&(mm_old->atb),
-				&(mm->atb), mm->veshm);
-		if (0 > ret) {
+		ret = amm_copy_atb_private(mm_old->atb,
+					   mm->atb, mm->veshm,
+					   mm_old->mem_policy, numa_node);
+		if (ret < 0) {
 			VEOS_DEBUG("Error (%s) while copying process pgtables",
-					strerror(-ret));
+				   strerror(-ret));
 			/** Traverse the SHM list and delete list */
-			list_for_each_entry_safe(shm_tmp, tmp, &(mm->shm_head), shm_list) {
+			list_for_each_entry_safe(shm_tmp, tmp,
+						 &(mm->shm_head), shm_list) {
 				VEOS_DEBUG("In shm list current mapping %p with vemva 0x%lx",
-						shm_tmp, shm_tmp->shmaddr);
+					   shm_tmp, shm_tmp->shmaddr);
 				list_del(&(shm_tmp->shm_list));
 				free(shm_tmp);
 				shm_tmp = NULL;
 			}
 			pthread_mutex_lock_unlock(&mm_old->thread_group_mm_lock,
-					UNLOCK,
-					"Failed to release mm-thread-group-lock");
+						  UNLOCK,
+						  "Failed to release mm-thread-group-lock");
 			return ret;
 		}
-
 		amm_copy_mm_data(mm_old, mm);
 
 
-		VEOS_DEBUG("old atb(%p) and new atb(%p)",
-				&(mm_old->atb),
-				&(mm->atb));
+		for (index = 0; index < vnode->numa_count; index++) {
+			VEOS_DEBUG("old atb(%p) and new atb(%p)",
+					&(mm_old->atb[index]),
+					&(mm->atb[index]));
+		}
 		pthread_mutex_lock_unlock(&mm_old->thread_group_mm_lock,
-				UNLOCK, "Failed to release mm-thread-group-lock");
+					  UNLOCK,
+					  "Failed to release mm-thread-group-lock");
 		break;
 	case REQUEST_FOR_VFORK_PROCESS:
 		VEOS_DEBUG("request to replicate mm for new tsk (vfork)");
@@ -229,7 +247,7 @@ int amm_copy_mm_struct(struct ve_mm_struct *mm_old,
 		 * Allocation for new mm_struct
 		 */
 		ret = amm_alloc_mm_struct(mm_new);
-		if (0 > ret) {
+		if (ret < 0) {
 			VEOS_CRIT("fails to allocate mm struct");
 			return ret;
 		}
@@ -238,11 +256,12 @@ int amm_copy_mm_struct(struct ve_mm_struct *mm_old,
 		pthread_mutex_lock_unlock(&mm_old->thread_group_mm_lock,
 				LOCK, "Failed to acquire mm-thread-group-lock");
 
-		VEOS_DEBUG("old atb(%p) and new atb(%p)",
-				&(mm_old->atb),
-				&(mm->atb));
-		amm_copy_atb_vfork(&(mm_old->atb),
-				&(mm->atb), mm->veshm);
+		for (index = 0; index < vnode->numa_count; index++) {
+			VEOS_DEBUG("old atb(%p) and new atb(%p)",
+					&(mm_old->atb[index]),
+					&(mm->atb[index]));
+		}
+		amm_copy_atb_vfork(mm_old->atb, mm->atb, mm->veshm);
 		amm_copy_mm_data(mm_old, mm);
 
 		ret = copy_shm_list(mm_old, mm);
@@ -255,12 +274,13 @@ int amm_copy_mm_struct(struct ve_mm_struct *mm_old,
 			return ret;
 		}
 		pthread_mutex_lock_unlock(&mm_old->thread_group_mm_lock,
-				UNLOCK, "Failed to release mm-thread-group-lock");
+				UNLOCK,
+				"Failed to release mm-thread-group-lock");
 		break;
 	default:
 		ret = -EINVAL;
 		VEOS_DEBUG("Invalid mm copy operation");
-		return ret;;
+		return ret;
 	}
 	VEOS_TRACE("returned");
 	return ret;
@@ -407,6 +427,7 @@ void veos_amm_fini(void)
 {
 	struct ve_node_struct *vnode = VE_NODE(0);
 	int64_t pgmod = -1;
+	int index = 0;
 
 	VEOS_TRACE("invoked");
 	VEOS_DEBUG("freeing node mem resources");
@@ -419,19 +440,19 @@ void veos_amm_fini(void)
 		VEOS_DEBUG("no dump information available");
 		return;
 	}
-	veos_delloc_memory(vnode->zeroed_pfn, PG_HP);
-	--vnode->mp->huge_page_used;
+	veos_delloc_memory(vnode->zeroed_pfn, PG_HP, 0);
+	--vnode->numa[0].mp->huge_page_used;
 
 	pgmod = pgsz_to_pgmod(vnode->ve_pages[vnode->vdso_pfn]->
 		pgsz);
 
 	if (pgmod == PG_2M)
-		--vnode->mp->small_page_used;
+		--vnode->numa[0].mp->small_page_used;
 	else
-		--vnode->mp->huge_page_used;
+		--vnode->numa[0].mp->huge_page_used;
 
 	/*free page which was reserved for vdso*/
-	veos_delloc_memory(vnode->vdso_pfn, pgmod);
+	veos_delloc_memory(vnode->vdso_pfn, pgmod, 0);
 	if (vnode->ve_cr_pages)
 		free(vnode->ve_cr_pages);
 	vnode->ve_cr_pages = NULL;
@@ -445,12 +466,15 @@ void veos_amm_fini(void)
 	VEOS_DEBUG("================ PCI BUDDY DUMP =================");
 	buddy_dump_mempool(vnode->pci_mempool);
 	VEOS_DEBUG("================ AMM BUDDY DUMP =================");
-	buddy_dump_mempool(vnode->mp);
-	pthread_mutex_destroy(&vnode->mp->buddy_mempool_lock);
+	for (index = 0; index < vnode->numa_count; index++) {
+		buddy_dump_mempool(vnode->numa[index].mp);
+		pthread_mutex_destroy(&(vnode->numa[index].mp->buddy_mempool_lock));
+	}
 	pthread_mutex_destroy(&vnode->ve_pages_node_lock);
 
 	/*Deinitialized VE buddy mempool*/
-	buddy_deinit(vnode->mp);
+	for (index = 0; index < vnode->numa_count; index++)
+		buddy_deinit(vnode->numa[index].mp);
 
 	VEOS_DEBUG("mem resources freed");
 }
@@ -502,6 +526,131 @@ ret_t dma_clear_page(uint64_t index)
 }
 
 /**
+* @brief function to get numa information from sysfs.
+*
+* @param[in/out] out the pointer to contain information .
+* @param[in] fname the file name of sysfs.
+* @param[in] size of out of 1st argument.
+*
+* @return On success return 0 and negative errno on failure.
+*/
+int __amm_get_sysfs_info(char *out, char *fname, size_t out_sz)
+{
+	int fd = 0;
+	char filename[PATH_MAX];
+	char buf[LINE_MAX];
+	int ret = 0;
+	int retval = 0;
+	int sverrno = 0;
+	char *tmp;
+
+	if ((out == NULL) || (fname == NULL)) {
+		VEOS_DEBUG("The argument is invalid.");
+		retval = -EINVAL;
+		goto hndl_ret;
+	}
+
+	if ((strlen(fname) + strlen(VE_SYSFS_PATH(0))) >
+	    (sizeof(filename) - 1)) {
+		VEOS_ERROR("%s filepath too long", fname);
+		retval = -EINVAL;
+		goto hndl_ret;
+	}
+	snprintf(filename, sizeof(filename), "%s/%s",
+		 VE_SYSFS_PATH(0), fname);
+
+	fd = open(filename, (O_RDONLY|O_NOFOLLOW));
+	if (fd == -1) {
+		sverrno = errno;
+		VEOS_ERROR("Failed to open %s: %s",
+			   filename, strerror(sverrno));
+		retval = -sverrno;
+		goto hndl_ret;
+	}
+	ret = (int)read(fd, buf, LINE_MAX - 1);
+	if (ret <= 0) {
+		sverrno = errno;
+		VEOS_ERROR("Failed to get %s: %s",
+			   fname, strerror(sverrno));
+		retval = -sverrno;
+		goto hndl_close;
+	}
+
+	tmp = strchr(buf, '\n');
+	if (tmp != NULL)
+		*tmp = '\0';
+
+	strncpy(out, buf, out_sz - 1);
+ hndl_close:
+	ret = close(fd);
+	if (ret != 0) {
+		sverrno = errno;
+		VEOS_ERROR("Failed to close %s: %s",
+			   fname, strerror(sverrno));
+		retval = -1;
+	}
+ hndl_ret:
+	return retval;
+}
+
+/**
+* @brief function to informations for NUMA-mode from sysfs.
+*
+* @param[in/out] structure of numa information of sysfs.
+*
+* @return On success return 0 and negative errno on failure.
+*/
+int amm_get_numa_sysfs_info(struct numa_sysfs_info *info)
+{
+	int ret = 0;
+
+	VEOS_TRACE("invoked");
+
+	char tmp[LINE_MAX] = { '\0' };
+	char *endptr = NULL;
+	int sverrno = 0;
+
+	if (info == NULL) {
+		VEOS_DEBUG("Invalid argument.");
+		ret = -EINVAL;
+		goto hndl_ret;
+	}
+
+	ret = __amm_get_sysfs_info(tmp, "numa_mem_block_size", sizeof(tmp));
+	if (ret != 0)
+		goto hndl_ret;
+
+	errno = 0;
+	info->numa_mem_blk_sz = (size_t)strtoul(tmp, &endptr, 16);
+	sverrno = errno;
+	if ((sverrno != 0) ||  (*endptr != '\0')) {
+		VEOS_DEBUG("Failed to get numa_mem_block_size: %s",
+			   strerror(sverrno));
+		ret = -sverrno;
+		goto hndl_ret;
+	}
+	VEOS_DEBUG("numa_mem_block_size: %ld", info->numa_mem_blk_sz);
+
+	ret = __amm_get_sysfs_info(tmp, "first_mem_node", sizeof(tmp));
+	if (ret != 0)
+		goto hndl_ret;
+
+	errno = 0;
+	info->first_mem_node = strtol(tmp, &endptr, 10);
+	sverrno = errno;
+	if ((sverrno != 0) || (*endptr != '\0')) {
+		VEOS_DEBUG("Failed to get first_mem_node: %s",
+			   strerror(sverrno));
+		ret = -sverrno;
+		goto hndl_ret;
+	}
+	VEOS_DEBUG("first_mem_node: %d", info->first_mem_node);
+
+ hndl_ret:
+	return ret;
+}
+
+/**
 * @brief This routine enables paging in VE node and divide PHY memory
 *        into chunks of pages.
 *
@@ -512,17 +661,19 @@ ret_t dma_clear_page(uint64_t index)
 int veos_amm_init(vedl_handle *handle)
 {
 	int ret = 0;
-	vemaa_t paddr = 0;
 	int index = 0;
+	int numa_num = 0;
 	struct file_stat stat = { {0} };
 	struct ve_node_struct *vnode = VE_NODE(0);
 	pgno_t *map = NULL;
+	size_t r_size = 0, blk_sz = 0;
+	uint64_t r_off = 0;
 
 	vnode->ve_pages = NULL;	/*set to NULL*/
 
 	VEOS_TRACE("invoked");
 	ret = vedl_get_mem_info(handle, &(vnode->mem));
-	if (0 > ret) {
+	if (ret < 0) {
 		VEOS_DEBUG("Error (%s) fetching node memory info",
 				strerror(-ret));
 		return ret;
@@ -538,7 +689,7 @@ int veos_amm_init(vedl_handle *handle)
 	/* SYNC DMATB with hardware */
 	ret = vedl_update_dmaatb_all(handle, VE_CORE_CNT_REG_ADDR(0),
 			&(vnode->dmaatb));
-	if (0 > ret) {
+	if (ret < 0) {
 		VEOS_DEBUG("Error (%s) while syncing node dmaatb",
 				strerror(-ret));
 		return ret;
@@ -547,47 +698,69 @@ int veos_amm_init(vedl_handle *handle)
 	VEOS_DEBUG("Paging init for "
 			"VE memory of size 0x%lx",
 			(vnode->mem).ve_mem_size);
-	/*
-	 * If some reserved area is allocated to NODE then VE node PHY
-	 * MEM map start that will be really available for paging will
-	 * be different this code assumes start from 0th address,
-	 * Allocated nr_pages depends whether the usable memory size for
-	 * paging needs to be 2MB divisble if not then remaining memory
-	 * chunk will always be unused so that information also needs to
-	 * be maintained in VE node instance (BUDDY ALLOCATOR will take care
-	 * of this).
-	 */
-	vnode->mp = veos_buddy_init((uint64_t)(vnode)->mem.ve_mem_addr,
-			(vnode)->mem.ve_mem_size, PAGE_SIZE_2MB);
-	if (vnode->mp == NULL) {
-		ret = -ENOMEM;
-		VEOS_DEBUG("Error(%s) while initializing buddy mempool", strerror(-ret));
-		return ret;
+
+	if (vnode->partitioning_mode) {
+		ret = amm_get_numa_sysfs_info(&numa_sys_info);
+		if (ret < 0) {
+			VEOS_CRIT("Error (%s) while get information from sysfs",
+				  strerror(-ret));
+			return ret;
+		}
+
+		/* Initializing NUMA buddy*/
+		index = numa_sys_info.first_mem_node;
+		blk_sz = numa_sys_info.numa_mem_blk_sz;
+		numa_num = 0;
+		r_size = vnode->mem.ve_mem_size & (blk_sz - 1);
+		r_off = vnode->mem.ve_mem_size & ~(blk_sz - 1);
+		if (r_size != 0)
+			VEOS_INFO("NUMA: remaining size (less than %lxMB): %#x offset:%#llx",
+				  blk_sz, (unsigned int)r_size, (long long)r_off);
+		do {
+			vnode->numa[numa_num].mp =
+				veos_numa_buddy_init((uint64_t)(vnode)->mem.ve_mem_addr,
+						     (vnode)->mem.ve_mem_size,
+						     PAGE_SIZE_2MB, index,
+						     blk_sz);
+			if (vnode->numa[numa_num].mp == NULL) {
+				ret = -ENOMEM;
+				VEOS_DEBUG("Error(%s) while initializing buddy mempool(%d)",
+					   strerror(-ret), numa_num);
+				goto error;
+			}
+			index++;
+			numa_num++;
+			if (index >= vnode->numa_count)
+				index = 0;
+		} while (index != numa_sys_info.first_mem_node);
+
+		for (index = 0; index < vnode->numa_count; index++) {
+			vnode->nr_pages += vnode->numa[index].mp->total_pages;
+			VEOS_DEBUG("nr_pages : %ld", vnode->nr_pages);
+		}
+	} else {
+		/*
+		 * If some reserved area is allocated to NODE then VE node PHY
+		 * MEM map start that will be really available for paging will
+		 * be different this code assumes start from 0th address,
+		 * Allocated nr_pages depends whether the usable memory size for
+		 * paging needs to be 2MB divisble if not then remaining memory
+		 * chunk will always be unused so that information also needs to
+		 * be maintained in VE node instance (BUDDY ALLOCATOR will take
+		 * care of this).
+		 */
+		vnode->numa[0].mp =
+			veos_buddy_init((uint64_t)(vnode)->mem.ve_mem_addr,
+					(vnode)->mem.ve_mem_size,
+					PAGE_SIZE_2MB);
+		if (vnode->numa[0].mp == NULL) {
+			ret = -ENOMEM;
+			VEOS_DEBUG("Error(%s) while initializing buddy mempool",
+				   strerror(-ret));
+			return ret;
+		}
+		vnode->nr_pages = vnode->numa[0].mp->total_pages;
 	}
-	vnode->nr_pages = vnode->mp->total_pages;
-	paddr = (vnode->mem).ve_mem_addr;
-
-	/* One page of size 2MB is reserved whose content is zero
-	 * and will be used as a reference to clear every page of
-	 * VE memory.
-	 * Yes, this method is wasting One physical page of size 64MB.
-	 * Need to incorporate more efficient method.
-	 */
-	vnode->zeroed_page_address = paddr;
-
-	VEOS_DEBUG("Physical address (0x%lx) for rsvd page to clean mem",
-			vnode->zeroed_page_address);
-
-	/* It will initialize to zeroed page.
-	*/
-	ret = amm_initialize_zeroed_page(
-			vnode->zeroed_page_address);
-	if (0 > ret) {
-		VEOS_DEBUG("Error (%s) while initializing zeroed page",
-			strerror(-ret));
-		goto err;
-	}
-
 	/*
 	 * Info regarding the physical memory that is reserved from 0 to
 	 * start address in term of 2MB page size.
@@ -595,7 +768,7 @@ int veos_amm_init(vedl_handle *handle)
 
 	/*allocate memory for VE page array*/
 	vnode->ve_pages = calloc(vnode->nr_pages, (sizeof(struct ve_page *)));
-	if (NULL == vnode->ve_pages) {
+	if (vnode->ve_pages == NULL) {
 		VEOS_DEBUG("calloc failed to allocate memory for VE page array");
 		ret = -ENOMEM;
 		return ret;
@@ -603,10 +776,11 @@ int veos_amm_init(vedl_handle *handle)
 
 	/*initialized whole ve_pages array with 0*/
 	for (index = 0; index < vnode->nr_pages; index++)
-			vnode->ve_pages[index] = NULL;
+		vnode->ve_pages[index] = NULL;
 
-
-	pthread_mutex_init(&vnode->mp->buddy_mempool_lock, NULL);
+	for (index = 0; index < vnode->numa_count; index++)
+		pthread_mutex_init(&(vnode->numa[index].mp->buddy_mempool_lock),
+				   NULL);
 	pthread_mutex_init(&vnode->ve_pages_node_lock, NULL);
 
 
@@ -623,41 +797,46 @@ int veos_amm_init(vedl_handle *handle)
 	}
 
 	/*Reserve Zeroed page*/
-	ret = veos_alloc_memory(vnode->mp,
+	ret = veos_alloc_memory(vnode->numa[0].mp,
 				PAGE_SIZE_64MB, PG_HP);
-	if (0 > ret) {
+	if (ret < 0) {
 		VEOS_DEBUG("Failed to reserve zeroed page for VEOS");
 		free(map);
 		goto error;
 	}
-	veos_page_entry(vnode->mp, PG_HP, map);
+	veos_page_entry(vnode->numa[0].mp, PG_HP, map);
 	vnode->zeroed_pfn = map[0];
 	vnode->ve_pages[map[0]]->flag |= MAP_ANON;
+
+	/* One page of size 2MB is reserved whose content is zero
+	 * and will be used as a reference to clear every page of
+	 * VE memory.
+	 * Yes, this method is wasting One physical page of size 64MB.
+	 * Need to incorporate more efficient method.
+	 */
+	vnode->zeroed_page_address = pbaddr(map[0], PG_2M);
+
+	VEOS_DEBUG("Physical address (0x%lx) for rsvd page to clean mem",
+			vnode->zeroed_page_address);
+
+	/* It will initialize to zeroed page.*/
+	ret = amm_initialize_zeroed_page(
+			vnode->zeroed_page_address);
+	if (ret < 0) {
+		VEOS_DEBUG("Error (%s) while initializing zeroed page",
+			strerror(-ret));
+		goto err;
+	}
+
 	VEOS_DEBUG("VE page %ld rsvd as zeroed page", map[0]);
 	map[0] = 0;
-	/*Reserve VDSO*/
-	if (0 != veos_alloc_memory(vnode->mp,
-				PAGE_SIZE_2MB, PG_2M)) {
-		VEOS_DEBUG("Failed to reserve page for VEOS");
-		free(map);
-		ret = -1;
-		goto error;
-	}
-	veos_page_entry(vnode->mp, PG_2M, map);
-	vnode->vdso_pfn = map[0];
-	vnode->ve_pages[map[0]]->flag |= MAP_ANON;
-	map[0] = pbaddr(map[0], PG_2M);
-	map[1] = 0;
-	amm_get_page(map);
-	VEOS_DEBUG("VE page %ld rsvd for quick calls (VDSO)", map[0]);
-
 	free(map);
 
 	fprintf(stderr, "Clearing VE memory\n");
 	fflush(stderr);
 	/* Clear the physical pages */
 	ret = amm_mem_clear((vnode->mem).ve_mem_size);
-	if (0 > ret) {
+	if (ret < 0) {
 		VEOS_DEBUG("Error (%s) in clearing VE memory",
 			strerror(-ret));
 		goto err;
@@ -665,20 +844,20 @@ int veos_amm_init(vedl_handle *handle)
 	fprintf(stderr, "\rVE Memory Cleared\n");
 	/*Init CR related data*/
 	ret = amm_init_node_cr_data(vnode);
-	if (0 > ret) {
+	if (ret < 0) {
 		VEOS_DEBUG("Failed to initialize node CR data");
 		goto error;
 	}
 	/*Initialise CR registors*/
 	ret = amm_init_cr_reg();
-	if (0 > ret) {
+	if (ret < 0) {
 		VEOS_DEBUG("Failed to initialize CR cluster set");
 		goto error;
 	}
 
 	/*Initialise PCIATB*/
 	ret =  amm_init_pciatb(vnode);
-	if (0 > ret) {
+	if (ret < 0) {
 		VEOS_DEBUG("Error (%s) in PCIATB invalidate",
 				strerror(-ret));
 		goto error;
@@ -686,7 +865,7 @@ int veos_amm_init(vedl_handle *handle)
 
 	/*Initialise dirty page struct and create thread*/
 	ret = dirty_page_init(vnode, &clear_mem_th);
-	if (0 > ret) {
+	if (ret < 0) {
 		VEOS_DEBUG("Error (%s) in initializing for dirty page",
 			strerror(-ret));
 		goto error;
@@ -694,7 +873,7 @@ int veos_amm_init(vedl_handle *handle)
 
 	/*Allocate pcientry for VDSO page*/
 	ret = veos_alloc_vdso_pcientry(0, 1);
-	if (0 > ret) {
+	if (ret < 0) {
 		VEOS_DEBUG("Error (%s) in allocating PCIATB entry for VDSO",
 			strerror(-ret));
 		goto error;
@@ -720,14 +899,21 @@ int veos_amm_init(vedl_handle *handle)
 
 	/*Dump buddy mempool here*/
 	VEOS_DEBUG("============== INIT VE MEMPOOL DUMP  =============");
-	buddy_dump_mempool(vnode->mp);
+	for (index = 0; index < vnode->numa_count; index++)
+		buddy_dump_mempool(vnode->numa[index].mp);
 	/*Dump pci buddy mempool here*/
 	VEOS_DEBUG("============== INIT PCI MEMPOOL DUMP  =============");
 	buddy_dump_mempool(vnode->pci_mempool);
+
+	VEOS_TRACE("returned");
 	return ret;
 error:
-	buddy_deinit(vnode->mp);
-	pthread_mutex_destroy(&vnode->mp->buddy_mempool_lock);
+	for (index = 0; index < vnode->numa_count; index++) {
+		if (vnode->numa[index].mp != NULL) {
+			pthread_mutex_destroy(&(vnode->numa[index].mp->buddy_mempool_lock));
+			buddy_deinit(vnode->numa[index].mp);
+		}
+	}
 	pthread_mutex_destroy(&vnode->ve_pages_node_lock);
 err:
 	return ret;
@@ -757,7 +943,9 @@ int amm_do_mmap(vemva_t vaddr, size_t size, prot_t perm,
 	int pgmod = 0;
 	int rw = 0, i = 0;
 	pgno_t *map = NULL;
-	atb_reg_t tmp_atb = { { { {0} } } };
+	atb_reg_t tmp_atb[VE_MAX_NUMA_NODE] = {
+			  { { { {0} } } },
+			  { { { {0} } } } };
 	vemva_t taddr = 0;
 	off_t off_s = 0;
 	off_t off_e = 0;
@@ -770,18 +958,20 @@ int amm_do_mmap(vemva_t vaddr, size_t size, prot_t perm,
 	dir_t dir_num = 0, prv_dir = -1;
 	struct list_head *temp = NULL;
 	bool found = false;
+	int from_node = INVALID_NUMA_NODE;
+	int index = 0;
 
 	VEOS_TRACE("invoked");
 
 	memset(dirs, -1, sizeof(dirs));
 
 
-	VEOS_DEBUG("map vemva(%lx) of size(%lu) with"
+	VEOS_DEBUG("map vemva(%lx) of size(%lu) with "
 			"%s and flags %ld fstat(%p) for tsk:pid(%d)",
 			vaddr, size, perm_to_str(perm), flags,
 			file, tsk->pid);
 
-	VEOS_DEBUG("tsk(%p):pid(%d): actual rss limit(%ld) and"
+	VEOS_DEBUG("tsk(%p):pid(%d): actual rss limit(%ld) and "
 			"current rss limit(%ld)",
 			tsk, tsk->pid,
 			tsk->sighand->rlim[RLIMIT_RSS].rlim_cur,
@@ -790,7 +980,7 @@ int amm_do_mmap(vemva_t vaddr, size_t size, prot_t perm,
 			LOCK, "Failed to acquire mm-thread-group-lock");
 	if (tsk->sighand->rlim[RLIMIT_AS].rlim_cur <
 			(rlim_t)(tsk->p_ve_mm->vm_size + size)) {
-		VEOS_DEBUG("tsk address space limit exceeds current map"
+		VEOS_DEBUG("tsk address space limit exceeds current map "
 				"request");
 		ret = -ENOMEM;
 		goto mmap_error;
@@ -807,10 +997,10 @@ int amm_do_mmap(vemva_t vaddr, size_t size, prot_t perm,
 
 	if ((flags & MAP_ADDR_SPACE) && !(flags & MAP_STACK) &&
 			(perm & PROT_WRITE) && (mm->brk)) {
-		VEOS_DEBUG("vaddr = 0x%lx size = 0x%lx mm->brk = 0x%lx"
+		VEOS_DEBUG("vaddr = 0x%lx size = 0x%lx mm->brk = 0x%lx "
 				"Align data segment = 0x%lx rlim_cur = %lx",
-				vaddr, size,mm->brk,ALIGN((mm->end_data - mm->start_data), mm->pgsz)
-				,tsk->sighand->rlim[RLIMIT_DATA].rlim_cur);
+				vaddr, size, mm->brk, ALIGN((mm->end_data - mm->start_data),
+				mm->pgsz), tsk->sighand->rlim[RLIMIT_DATA].rlim_cur);
 		if (tsk->sighand->rlim[RLIMIT_DATA].rlim_cur <
 				RLIM_INFINITY) {
 			if ((((vaddr + size) - mm->brk) +
@@ -836,7 +1026,9 @@ int amm_do_mmap(vemva_t vaddr, size_t size, prot_t perm,
 		ret = -EINVAL;
 		goto mmap_error;
 	}
-	memset(&tmp_atb, 0, sizeof(tmp_atb));
+	for (index = 0; index < vnode->numa_count; index++)
+		memset(&tmp_atb[index], 0, sizeof(atb_reg_t));
+
 	/*
 	 * size should be aligned as per the page size requested
 	 */
@@ -893,7 +1085,8 @@ int amm_do_mmap(vemva_t vaddr, size_t size, prot_t perm,
 
 		pthread_mutex_lock_unlock(&vnode->pgcache_lock,
 				LOCK, "Failed to acquire pgcache_lock");
-		fdesc = scan_global_list(file, flags);
+		fdesc = scan_global_list(file, flags,
+					tsk->numa_node);
 		if (NULL == fdesc) {
 			VEOS_DEBUG("tsk:pid(%d) fails to get or alloc file desc",
 				tsk->pid);
@@ -976,7 +1169,9 @@ int amm_do_mmap(vemva_t vaddr, size_t size, prot_t perm,
 			 * not have enough memory at this time
 			 * ENOMEM will be returned instead of EFAULT(TBD)
 			 */
-			ret = alloc_ve_pages(bpc, map, pgmod);
+			ret = alloc_ve_pages(bpc, map, pgmod,
+					     tsk->p_ve_mm->mem_policy,
+					     tsk->numa_node, &from_node);
 			if (0 > ret) {
 				VEOS_DEBUG("Error (%s) while allocating VE mem",
 						strerror(-ret));
@@ -1001,7 +1196,8 @@ int amm_do_mmap(vemva_t vaddr, size_t size, prot_t perm,
 
 	/*Get mm_struct_lock here*/
 map_sigbus:
-	memcpy(&tmp_atb, &(mm->atb), sizeof(atb_reg_t));
+	for (index = 0; index < vnode->numa_count; index++)
+		memcpy(&tmp_atb[index], &(mm->atb[index]), sizeof(atb_reg_t));
 
 	/**
 	 * Below loops are only for assigning virtual address to
@@ -1026,7 +1222,8 @@ map_sigbus:
 					UNLOCK, "Failed to release ve page lock");
 		}
 
-		dir_num = validate_vemva(taddr, rw, map[start], &tmp_atb, pgmod);
+		dir_num = validate_vemva(taddr, rw, map[start],
+					 &tmp_atb[0], pgmod);
 		if (0 > dir_num) {
 			ret = dir_num;
 			VEOS_DEBUG("Error (%s) while validating vemva %lx",
@@ -1052,10 +1249,12 @@ map_sigbus:
 		}
 	}
 
-	memcpy(&(mm->atb), &tmp_atb, sizeof(atb_reg_t));
+	for (index = 0; index < vnode->numa_count; index++)
+		memcpy(&(mm->atb[index]), &tmp_atb[index], sizeof(atb_reg_t));
+
 	i = 0;
 	while (0 <= dirs[i]) {
-		psm_sync_hw_regs(tsk, _ATB, (void *)&mm->atb,
+		psm_sync_hw_regs(tsk, _ATB,
 				true, dirs[i++], 1);
 	}
 
@@ -1091,8 +1290,8 @@ mmap_error1:
 			VEOS_DEBUG("freeing page %ld", map[i]);
 			ret = amm_put_page(pbaddr(map[i], PG_2M));
 			if (0 > ret)
-				VEOS_DEBUG("Error (%s) while dropping \
-						page(%ld)",
+				VEOS_DEBUG("Error (%s) while dropping "
+						"page(%ld)",
 						strerror(-ret), map[i]);
 		}
 	}
@@ -1126,12 +1325,15 @@ int amm_do_munmap(vemva_t vaddr, size_t size,
 	int pgmod = -1;
 	size_t pgsz = 0;
 	vemaa_t pb = 0;
-	atb_reg_t tmp_atb = { { { {0} } } };
+	atb_reg_t tmp_atb[VE_MAX_NUMA_NODE] = {
+			  { { { {0} } } },
+			  { { { {0} } } } };
 	pgno_t pgno = 0;
 	struct ve_mm_struct *mm = tsk->p_ve_mm;
 	struct ve_node_struct *vnode = VE_NODE(0);
 	ssize_t tmp_size = 0;
 	int i = 0;
+	int index = 0;
 
 	VEOS_TRACE("invoked");
 	VEOS_DEBUG("unmap tsk:pid(%d) vemva 0x%lx of size %ld",
@@ -1144,23 +1346,23 @@ int amm_do_munmap(vemva_t vaddr, size_t size,
 	/*Get mm_struct_lock here*/
 	pthread_mutex_lock_unlock(&mm->thread_group_mm_lock,
 			LOCK, "Failed to acquire thread-group-mm-lock");
-	memcpy(&tmp_atb, &(mm->atb), sizeof(atb_reg_t));
-
+	for (index = 0; index < vnode->numa_count; index++)
+		memcpy(&tmp_atb[index], &(mm->atb[index]), sizeof(atb_reg_t));
 
 	tmp_size = size;
 
-	while (0 < tmp_size) {
+	while (tmp_size > 0) {
 		vaddr += pgsz;
 		pb = (int64_t)__veos_virt_to_phy(vaddr,
-				&tmp_atb, NULL, &pgmod);
-		if (0 > pb) {
+				&tmp_atb[0], NULL, &pgmod);
+		if (pb < 0) {
 			VEOS_DEBUG("vemva 0x%lx not valid", vaddr);
 			pgsz = (size_t)((pgmod == PG_HP) ?
 				PAGE_SIZE_64MB : (pgmod == PG_2M) ?
 				PAGE_SIZE_2MB : CHUNK_512MB);
 			tmp_size -= pgsz;
-			dir_num = invalidate_vemva(vaddr, &tmp_atb);
-			if (0 > dir_num)
+			dir_num = invalidate_vemva(vaddr, tmp_atb);
+			if (dir_num < 0)
 				VEOS_TRACE("fail to invalidate vemva 0x%lx",
 						vaddr);
 			continue;
@@ -1171,8 +1373,8 @@ int amm_do_munmap(vemva_t vaddr, size_t size,
 		pgno = pfnum(pb, PG_2M);
 		sync_vhva(pb, vaddr, tsk);
 
-		dir_num = invalidate_vemva(vaddr, &tmp_atb);
-		if (0 > dir_num) {
+		dir_num = invalidate_vemva(vaddr, tmp_atb);
+		if (dir_num < 0) {
 			VEOS_DEBUG("failed to invalidate vemva 0x%lx",
 					vaddr);
 			ret = dir_num;
@@ -1193,12 +1395,12 @@ int amm_do_munmap(vemva_t vaddr, size_t size,
 				mm->anon -= pgsz;
 		}
 
-		if ((0 > prv_dir) || (prv_dir != dir_num))
+		if ((prv_dir < 0) || (prv_dir != dir_num))
 			dirs[i++] = dir_num;
 		prv_dir = dir_num;
 
 		ret = amm_put_page(pb);
-		if (0 > ret) {
+		if (ret < 0) {
 			VEOS_DEBUG("Error in releasing VE page with pb(0x%lx)",
 					pb);
 			goto unmap_ret;
@@ -1212,14 +1414,17 @@ int amm_do_munmap(vemva_t vaddr, size_t size,
 	/*
 	 * On succcess update the ATB structure maintained in mm struct
 	 */
-	memcpy(&(mm->atb), &tmp_atb, sizeof(atb_reg_t));
+	for (index = 0; index < vnode->numa_count; index++)
+		memcpy(&(mm->atb[index]), &tmp_atb[index], sizeof(atb_reg_t));
 
 	i = 0;
 	while (0 <= dirs[i]) {
-		VEOS_TRACE("syncing tsk(%p):pid(%d) atb(%p):pgd[%d]",
-				tsk, tsk->pid, &mm->atb, dirs[i]);
+		for (index = 0; index < vnode->numa_count; index++) {
+			VEOS_TRACE("syncing tsk(%p):pid(%d) atb[%d](%p):pgd[%d]",
+					tsk, tsk->pid, index,
+					&mm->atb[index], dirs[i]);
+		}
 		psm_sync_hw_regs(tsk, _ATB,
-			(void *)&(mm->atb),
 			true, dirs[i++], 1);
 	}
 
@@ -1303,9 +1508,9 @@ void update_proc_shm_struct(vemva_t shmaddr, pgno_t pgno,
 							(shm->shm_segment->flag & SHM_DEL)) {
 						amm_release_shm_segment(shm->shm_segment);
 					}
-					pthread_mutex_lock_unlock(&vnode->shm_node_lock,
-							UNLOCK, "Failed to release node shm lock");
 				}
+				pthread_mutex_lock_unlock(&vnode->shm_node_lock,
+						UNLOCK, "Failed to release node shm lock");
 			}
 			list_del(&shm->shm_list);
 			free(shm);
@@ -1336,11 +1541,15 @@ int amm_do_mprotect(vemva_t vaddr, ssize_t size, uint64_t perm,
 	size_t pgsz = 0;
 	ret_t ret = 0;
 	dir_t dir_cnt = 0;
-	atb_reg_t atb = { { { { 0 } } } };
+	atb_reg_t atb[VE_MAX_NUMA_NODE] = {
+			  { { { {0} } } },
+			  { { { {0} } } } };
 	struct ve_mm_struct *mm = tsk->p_ve_mm;
 	struct ve_page *ve_page = NULL;
 
 	struct ve_node_struct *vnode = VE_NODE(0);
+	int index = 0;
+	int mp_num = 0;
 
 	VEOS_TRACE("invoked");
 	memset(dirs, -1, sizeof(dirs));
@@ -1350,42 +1559,55 @@ int amm_do_mprotect(vemva_t vaddr, ssize_t size, uint64_t perm,
 	/*Get mm_struct_lock here*/
 	pthread_mutex_lock_unlock(&mm->thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
-	memcpy(&atb, &(mm->atb), sizeof(atb_reg_t));
+	for (index = 0; index < vnode->numa_count; index++)
+		memcpy(&atb[index], &(mm->atb[index]), sizeof(atb_reg_t));
 
 	VEOS_TRACE("iterate while permisisons changed for each page");
-	while (0 < size) {
+	while (size > 0) {
 		dir_num =  get_pgd(vaddr, tsk);
-		if (0 > dir_num) {
+		if (dir_num < 0) {
 			VEOS_DEBUG("vemva 0x%lx not valid for tsk:pid(%d)",
 					vaddr, tsk->pid);
 			ret = -EINVAL;
 			goto mprot_error;
 		}
-		pgsz = (size_t)pgmod_to_pgsz(ps_getpgsz(&mm->atb.dir[dir_num]));
+		pgsz = (size_t)pgmod_to_pgsz(ps_getpgsz(&mm->atb[0].dir[dir_num]));
 
 		if (prv_dir == -1 || (prv_dir != dir_num))
 			dirs[dir_cnt++] = dir_num;
 		prv_dir = dir_num;
 
-		if (ps_isvalid(&(atb.dir[dir_num])))
+		if (ps_isvalid(&(atb[0].dir[dir_num])))
 			VEOS_DEBUG("valid pgd[%d] for vemva 0x%lx",
 					dir_num, vaddr);
 
-		pgoff = pgentry(vaddr, ps_getpgsz(&mm->atb.dir[dir_num]));
-		if (!pg_isvalid(&(atb.entry[dir_num][pgoff]))) {
-			if (PG_BUS == pg_getpb(&(atb.entry[dir_num][pgoff]),
+		pgoff = pgentry(vaddr, ps_getpgsz(&mm->atb[0].dir[dir_num]));
+		if (!pg_isvalid(&(atb[0].entry[dir_num][pgoff]))) {
+			if (PG_BUS == pg_getpb(&(atb[0].entry[dir_num][pgoff]),
 						PG_2M)) {
 				goto next;
-			} else if  (pg_getpb(&(atb.entry[dir_num][pgoff]),
-						PG_2M))
-				pg_valid(&(atb.entry[dir_num][pgoff]));
-			else {
+			} else if (pg_getpb(&(atb[0].entry[dir_num][pgoff]),
+						PG_2M)) {
+				for (index = 0; index < vnode->numa_count; index++) {
+					pg_valid(&(atb[index].entry[dir_num][pgoff]));
+					if (vnode->partitioning_mode == 1) {
+						pgno = pg_getpb(&(atb[0].entry[dir_num][pgoff]), PG_2M);
+						mp_num = (int)paddr2mpnum(pbaddr(pgno, PG_2M),
+								numa_sys_info.numa_mem_blk_sz,
+								numa_sys_info.first_mem_node);
+						if (index != mp_num)
+							pg_setbypass(&(atb[index].entry[dir_num][pgoff]));
+						else
+							pg_unsetbypass(&(atb[index].entry[dir_num][pgoff]));
+					}
+				}
+			} else {
 				VEOS_DEBUG("ATB ENTRY not yet allocated");
 				goto mprot_error;
 			}
 		}
 
-		pgno = pg_getpb(&(atb.entry[dir_num][pgoff]), PG_2M);
+		pgno = pg_getpb(&(atb[0].entry[dir_num][pgoff]), PG_2M);
 		if (PG_BUS == pgno) {
 			goto next;
 		}
@@ -1393,12 +1615,14 @@ int amm_do_mprotect(vemva_t vaddr, ssize_t size, uint64_t perm,
 
 		if (PROT_NONE == perm) {
 			VEOS_DEBUG("Setting permission: PROT_NONE");
-			pg_invalid(&(atb.entry[dir_num][pgoff]));
+			for (index = 0; index < vnode->numa_count; index++)
+				pg_invalid(&(atb[index].entry[dir_num][pgoff]));
 		} else if (perm == PROT_READ) {
 			VEOS_DEBUG("Setting permission: PROT_READ");
-			pg_setprot(&(atb.entry[dir_num][pgoff]));
+			for (index = 0; index < vnode->numa_count; index++)
+				pg_setprot(&(atb[index].entry[dir_num][pgoff]));
 		} else if ((perm & PROT_WRITE)) {
-			if (pg_isprot(&(atb.entry[dir_num][pgoff]))) {
+			if (pg_isprot(&(atb[0].entry[dir_num][pgoff]))) {
 				VEOS_DEBUG("changing %s vemva 0x%lx perm from read to write",
 						pgsz_to_pgstr(pgsz), vaddr);
 				if (((ve_page->ref_count > 1) ||
@@ -1406,26 +1630,45 @@ int amm_do_mprotect(vemva_t vaddr, ssize_t size, uint64_t perm,
 						!(ve_page->flag & PG_SHM) &&
 						!(ve_page->flag & MAP_SHARED)) {
 					/* change_mapped_physical_page */
-					if (0 > __replace_page(&atb.
-							entry[dir_num][pgoff])) {
-						 /*
-						  * Here we will Copy ATB to mm_struct and sync with hardware
-						  * explicitly to avoid VE memory leak.
-						  */
+					if (0 > __replace_page(&atb[0].
+							       entry[dir_num][pgoff],
+							       tsk->p_ve_mm->mem_policy,
+							       tsk->numa_node)) {
+						/*
+						 * Here we will Copy ATB to mm_struct and sync with hardware
+						 * explicitly to avoid VE memory leak.
+						 */
 
 						ret = -ENOMEM;
 						VEOS_DEBUG("failed to replace page");
 						goto done;
 					}
+					if (vnode->partitioning_mode == 1) {
+						/* Apply update of atb[0] by __replace_page() to atb[1]. */
+						for (index = 1; index < vnode->numa_count; index++) {
+							pg_clearpfn(&atb[index].entry[dir_num][pgoff]);
+							pg_setpb(&atb[index].entry[dir_num][pgoff],
+								 pg_getpb((&atb[0].entry[dir_num][pgoff]), PG_2M),
+								 PG_2M);
+							mp_num = (int)paddr2mpnum(pbaddr(pgno, PG_2M),
+					  			numa_sys_info.numa_mem_blk_sz,
+					  			numa_sys_info.first_mem_node);
+							if (index != mp_num)
+								pg_setbypass(&(atb[index].entry[dir_num][pgoff]));
+							else
+								pg_unsetbypass(&(atb[index].entry[dir_num][pgoff]));
+						}
+					}
 				}
-				pg_unsetprot(&(atb.entry[dir_num][pgoff]));
+				for (index = 0; index < vnode->numa_count; index++)
+					pg_unsetprot(&(atb[index].entry[dir_num][pgoff]));
 			} else
 				VEOS_DEBUG("Permission already: PROT_WRITE");
 		} else {
 			VEOS_DEBUG("Invalid permmision %lx", perm);
 			goto mprot_error;
 		}
-next:
+	next:
 		vaddr += pgsz;
 		size -= pgsz;
 	}
@@ -1433,12 +1676,13 @@ next:
 	 * On succcess update the ATB structure maintained in mm
 	 */
 done:
-	memcpy(&(mm->atb), &atb, sizeof(atb_reg_t));
+	for (index = 0; index < vnode->numa_count; index++)
+		memcpy(&(mm->atb[index]), &atb[index], sizeof(atb_reg_t));
+
 	int i = 0;
 
 	while (0 <= dirs[i]) {
 		psm_sync_hw_regs(tsk, _ATB,
-				(void *)&(mm->atb),
 				true, dirs[i++], 1);
 	}
 
@@ -1457,16 +1701,28 @@ mprot_error:
 * @param[in] count Number of free pages.
 * @param[out] map Holds page number that is allocated.
 * @param[in] pgmod page mode for the memory allocation.
+* @param[in] mempolicy Memory policy for partitioning mode.
+* @param[in] numa_node NUMA node number of the VE process
+*		requires memories is running on.
+* @param[out] from_node A pointer to a variable that holds
+*		which node the memory was allocated from.
+*		If it crosses more than one node, -1 is stored.
 *
 * @return On success retrun 0 and negative value on failure.
 */
-int alloc_ve_pages(uint64_t count, pgno_t *map, int pgmod)
+int alloc_ve_pages(uint64_t count, pgno_t *map, int pgmod, int mempolicy,
+		   int numa_node, int *from_node)
 {
 	int ret = 0;
 	size_t mem_sz = 0;
 	struct block *curr_blk = NULL, *tmp_blk = NULL;
 	struct ve_node_struct *vnode = VE_NODE(0);
 	int is_wait = 0;
+	int is_cross_node = 0;
+
+	size_t allocated_sz = 0;
+	int index = 0, idx = 0;
+	int i = 0;
 
 	VEOS_TRACE("invoked");
 	VEOS_DEBUG("allocate %lu %s to map(%p)",
@@ -1481,21 +1737,90 @@ int alloc_ve_pages(uint64_t count, pgno_t *map, int pgmod)
 	VEOS_DEBUG("allocating %lx size VE memory",
 			mem_sz);
 
+	/*param check*/
+	if (vnode->partitioning_mode) {
+		if (mempolicy != MPOL_DEFAULT &&  mempolicy != MPOL_BIND) {
+			VEOS_DEBUG("Invalid mempolicy %d", mempolicy);
+			return -EINVAL;
+		}
+	}
+
+	if (numa_node < 0 || numa_node >= vnode->numa_count) {
+		VEOS_DEBUG("Invalid numa_node %d", numa_node);
+		return -EINVAL;
+	}
+
 	/*Get buddy lock here*/
 	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
 			"Failed to acquire ve_page lock");
 
 	while (is_wait != -1) {
+		is_cross_node = 0;
 		if (terminate_flag) {
 			pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
 					UNLOCK,
 					"Failed to acquire ve_page lock");
 			return -ENOMEM;
 		}
-		ret = veos_alloc_memory(vnode->mp, mem_sz, pgmod);
-		if (ret == 0)
+		if (vnode->partitioning_mode == 0)
+			ret = veos_alloc_memory(vnode->numa[0].mp, mem_sz, pgmod);
+		else if (mempolicy == MPOL_BIND)
+			ret = veos_alloc_memory(vnode->numa[numa_node].mp, mem_sz, pgmod);
+		else if (mempolicy == MPOL_DEFAULT) {
+			allocated_sz = 0;
+			index = numa_node;
+			do {
+				ret = veos_alloc_memory(vnode->numa[index].mp,
+							mem_sz - allocated_sz,
+							pgmod);
+				if (ret == -ENOMEM) {
+					if (index == numa_node) {
+						/* calc only local numa_node dirty page 
+						 * because parameter use MPOL_BIND
+ 						 */
+						is_wait = calc_usable_dirty_page(vnode, mem_sz,
+								pgmod, MPOL_BIND, numa_node);
+						if (is_wait != -1) {
+							VEOS_DEBUG("numa_node %d :allocated_sz %lx wait",
+								index, mem_sz);
+							break;
+						}
+					}
+					allocated_sz += calc_allocated_sz(vnode->numa[index].mp);
+					if (allocated_sz != 0)
+						is_cross_node = 1;
+					VEOS_DEBUG("numa_node %d , mem_sz  %lx , allocated_sz %lx",
+						   index, mem_sz, allocated_sz);
+				} else if (ret != 0) {
+					VEOS_DEBUG("Error (%s) while allocating %lx size VE memory",
+						   strerror(-ret), mem_sz);
+					pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+							UNLOCK,
+							"Failed to release ve_page lock");
+					return ret;
+				} else {
+					VEOS_DEBUG("numa_node %d :allocated_sz %lx",
+						index, mem_sz - allocated_sz);
+					break;
+				}
+				index++;
+				if (index > vnode->numa_count - 1)
+					index = 0;
+			} while (index != numa_node);
+		}
+		if (ret == 0) {
+			if (from_node != NULL) {
+				if (vnode->partitioning_mode == 0)
+					*from_node = 0;
+				else if (is_cross_node == 1)
+					*from_node = CROSSES_NUMA_NODE;
+				else if (mempolicy == MPOL_DEFAULT)
+					*from_node = index;
+				else
+					*from_node = numa_node;
+			}
 			break;
-		else if (ret != -ENOMEM) {
+		} else if (ret != -ENOMEM) {
 			VEOS_DEBUG("Error (%s) while allocating %lx size VE memory",
 				   strerror(-ret), mem_sz);
 			pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
@@ -1507,14 +1832,18 @@ int alloc_ve_pages(uint64_t count, pgno_t *map, int pgmod)
 				strerror(-ret), mem_sz);
 
 		/*clear all allocated block*/
-		list_for_each_entry_safe(curr_blk, tmp_blk,
-			vnode->mp->alloc_req_list, link) {
-			list_del(&curr_blk->link);
-			/*returning allocated block to buddy mempool*/
-			buddy_free(vnode->mp, curr_blk);
+		/* normal mode: numa_count = 1, partitionig mode:numa_count = 2 */
+		for (i = 0; i < vnode->numa_count; i++) {
+			list_for_each_entry_safe(curr_blk, tmp_blk,
+				vnode->numa[i].mp->alloc_req_list, link) {
+				list_del(&curr_blk->link);
+				/*returning allocated block to buddy mempool*/
+				buddy_free(vnode->numa[i].mp, curr_blk);
+			}
 		}
 		for (;;) {
-			is_wait = calc_usable_dirty_page(vnode, mem_sz, pgmod);
+			is_wait = calc_usable_dirty_page(vnode, mem_sz, pgmod,
+							 mempolicy, numa_node);
 			if (is_wait == 1)
 				break; /* enough free block */
 			else if (is_wait == -1) {
@@ -1531,24 +1860,40 @@ int alloc_ve_pages(uint64_t count, pgno_t *map, int pgmod)
 	}
 
 	/*make entries in ve page array*/
-	ret = veos_page_entry(vnode->mp, pgmod, map);
-	if (0 > ret) {
-		VEOS_DEBUG("Error (%s) in updating allocated page info",
-				strerror(-ret));
-		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
+	if ((is_cross_node == 1) || (mempolicy == MPOL_BIND))
+		i = numa_node;
+	else
+		i = index;
+	idx = 0;
+	do {
+		ret = veos_page_entry(vnode->numa[i].mp, pgmod, map + idx);
+		if (0 > ret) {
+
+			VEOS_ERROR("Failed to updating allocated page info (%s)",
+					strerror(-ret));
+			pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+				UNLOCK,
 				"Failed to release ve_page lock");
-		return ret;
-	}
+			return ret;
+		}
+		if (is_cross_node == 0)
+			break;
+		idx += ret;
+		i++;
+		if (i > vnode->numa_count - 1)
+			i = 0;
+	} while (i != numa_node);
 
 	VEOS_DEBUG("Allocated %lx VE PHY memory", mem_sz);
 
-	VEOS_DEBUG("================ AMM BUDDY DUMP =================");
-	buddy_dump_mempool(vnode->mp);
-
+	for (i = 0; i < vnode->numa_count; i++) {
+		VEOS_DEBUG("============== AMM BUDDY [%d] DUMP ===============", i);
+		buddy_dump_mempool(vnode->numa[i].mp);
+	}
 	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
 			"Failed to release ve_page lock");
 	VEOS_TRACE("returned");
-	return ret;
+	return 0;
 }
 
 /**
@@ -1557,26 +1902,59 @@ int alloc_ve_pages(uint64_t count, pgno_t *map, int pgmod)
  * @param[in] vnode struct of ve node.
  * @param[in] mem_sz requested memory size.
  * @param[in] pgmod page mode for the memory allocation.
+ * @param[in] mempolicy Memory policy for partitioning mode.
+ * @param[in] numa_node NUMA node number of the VE process requires
+ *		 memories is running on.
  *
  * @return If usable page size more than requested size
- *         returns 0, else -1.
+ *         returns 0 (wait) or 1, else -1.
  */
 int calc_usable_dirty_page(struct ve_node_struct *vnode,
-			   size_t mem_sz, int pgmod)
+			   size_t mem_sz, int pgmod,
+			   int mempolicy, int numa_node)
 {
-	size_t usable_buddy_sz = 0;
-	size_t usable_dirt_pgsz = 0;
-	size_t usable_sz = 0;
+	size_t usable_buddy_sz = 0, local_usable_buddy_sz = 0;
+	size_t usable_dirt_pgsz = 0, local_usable_dirt_pgsz = 0;
+	size_t usable_sz = 0, local_usable_sz = 0;
+	size_t tmp_buddy_sz = 0, tmp_dirt_sz = 0;
+
+	int i = 0;
 
 	/*dirty page num*/
-	usable_dirt_pgsz = vnode->dirty_pg_num_64M * PAGE_SIZE_64MB
-		+ vnode->dirty_pg_num_2M * PAGE_SIZE_2MB;
+	if ((vnode->partitioning_mode == 1) && (mempolicy == MPOL_BIND)) {
+		usable_dirt_pgsz = vnode->dirty_pg_num_64M[numa_node] * PAGE_SIZE_64MB
+			+ vnode->dirty_pg_num_2M[numa_node] * PAGE_SIZE_2MB;
 
-	usable_buddy_sz = calc_free_sz(vnode->mp, pgmod);
+		usable_buddy_sz = calc_free_sz(vnode->numa[numa_node].mp, pgmod);
+	} else {
+		for (i = 0; i < vnode->numa_count ; i++) {
+			tmp_dirt_sz = vnode->dirty_pg_num_64M[i] * PAGE_SIZE_64MB
+				+ vnode->dirty_pg_num_2M[i] * PAGE_SIZE_2MB;
+			tmp_buddy_sz = calc_free_sz(vnode->numa[i].mp, pgmod);
+
+			usable_dirt_pgsz += tmp_dirt_sz;
+			usable_buddy_sz += tmp_buddy_sz;
+			if (i == numa_node) {
+				local_usable_dirt_pgsz = tmp_dirt_sz;
+				local_usable_buddy_sz = tmp_buddy_sz;
+			}
+		}
+	}
 	/*usable page size*/
 	usable_sz = usable_dirt_pgsz + usable_buddy_sz;
+	local_usable_sz = local_usable_dirt_pgsz + local_usable_buddy_sz;
 	VEOS_DEBUG("usable size:%ld (buddy:%ld dirty:%ld)",
 		   usable_sz, usable_buddy_sz, usable_dirt_pgsz);
+
+	if ((vnode->partitioning_mode == 1) && (mempolicy == MPOL_DEFAULT)) {
+		VEOS_DEBUG("local usable size:%ld (buddy:%ld dirty:%ld)",
+			   local_usable_sz, local_usable_buddy_sz,
+			   local_usable_dirt_pgsz);
+		if (local_usable_buddy_sz >= mem_sz)
+			return 1;
+		else if (local_usable_sz >= mem_sz)
+			return 0;
+	}
 
 	if (usable_sz < mem_sz)
 		return -1;
@@ -1615,6 +1993,7 @@ int veos_free_page(pgno_t pgno)
 	ret_t ret = 0;
 	int pgmod = 0;
 	size_t pgsz = 0;
+	int mp_num = 0;
 
 	struct ve_node_struct *vnode = VE_NODE(0);
 
@@ -1629,13 +2008,18 @@ int veos_free_page(pgno_t pgno)
 	pgsz = VE_PAGE(vnode, pgno)->pgsz;
 	pgmod = pgsz_to_pgmod(pgsz);
 
+	if (vnode->partitioning_mode) {
+		mp_num = (int)paddr2mpnum(pbaddr(pgno, PG_2M),
+					  numa_sys_info.numa_mem_blk_sz,
+					  numa_sys_info.first_mem_node);
+	}
 	/* Add entry to dirty page list. */
 	ret = add_dirty_page(pgno, pgsz, pgmod);
 	if (ret == 0) {
 		if (pgmod == PG_2M)
-			++vnode->dirty_pg_num_2M;
+			++vnode->dirty_pg_num_2M[mp_num];
 		else
-			++vnode->dirty_pg_num_64M;
+			++vnode->dirty_pg_num_64M[mp_num];
 	}
 	VEOS_TRACE("returned");
 	return ret;
@@ -1742,8 +2126,8 @@ int add_dirty_page(pgno_t pgno, size_t pgsz, int pgmod)
  */
 void veos_amm_clear_mem_thread(void)
 {
-	int ret;
-	pgno_t pgno;
+	int ret = 0;
+	pgno_t pgno = 0;
 	int pgmod = 0;
 	size_t pgsz = 0;
 	struct ve_dirty_pg_list *dirt_pg_head = NULL;
@@ -1821,6 +2205,18 @@ int clear_and_dealloc_page(pgno_t pgno, size_t pgsz, int pgmod)
 {
 	int ret = 0, idx = 0;
 	struct ve_node_struct *vnode = VE_NODE(0);
+	int i = 0;
+
+	uint64_t addr = 0;
+	int  mp_num = 0;
+
+	if (vnode->partitioning_mode) {
+		addr = pbaddr(pgno, PG_2M);
+		mp_num = (int)paddr2mpnum(addr, numa_sys_info.numa_mem_blk_sz,
+					  numa_sys_info.first_mem_node);
+		VEOS_DEBUG("pgno: %d pgmod:%d, mp_num=%d",
+			   (int)pgno, pgmod, mp_num);
+	}
 
 	ret = amm_clear_page(pgno, pgsz);
 	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
@@ -1831,7 +2227,7 @@ int clear_and_dealloc_page(pgno_t pgno, size_t pgsz, int pgmod)
 		goto hndl_ret;
 	}
 
-	ret = veos_delloc_memory(pgno, pgmod);
+	ret = veos_delloc_memory(pgno, pgmod, mp_num);
 	if (ret < 0) {
 		VEOS_CRIT("Error (%s) in deallocating VE page %ld",
 			  strerror(-ret), pgno);
@@ -1840,10 +2236,10 @@ int clear_and_dealloc_page(pgno_t pgno, size_t pgsz, int pgmod)
 
 	free(VE_PAGE(vnode, pgno));
 	if (pgmod == PG_2M) {
-		--vnode->mp->small_page_used;
+		--vnode->numa[mp_num].mp->small_page_used;
 		vnode->ve_pages[pgno] = NULL;
 	} else {
-		--vnode->mp->huge_page_used;
+		--vnode->numa[mp_num].mp->huge_page_used;
 		for (idx = pgno; idx < (pgno + HUGE_PAGE_IDX); idx++)
 			vnode->ve_pages[idx] = NULL;
 	}
@@ -1854,15 +2250,16 @@ hndl_ret:
 	 * dirty list and never will be used.
 	 */
 	if (pgmod == PG_2M)
-		--vnode->dirty_pg_num_2M;
+		--vnode->dirty_pg_num_2M[mp_num];
 	else
-		--vnode->dirty_pg_num_64M;
+		--vnode->dirty_pg_num_64M[mp_num];
 
-	VEOS_DEBUG("dirty page num: 2M=%ld 64M=%ld",
-		   vnode->dirty_pg_num_2M, vnode->dirty_pg_num_64M);
-	VEOS_DEBUG("================ AMM BUDDY DUMP =================");
-	buddy_dump_mempool(vnode->mp);
-
+	for (i = 0; i < vnode->numa_count; i++) {
+		VEOS_DEBUG("dirty page num[%d]: 2M=%ld 64M=%ld",
+		   i, vnode->dirty_pg_num_2M[i], vnode->dirty_pg_num_64M[i]);
+		VEOS_DEBUG("================ AMM BUDDY DUMP =================");
+		buddy_dump_mempool(vnode->numa[i].mp);
+	}
 	/* wake up threads that waiting clearing dirty page*/
 	pthread_cond_broadcast(&vnode->pg_allc_cond);
 	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
@@ -1884,6 +2281,7 @@ uint64_t ve_node_page_used_count(int node_id)
 {
 	uint64_t used_cnt = 0;
 	struct ve_node_struct *vnode = VE_NODE(0);
+	int i = 0;
 
 	VEOS_TRACE("invoked");
 
@@ -1894,9 +2292,10 @@ uint64_t ve_node_page_used_count(int node_id)
 	 * Total used page means small page + huge page multiply by 32.
 	 * As one huge page consist 32 small page.
 	 */
-	used_cnt =  ((vnode->mp->small_page_used +
-				(vnode->mp->huge_page_used * HUGE_PAGE_IDX)));
-
+	for (i = 0; i < vnode->numa_count; i++) {
+		used_cnt +=  ((vnode->numa[i].mp->small_page_used +
+				(vnode->numa[i].mp->huge_page_used * HUGE_PAGE_IDX)));
+	}
 	VEOS_DEBUG("total node pages in use %ld", used_cnt);
 
 	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
@@ -1916,16 +2315,18 @@ int  ve_node_page_free_count(int node_id)
 {
 	int free_cnt = 0;
 	struct ve_node_struct *vnode = VE_NODE(0);
+	int i = 0;
 
 	VEOS_TRACE("invoked");
 
 	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
 			"Fail to acquire buddy lock");
 
-	free_cnt =  (vnode->mp->total_pages -
-			(vnode->mp->small_page_used +
-			 (vnode->mp->huge_page_used * HUGE_PAGE_IDX)));
-
+	for (i = 0; i < vnode->numa_count; i++) {
+		free_cnt +=  (vnode->numa[i].mp->total_pages -
+				(vnode->numa[i].mp->small_page_used +
+				(vnode->numa[i].mp->huge_page_used * HUGE_PAGE_IDX)));
+	}
 	VEOS_DEBUG("Total free page :%d", free_cnt);
 
 	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
@@ -1969,7 +2370,7 @@ int64_t veos_virt_to_phy(vemva_t vaddr, pid_t pid,
 	/*Get atb structure of current process*/
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
-	atb = tsk->p_ve_mm->atb;
+	atb = tsk->p_ve_mm->atb[0];
 	/*convert virtual address into physical*/
 
 	ret = (uint64_t)__veos_virt_to_phy(vaddr,
@@ -2046,7 +2447,7 @@ uint64_t *amm_get_pgmod_info(vemva_t vaddr,
 
 	tmp_addr = vaddr;
 	while (count > 0) {
-		dir_num = __get_pgd(tmp_addr, &tsk->p_ve_mm->atb,
+		dir_num = __get_pgd(tmp_addr, &tsk->p_ve_mm->atb[0],
 				-1, false);
 		if (0 > dir_num) {
 			VEOS_DEBUG("Invalid vemva 0x%lx", tmp_addr);
@@ -2054,7 +2455,7 @@ uint64_t *amm_get_pgmod_info(vemva_t vaddr,
 			errno = EINVAL;
 			return NULL;
 		}
-		pgmod = ps_getpgsz(&tsk->p_ve_mm->atb.dir[dir_num]);
+		pgmod = ps_getpgsz(&tsk->p_ve_mm->atb[0].dir[dir_num]);
 
 		if (!idx)
 			start_pgmod = pgmod;
@@ -2122,12 +2523,14 @@ struct file_desc *init_file_desc(struct file_stat *file)
 	file_desc_tmp->stat = file->stat;
 	file_desc_tmp->pgsz = file->pgsz;
 	file_desc_tmp->in_mem_pages = 0;
+	file_desc_tmp->numa_num = INVALID_NUMA_NODE;
 
-	VEOS_DEBUG("file desc(%p) stat(%p) hold %s and refcnt(%lu)",
+	VEOS_DEBUG("file desc(%p) stat(%p) hold %s and refcnt(%lu), numa_num(%d)",
 			file_desc_tmp,
 			&file_desc_tmp->stat,
 			pgsz_to_pgstr(file_desc_tmp->pgsz),
-			file_desc_tmp->in_mem_pages);
+			file_desc_tmp->in_mem_pages,
+			file_desc_tmp->numa_num);
 
 	INIT_LIST_HEAD(&file_desc_tmp->mapping_list);
 
@@ -2154,10 +2557,11 @@ err_return:
 *
 * @param[in] file_stat Stats about the file to be mapped.
 * @param[in] flags memory mapping flags.
+* @param[in] numa_node NUMA node number of the VE process requires memories is running on.
 *
 * @return on success returns pointer to the matching file_descriptor else NULL.
 */
-struct file_desc *scan_global_list(struct file_stat *file, flag_t flags)
+struct file_desc *scan_global_list(struct file_stat *file, flag_t flags, int numa_node)
 {
 	struct list_head *temp = NULL;
 	struct file_desc *file_desc_tmp = NULL;
@@ -2181,7 +2585,7 @@ struct file_desc *scan_global_list(struct file_stat *file, flag_t flags)
 		VEOS_TRACE("reference of file desc(%p)",
 			file_desc_tmp);
 
-		if (!stat_cmp(file_desc_tmp, file, flags)) {
+		if (!stat_cmp(file_desc_tmp, file, flags, numa_node)) {
 			VEOS_DEBUG("matching file desc found in node page cache");
 			goto sgl_ret;
 		}
@@ -2197,7 +2601,7 @@ struct file_desc *scan_global_list(struct file_stat *file, flag_t flags)
 		VEOS_DEBUG("failed to get file desc");
 		goto sgl_ret;
 	}
-
+	file_desc_tmp->flags = flags;
 
 	list_add_tail(&file_desc_tmp->global_list, &vnode->
 			file_desc_start->global_list);
@@ -2676,7 +3080,9 @@ int veos_share_vemva_region(pid_t owner, vemva_t own_vemva,
 	struct ve_task_struct *req_tsk = NULL;
 	struct ve_mm_struct *own_mm = NULL;
 	struct ve_mm_struct *req_mm = NULL;
-	atb_reg_t req_atb = { { { {0} } } };
+	atb_reg_t req_atb[VE_MAX_NUMA_NODE] = {
+			  { { { {0} } } },
+			  { { { {0} } } } };
 	int own_pgmod = 0, req_pgmod = 0;
 	ret_t ret = 0;
 	unsigned long count = 0, tc = 0;
@@ -2689,6 +3095,9 @@ int veos_share_vemva_region(pid_t owner, vemva_t own_vemva,
 	vemva_t temp_addr = 0;
 	vemaa_t *pb = NULL;
 	int rw = 0, i = 0;
+
+	struct ve_node_struct *vnode = VE_NODE(0);
+	int index = 0;
 
 	VEOS_TRACE("invoked");
 	VEOS_DEBUG("invoked with owner = %d, owner vemva = 0x%lx req = %d"
@@ -2724,7 +3133,7 @@ int veos_share_vemva_region(pid_t owner, vemva_t own_vemva,
 	 * check page mode of owner
 	 */
 	dir_num = __get_pgd(own_vemva,
-			&own_mm->atb, -1, false);
+			&own_mm->atb[0], -1, false);
 	if (0 > dir_num) {
 		ret = -EINVAL;
 		VEOS_DEBUG("Error (%s) in getting pgd for owner vemva %lx",
@@ -2732,7 +3141,7 @@ int veos_share_vemva_region(pid_t owner, vemva_t own_vemva,
 		goto hndl_ownr;
 	}
 
-	own_pgmod = ps_getpgsz(&own_mm->atb.dir[dir_num]);
+	own_pgmod = ps_getpgsz(&own_mm->atb[0].dir[dir_num]);
 
 	pgsz = (size_t)pgmod_to_pgsz(own_pgmod);
 	/*check whether requested size is available or not*/
@@ -2766,7 +3175,7 @@ int veos_share_vemva_region(pid_t owner, vemva_t own_vemva,
 
 	while (0 != tc) {
 		/*check owner ATB dir is valid or not*/
-		dir_num = __get_pgd(temp_addr, &own_mm->atb, -1, false);
+		dir_num = __get_pgd(temp_addr, &own_mm->atb[0], -1, false);
 		if (0 > dir_num) {
 			ret = -EINVAL;
 			VEOS_DEBUG("Error (%s) in getting pgd for vemva %lx",
@@ -2780,7 +3189,7 @@ int veos_share_vemva_region(pid_t owner, vemva_t own_vemva,
 		 * rm_prot set to 1 if PROT_WRITE.
 		 * pg_isprot will return 1 if page is write protected*/
 		if (access_ok) {
-			if (rw == pg_isprot(&(own_mm->atb.entry[dir_num]
+			if (rw == pg_isprot(&(own_mm->atb[0].entry[dir_num]
 							[pgoff]))) {
 				VEOS_DEBUG("VESHM permission mismatched with owner");
 				ret = -EPERM;
@@ -2790,7 +3199,7 @@ int veos_share_vemva_region(pid_t owner, vemva_t own_vemva,
 
 		/*Get page number*/
 		page_num = pg_getpb((&(own_mm->
-				atb.entry[dir_num][pgoff])), PG_2M);
+				atb[0].entry[dir_num][pgoff])), PG_2M);
 
 		VEOS_DEBUG("VE page %ld mapped to vemva %lx",
 				page_num, temp_addr);
@@ -2822,14 +3231,14 @@ int veos_share_vemva_region(pid_t owner, vemva_t own_vemva,
 	/*
 	 * check page mode of requestor
 	 */
-	dir_num = __get_pgd(req_vemva, &req_mm->atb, -1, false);
+	dir_num = __get_pgd(req_vemva, &req_mm->atb[0], -1, false);
 	if (0 > dir_num) {
 		ret = -EINVAL;
 		VEOS_DEBUG("Error (%s) in getting pgd for req vemva %lx",
 				strerror(-ret), req_vemva);
 		goto hndl_req;
 	}
-	req_pgmod = ps_getpgsz(&req_mm->atb.dir[dir_num]);
+	req_pgmod = ps_getpgsz(&req_mm->atb[0].dir[dir_num]);
 
 	if (own_pgmod != req_pgmod) {
 		VEOS_DEBUG("VESHM req/owner page mode mismatched");
@@ -2837,7 +3246,9 @@ int veos_share_vemva_region(pid_t owner, vemva_t own_vemva,
 		goto hndl_req;
 	}
 	/*Now Update requestor ATB*/
-	memcpy(&req_atb, &(req_mm->atb), sizeof(atb_reg_t));
+	for (index = 0; index < vnode->numa_count; index++)
+		memcpy(&req_atb[index], &(req_mm->atb[index]), sizeof(atb_reg_t));
+
 	for (start = 0; start < count; start++) {
 		temp_addr = req_vemva + (start * pgsz);
 		dir_num = validate_vemva(temp_addr, rw,
@@ -2856,14 +3267,14 @@ int veos_share_vemva_region(pid_t owner, vemva_t own_vemva,
 
 	}
 
-
-	memcpy(&(req_mm->atb),
-			&req_atb, sizeof(atb_reg_t));
-
+	for (index = 0; index < vnode->numa_count; index++) {
+		memcpy(&(req_mm->atb[index]),
+		       &req_atb[index], sizeof(atb_reg_t));
+	}
 	i = 0;
 
 	while (0 <= dirs[i]) {
-		psm_sync_hw_regs(req_tsk, _ATB, &req_tsk->p_ve_mm->atb,
+		psm_sync_hw_regs(req_tsk, _ATB,
 				true, dirs[i++], 1);
 	}
 
@@ -3216,6 +3627,7 @@ ret_t update_mapping_desc(vemva_t vaddr, pgno_t *pgno,
 	struct ve_node_struct *vnode_info = VE_NODE(0);
 	ve_dma_hdl *dh = vnode_info->dh;
 
+	int from_node;
 
 	VEOS_TRACE("invoked");
 	file_size = (uint64_t)file->stat.st_size;
@@ -3237,12 +3649,20 @@ ret_t update_mapping_desc(vemva_t vaddr, pgno_t *pgno,
 			/*We will allocate a new page here*/
 			VEOS_DEBUG("allocating 1 %s at map(%p) and idx(%ld)",
 				pgmod_to_pgstr(pgmod), map, idx);
-			ret = alloc_ve_pages(1, map + idx, pgmod);
-			if (0 > ret) {
+			ret = alloc_ve_pages(1, map + idx, pgmod,
+					     tsk->p_ve_mm->mem_policy,
+					     tsk->numa_node,
+					     &from_node);
+			if (ret < 0) {
 				VEOS_DEBUG("failed to allocate VE mem");
 				ret = -ENOMEM;
 				goto err;
 			}
+			if (file->numa_num == INVALID_NUMA_NODE)
+				file->numa_num = from_node;
+			if (file->numa_num != from_node)
+				file->numa_num = CROSSES_NUMA_NODE;
+			VEOS_DEBUG("numa_num (%d) ", file->numa_num);
 			/**
 			 * Init pgno element with pointer to
 			 * struct ve_page
@@ -3328,16 +3748,18 @@ err:
 	return ret;
 }
 
+#define COPY_TEXT
 /**
 * @brief This function will compare elements of two file stats.
 *
 * @param[in] filed file descriptor to be compaire.
 * @param[in] file file descriptor with which to be compaire.
 * @param[in] flags memory mapping flags.
+* @param[in] numa_node NUMA node number of the VE process requires memories is running on.
 *
 * @return if file descriptor of both file are identical the return 0 else return -1.
 */
-int stat_cmp(struct file_desc *filed, struct file_stat *file, flag_t flags)
+int stat_cmp(struct file_desc *filed, struct file_stat *file, flag_t flags, int numa_node)
 {
 	int ret = -1;
 
@@ -3346,6 +3768,7 @@ int stat_cmp(struct file_desc *filed, struct file_stat *file, flag_t flags)
 	/* In case of file backed mmap() with MAP_PRIVATE, VEOS checks inode number,
 	 * mtime and ctime, in order to load the latest content of the file.
 	 */
+#ifdef COPY_TEXT
 	if ((flags & MAP_PRIVATE) &&
 			(filed->stat.st_dev == file->stat.st_dev) &&
 			(filed->stat.st_ino == file->stat.st_ino) &&
@@ -3353,8 +3776,22 @@ int stat_cmp(struct file_desc *filed, struct file_stat *file, flag_t flags)
 			(filed->stat.st_mtim.tv_sec == file->stat.st_mtim.tv_sec) &&
 			(filed->stat.st_mtim.tv_nsec == file->stat.st_mtim.tv_nsec) &&
 			(filed->stat.st_ctim.tv_sec == file->stat.st_ctim.tv_sec) &&
-			(filed->stat.st_ctim.tv_nsec == file->stat.st_ctim.tv_nsec))
+			(filed->stat.st_ctim.tv_nsec == file->stat.st_ctim.tv_nsec) &&
+			(filed->numa_num == numa_node) &&
+			(filed->flags & MAP_PRIVATE))
 		ret = 0;
+#else
+	if ((flags & MAP_PRIVATE) &&
+			(filed->stat.st_dev == file->stat.st_dev) &&
+			(filed->stat.st_ino == file->stat.st_ino) &&
+			(filed->pgsz == file->pgsz) &&
+			(filed->stat.st_mtim.tv_sec == file->stat.st_mtim.tv_sec) &&
+			(filed->stat.st_mtim.tv_nsec == file->stat.st_mtim.tv_nsec) &&
+			(filed->stat.st_ctim.tv_sec == file->stat.st_ctim.tv_sec) &&
+			(filed->stat.st_ctim.tv_nsec == file->stat.st_ctim.tv_nsec) &&
+			(filed->flags & MAP_PRIVATE))
+		ret = 0;
+#endif
 
 	/* In case of file backed mmap() with MAP_SHARED, VEOS checks only inode number,
 	 * in order to share VE physical memory.
@@ -3362,7 +3799,8 @@ int stat_cmp(struct file_desc *filed, struct file_stat *file, flag_t flags)
 	if ((flags & MAP_SHARED) &&
 			(filed->stat.st_dev == file->stat.st_dev) &&
 			(filed->stat.st_ino == file->stat.st_ino) &&
-			(filed->pgsz == file->pgsz)) {
+			(filed->pgsz == file->pgsz) &&
+			(filed->flags & MAP_SHARED)) {
 		VEOS_DEBUG("Inode: %ld prev size: %ld new size: %ld in bytes",
 				file->stat.st_ino,
 				filed->stat.st_size,
@@ -3669,7 +4107,7 @@ uint64_t amm_get_rss_in_kb(struct ve_mm_struct *mm)
 {
 	uint64_t max_rss = 0;
 	int type = 0;
-	atb_reg_t *atb = &(mm->atb);
+	atb_reg_t *atb = &(mm->atb[0]);
 	int entry_cntr = -1, dir_cntr = -1;
 
 	VEOS_TRACE("invoked");
@@ -3720,9 +4158,8 @@ int64_t extract_file_pgoff(vemva_t vemva, struct ve_task_struct *tsk,
 	atb_reg_t atb = { { { {0} } } };
 
 	VEOS_TRACE("invoked");
-	memset(&atb, 0, sizeof(atb_reg_t));
 
-	memcpy(&atb, &tsk->p_ve_mm->atb, sizeof(atb_reg_t));
+	memcpy(&atb, &tsk->p_ve_mm->atb[0], sizeof(atb_reg_t));
 
 	pb = __veos_virt_to_phy(vemva, &atb, NULL, NULL);
 	if (0 > pb) {
@@ -3955,7 +4392,7 @@ int check_write_permisssion(vemva_t vaddr, pid_t pid)
 	int ret = 0, pgmod_dir = 0;
 	int32_t dir_num = 0, pgoff = 0;
 	struct ve_task_struct *ve_task = NULL;
-	atb_reg_t *atb = NULL;
+	atb_reg_t *atb;
 
 	VEOS_TRACE("invoked for vemva %lx of pid(%d)", vaddr, pid);
 	/* Get ve task struct */
@@ -3966,7 +4403,7 @@ int check_write_permisssion(vemva_t vaddr, pid_t pid)
 			strerror(-ret), pid);
 		goto err;
 	}
-	atb = &(ve_task->p_ve_mm->atb);
+	atb = &(ve_task->p_ve_mm->atb[0]);
 
 	dir_num = __get_pgd(vaddr, atb, -1, false);
 	if (0 > dir_num) {
@@ -4387,7 +4824,7 @@ int veos_handle_ptrace_poke_req(struct ve_task_struct *tsk, vemva_t vaddr)
 	pthread_mutex_lock_unlock(&mm->thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
 
-	pb = __veos_virt_to_phy(vaddr, &tsk->p_ve_mm->atb,
+	pb = __veos_virt_to_phy(vaddr, &tsk->p_ve_mm->atb[0],
 			&prot, &pgmod);
 	if ((vemaa_t)0 > pb) {
 		ret = -EINVAL;
@@ -4457,7 +4894,7 @@ void sync_at_exit(struct ve_task_struct *tsk)
 	vemaa_t pb;
 	vhva_t vhva;
 	struct ve_mm_struct *mm = tsk->p_ve_mm;
-	atb_reg_t *tmp_atb = &(mm->atb);
+	atb_reg_t *tmp_atb = &(mm->atb[0]);
 	struct ve_node_struct *vnode = VE_NODE(0);
 
 	VEOS_TRACE("invoked for tsk(%p):pid(%d)", tsk, tsk->pid);
@@ -4546,7 +4983,7 @@ int sync_vhva(vemaa_t vemaa, vhva_t vhva, struct ve_task_struct *tsk)
 /**
  * @brief This function will free the mapping descriptor.
  *
-* @param[in] file mapping descriptor to be free.
+ * @param[in] file mapping descriptor to be free.
 */
 void free_file_desc(struct file_desc *file)
 {
@@ -4777,7 +5214,7 @@ void amm_copy_mm_data(struct ve_mm_struct *mm_old, struct ve_mm_struct *mm_new)
 	mm_new->rsslim = mm_old->rsslim;
 	mm_new->rss_cur = mm_old->rss_cur;
 	mm_new->shared_rss = mm_old->shared_rss;
-	mm_new->pgsz =mm_old->pgsz;
+	mm_new->pgsz = mm_old->pgsz;
 	mm_new->rss_data = mm_old->rss_data;
 	mm_new->rss_stack = mm_old->rss_stack;
 	mm_new->vm_size = mm_old->vm_size;
@@ -4788,6 +5225,7 @@ void amm_copy_mm_data(struct ve_mm_struct *mm_old, struct ve_mm_struct *mm_new)
 	mm_new->argv_size = mm_old->argv_size;
 	mm_new->auxv_addr = mm_old->auxv_addr;
 	mm_new->auxv_size = mm_old->auxv_size;
+	mm_new->mem_policy = mm_old->mem_policy;
 
 }
 
@@ -4833,7 +5271,7 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 	ent_t ent = 0;
 	pgno_t pgno = 0;
 	ret_t ret = 0;
-	atb_reg_t *atb = NULL;
+	atb_reg_t *atb[VE_MAX_NUMA_NODE];
 	vemaa_t pb = 0;
 	bool shm_page = false;
 	struct shm *seg = NULL, *shm_ent = NULL;
@@ -4842,13 +5280,15 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 	int found = 0;
 
 	struct ve_node_struct *vnode = VE_NODE(0);
+	int index = 0;
 
 	VEOS_TRACE("invoked");
 
 	mm = tsk->p_ve_mm;
 
 	/*Get mm_struct_lock here*/
-	atb = &(mm->atb);
+	for (index = 0; index < vnode->numa_count; index++)
+		atb[index] = &(mm->atb[index]);
 
 	/*
 	 * Decrement the reference count.
@@ -4858,12 +5298,12 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 			tsk, tsk->pid);
 
 	for (dirno = 0; dirno < ATB_DIR_NUM; dirno++) {
-		if (!ps_isvalid(&atb->dir[dirno]))
+		if (!ps_isvalid(&atb[0]->dir[dirno]))
 			continue;
 		for (ent = 0; (ent < ATB_ENTRY_MAX_SIZE); ent++) {
-			if ((PG_BUS == (pgno = pg_getpb(&atb->entry[dirno]
+			if ((PG_BUS == (pgno = pg_getpb(&atb[0]->entry[dirno]
 								[ent], PG_2M))) ||
-					(!pg_isvalid(&atb->entry[dirno][ent])
+					(!pg_isvalid(&atb[0]->entry[dirno][ent])
 					 && !pgno)) {
 				VEOS_TRACE("pgd[%d][%d] with VE page %ld",
 						dirno, ent, pgno);
@@ -4887,7 +5327,9 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 						strerror(-ret), pb);
 				goto err_exit;
 			}
-			pg_invalid(&atb->entry[dirno][ent]);
+			for (index = 0; index < vnode->numa_count; index++)
+				pg_invalid(&atb[index]->entry[dirno][ent]);
+
 			if (shm_page) {
 				/*
 				 * Page belong to shared
@@ -4918,7 +5360,7 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 					}
 					if (found) {
 						if ((seg->flag & SHM_DEL) &&
-								(seg->nattch == 0)){
+								(seg->nattch == 0)) {
 							VEOS_DEBUG("Shared memory segment with id %d"
 									"delete flag is set",
 									seg->shmid);
@@ -4933,7 +5375,8 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 			}
 			shm_page = false;
 		}
-		ps_invalid(&atb->dir[dirno]);
+		for (index = 0; index < vnode->numa_count; index++)
+			ps_invalid(&atb[index]->dir[dirno]);
 	}
 
 	/*Here we are releasing pindowed VH page*/
@@ -5004,6 +5447,9 @@ int __amm_alloc_mm_struct(struct ve_mm_struct **mm)
 {
 	int ret = 0;
 
+	int index = 0;
+	struct ve_node_struct *vnode = VE_NODE(0);
+
 	VEOS_TRACE("invoked");
 	VEOS_DEBUG("mm struct(%p) allocated", *mm);
 
@@ -5021,7 +5467,9 @@ int __amm_alloc_mm_struct(struct ve_mm_struct **mm)
 		return ret;
 	}
 
-	invalidate_atb(&((*mm)->atb));
+	for (index = 0; index < vnode->numa_count; index++)
+		invalidate_atb(&((*mm)->atb[index]));
+
 	VEOS_DEBUG("invalidated pgd/pte of tsk");
 	ret = veos_vehva_init(*mm);
 	if (0 > ret) {
@@ -5046,5 +5494,41 @@ int __amm_alloc_mm_struct(struct ve_mm_struct **mm)
 
 	INIT_LIST_HEAD(&((*mm)->shm_head));
 __amm_alloc_mm_error:
+	return ret;
+}
+
+/**
+ * @brief update ATB dir
+ *
+ * @param[in] handle VEDL handle
+ * @param[in] core_number Updated core’s number
+ * @param[in] tsk Pointer to ve_task_struct of VE process.
+ * @param[in] dir_num ATB directory number
+ *
+ * @return On success returns 0, -1 is returned on failure.
+ *
+ **/
+int amm_update_atb_dir(vedl_handle *handle,
+			int core_number,
+			struct ve_task_struct *tsk,
+			int dir_num)
+{
+	int ret = 0;
+	int atb_num = VE_CORE(0, core_number)->numa_node;
+	atb_reg_t *atb = &tsk->p_ve_mm->atb[atb_num];
+
+	VEOS_TRACE("Entering");
+	VEOS_DEBUG("Directory num: %d Core number: %d",
+			dir_num, core_number);
+	VEOS_DEBUG("atb_num: %d", atb_num);
+
+	ret = vedl_update_atb_dir(handle,
+				VE_CORE_SYS_REG_ADDR(0, core_number),
+				atb,
+				dir_num);
+	if (ret) {
+		VEOS_ERROR("Updating ATB directory failed in driver");
+		ret = -1;
+	}
 	return ret;
 }

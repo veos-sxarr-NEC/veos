@@ -27,6 +27,7 @@
 #define __SYS_SHM_H
 
 #include <sys/mman.h>
+#include <inttypes.h>
 #include <sys/shm.h>
 #include <sys/ipc.h>
 #include <sys/syscall.h>
@@ -45,6 +46,10 @@
 #define PG_2M   1
 #define PG_HP   2
 
+#define BUF_SIZ 8192
+#define SYSVIPC_FILE "/proc/sysvipc/shm"
+
+int get_shm_stat_proc(int shmid, key_t key, struct shmid_ds *buf);
 ret_t ve_shmat(int syscall_num, char *syscall_name, veos_handle *handle);
 ret_t ve_shmctl(int syscall_num, char *syscall_name,
 			veos_handle *handle);

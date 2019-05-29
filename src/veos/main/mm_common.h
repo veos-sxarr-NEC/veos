@@ -31,6 +31,7 @@
 #include "ve_hw.h"
 #include "task_mgmt.h"
 #include "mm_type.h"
+#include "mempolicy.h"
 
 #define REQUEST_FOR_PROCESS_SHARED     1
 #define REQUEST_FOR_PROCESS_PRIVATE    2
@@ -59,7 +60,7 @@ typedef struct vehva_header {
 struct ve_mm_struct {
 	uint8_t udma_desc_bmap;	/* !< Determines DMA Descriptor table E & H */
 	/* ATB structure*/
-	atb_reg_t atb;
+	atb_reg_t atb[VE_MAX_NUMA_NODE];
 	/* DMAATB structure */
 	dmaatb_reg_t dmaatb;
 	/* Mutex lock */
@@ -111,6 +112,7 @@ struct ve_mm_struct {
         uint64_t argv_size;	/* aux of VE */
         uint64_t auxv_addr;	/* aux of VE */
         uint64_t auxv_size;	/* aux of VE */
+	enum mempolicy mem_policy;         /* memory policy*/
 };
 
 
@@ -118,7 +120,7 @@ struct ve_mm_struct {
 extern int amm_alloc_mm_struct(struct ve_mm_struct **);
 extern int __amm_alloc_mm_struct(struct ve_mm_struct **);
 extern int amm_copy_mm_struct(struct ve_mm_struct *,
-				struct ve_mm_struct **, int);
+				struct ve_mm_struct **, int, int);
 extern int amm_update_atb(struct ve_task_struct *, uint64_t);
 extern int amm_update_dmaatb(struct ve_task_struct *, uint64_t);
 extern int amm_update_atb_all(struct ve_task_struct *);

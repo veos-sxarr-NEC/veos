@@ -34,6 +34,7 @@
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/capability.h>
+#include <mempolicy.h>
 #include "ve_hw.h"
 #include "task_mgmt.h"
 #include "ve_clone.h"
@@ -45,6 +46,7 @@
 #include "velayout.h"
 #include "ptrace_req.h"
 #include "ve_mem.h"
+#include "mm_stat.h"
 #include "locking_handler.h"
 #include "task_mgmt.h"
 #include "psm_stat.h"
@@ -169,8 +171,6 @@ hndl_return:
  * @brief Sends request to pseudo process to load the VE process binary.
  *
  * @param[in] pti Contains the request message received from pseudo process
- * @param[in] ve_core_id VE proces core id
- * @param[in] ve_node_id VE process node id
  * @param[in] ack_ret Command ack to send
  *
  * @return positive value on success, -1 on failure.
@@ -180,14 +180,15 @@ hndl_return:
  */
 int psm_pseudo_send_load_binary_req(struct veos_thread_arg *pti,
 		int ve_core_id,
-		int ve_node_id, int ack_ret)
+		int ve_node_id,
+		int ve_numa_node_id, int ack_ret)
 {
 	ssize_t retval = -1;
-	PseudoVeosMessage ld_binary_req = PSEUDO_VEOS_MESSAGE__INIT;
 	struct new_proc_info new_ve_proc = {0};
+	ProtobufCBinaryData new_ve_proc_msg = {0};	
+	PseudoVeosMessage ld_binary_req = PSEUDO_VEOS_MESSAGE__INIT;
 	char buf[MAX_PROTO_MSG_SIZE] = {0};
 	ssize_t pseudo_msg_len = 0, msg_len = 0;
-	ProtobufCBinaryData new_ve_proc_msg = {0};
 
 	VEOS_TRACE("Entering");
 
@@ -199,12 +200,13 @@ int psm_pseudo_send_load_binary_req(struct veos_thread_arg *pti,
 	/* Popuate request message */
 	new_ve_proc.core_id = ve_core_id;
 	new_ve_proc.node_id = ve_node_id;
+	new_ve_proc.numa_node = ve_numa_node_id;
 
 	ld_binary_req.has_syscall_retval = true;
 	ld_binary_req.syscall_retval = ack_ret;
 
 	/* Send info for PSEUDO */
-	ld_binary_req.has_pseudo_msg = true;
+	ld_binary_req.has_pseudo_msg = false;
 	new_ve_proc_msg.len = sizeof(new_ve_proc);
 	new_ve_proc_msg.data = (uint8_t *)&(new_ve_proc);
 	ld_binary_req.pseudo_msg = new_ve_proc_msg;
@@ -671,6 +673,8 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 	int length = -1;
 	char exe_name[ACCT_COMM+1] = {0};
 	char exe_path[PATH_MAX] = {0};
+	int numa_node = -1;
+	int mem_policy = MPOL_DEFAULT;
 
 	VEOS_TRACE("Entering");
 
@@ -701,8 +705,11 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 	memcpy(&ve_proc, (((PseudoVeosMessage *)(pti->pseudo_proc_msg))->
 				pseudo_msg).data, length);
 	core_id = ve_proc.core_id;
-	gid = ve_proc.gid;
-	uid = ve_proc.uid;
+	gid = pti->cred.gid;
+	uid = pti->cred.uid;
+	node_id = ve_proc.node_id;
+	numa_node = ve_proc.numa_node;
+	mem_policy = ve_proc.mem_policy;
 
 	retval = amm_dma_xfer(VE_DMA_VHVA, ve_proc.exec_path, pid, VE_DMA_VHVA,
 				(uint64_t)exe_path, getpid(), PATH_MAX, 0);
@@ -718,10 +725,13 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 			" PID of the new VE process : %d",
 			exe_name, exe_path, pid);
 
+	VEOS_DEBUG("Syscall args file: %s", ve_proc.sfile_name);
+
 	/* Fetch the respective task_struct from the list */
 	tsk = find_ve_task_struct(pid);
 	if (tsk && tsk->execed_proc) {
 		VEOS_DEBUG("PID %d already exists", pid);
+		tsk->namespace_pid = ve_proc.namespace_pid;
 		tsk->gid = gid;
 		tsk->uid = uid;
 		strncpy(tsk->ve_exec_path, exe_path, PATH_MAX);
@@ -731,7 +741,6 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 			if (tsk->rpm_preserve_task != 2)
 				memcpy(tsk->sighand->rlim , ve_proc.lim,
 						sizeof(ve_proc.lim));
-			tsk->rpm_create_task = false;
 		}
 
 		tsk->atb_dirty = 0;
@@ -749,42 +758,18 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 
 		tsk->ptraced = ve_proc.traced_proc;
 		strncpy(tsk->ve_comm, exe_name, ACCT_COMM);
-		tsk->sighand->lshm_addr = (uint64_t)shmat(ve_proc.shmid, NULL, 0);
 
-		if ((void *)-1 == (void *)tsk->sighand->lshm_addr) {
-			VEOS_ERROR("Failed to attach shared memory");
-			VEOS_DEBUG("Failed to attach shared memory return value "
+		/* map the LHM/SHM area of pseudo process in veos */
+		retval = psm_map_lhm_shm_area(tsk, node_id,
+				ve_proc.sfile_name, ve_proc.shm_lhm_addr);
+		if (retval < 0) {
+			VEOS_ERROR("Failed to map syscall args file");
+			VEOS_DEBUG("Failed to map syscall args file return value "
 					"%d, mapped value %d",
-					-errno, -EFAULT);
+					retval, -EFAULT);
 			retval = -EFAULT;
 			goto hndl_return;
 		}
-
-		/* Saving shmid in task struct to be used by vforked child */
-		tsk->lshmid = ve_proc.shmid;
-
-		/* Store the SHM/LHM address of pseudo process
-		 * in mm_struct.
-		 */
-		tsk->p_ve_mm->shm_lhm_addr = ve_proc.shm_lhm_addr;
-		VEOS_DEBUG("SHM/LHM address %lx of pid %d",
-				ve_proc.shm_lhm_addr, tsk->pid);
-
-                tsk->p_ve_mm->shm_lhm_addr_vhsaa = vedl_get_dma_address(VE_HANDLE(0),
-                                (void *)(tsk->p_ve_mm->shm_lhm_addr),
-                                tsk->pid, 1, 0, 0);
-		if ((uint64_t)-1 == tsk->p_ve_mm->shm_lhm_addr_vhsaa) {
-			VEOS_ERROR("Failed to convert the address");
-			VEOS_DEBUG("Failed to convert the address(VHVA->VHSAA),"
-					"return value %d, mapped value %d",
-					-errno, -EFAULT);
-			retval = -EFAULT;
-                        goto hndl_return;
-                }
-
-		VEOS_DEBUG("Virtual address: %lx Physical address: %lx",
-				tsk->p_ve_mm->shm_lhm_addr,
-				tsk->p_ve_mm->shm_lhm_addr_vhsaa);
 
 		/* Reviving task state at VE driver as it can be marked DELETED
 		 * (as discussed in #789)
@@ -815,11 +800,13 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 
 	/* Invoke EXEC VE handler */
 	retval = psm_handle_exec_ve_process(pti,
-			&core_id, &node_id, pid, exe_name,
+			&core_id, &node_id, pid, ve_proc.namespace_pid,
+			exe_name,
 			ve_proc.traced_proc, ve_proc.tracer_pid,
 			ve_proc.shm_lhm_addr,
-			ve_proc.shmid,
-			ve_proc.lim, gid, uid, false, exe_path);
+			ve_proc.sfile_name,
+			ve_proc.lim, gid, uid, false, exe_path,
+			&numa_node, mem_policy);
 	if (0 > retval) {
 		VEOS_ERROR("Failed to create new process");
 		VEOS_DEBUG("Creation of new process(PID: %d) failed", pid);
@@ -830,7 +817,8 @@ hndl_return:
 		put_ve_task_struct(tsk);
 	retval = psm_pseudo_send_load_binary_req(pti,
 			core_id,
-			node_id, retval);
+			node_id,
+			numa_node, retval);
 	if (retval > 0)
 		VEOS_DEBUG("Successfully sent Load Binary Req");
 	else
@@ -1158,7 +1146,23 @@ int psm_handle_clone_ve_proc_req(veos_thread_arg_t *pti)
 
 	fork_info.parent_pid = ((PseudoVeosMessage *)pti->
 			pseudo_proc_msg)->pseudo_pid;
-	fork_info.child_pid = ve_clone_info.child_pid;
+
+	fork_info.child_namespace_pid = ve_clone_info.child_pid;
+
+	/* Convert namespace pid to host pid */
+	fork_info.child_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
+			ve_clone_info.child_pid);
+	if (fork_info.child_pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				ve_clone_info.child_pid,
+				strerror(errno));
+		retval = -errno;
+		goto hndl_return1;
+	}
 
 	/* Main fork-routine which duplicates the process(or)thread */
 	retval = do_ve_fork(ve_clone_info.flags, ve_clone_info.stack_ptr, 0,
@@ -1167,6 +1171,7 @@ int psm_handle_clone_ve_proc_req(veos_thread_arg_t *pti)
 	if (0 > retval)
 		VEOS_ERROR("Failed to duplicate the thread");
 
+hndl_return1:
 	/* SEND CLONE ACK */
 	retval = psm_pseudo_send_clone_ack(pti, retval, &fork_info);
 	if (0 > retval)
@@ -1207,12 +1212,29 @@ int psm_handle_fork_ve_proc_req(struct veos_thread_arg *pti)
 			pseudo_proc_msg)->pseudo_msg;
 	memcpy(&ve_fork_info, pseudo_fork_msg.data, pseudo_fork_msg.len);
 
+	fork_info.child_namespace_pid = ve_fork_info.child_pid;
 	fork_info.child_pid =
 		((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
-	fork_info.parent_pid = ve_fork_info.parent_pid;
+
+	/* Convert namespace pid to host pid */
+	fork_info.parent_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
+			ve_fork_info.parent_pid);
+	if (fork_info.parent_pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				ve_fork_info.parent_pid,
+				strerror(errno));
+		retval = -errno;
+		goto hndl_return1;
+	}
+
 	fork_info.shm_lhm_addr = ve_fork_info.shm_lhm_addr;
-	fork_info.shmid = ve_fork_info.shmid;
+	strncpy(fork_info.sfile_name, ve_fork_info.sfile_name, S_FILE_LEN);
 	fork_info.veshm = ve_fork_info.veshm_dir;
+	fork_info.node_id = ve_fork_info.node_id;
 
 	VEOS_DEBUG("Received FORK request from PARENT: %d for CHILD: %d",
 			fork_info.parent_pid,
@@ -1225,6 +1247,7 @@ int psm_handle_fork_ve_proc_req(struct veos_thread_arg *pti)
 	if (0 > retval)
 		VEOS_ERROR("Failed to duplicate the process");
 
+hndl_return1:
 	/*SEND FORK ACK*/
 	retval = psm_pseudo_send_fork_ack(pti, retval);
 	if (0 > retval)
@@ -1401,7 +1424,7 @@ int psm_handle_unblock_setregval_req(struct veos_thread_arg *pti)
 
 	if (!pti) {
 		VEOS_ERROR("Invalid argument pti");
-		goto send_failure_ack;
+		goto hndl_return;
 	}
 
 	pseudo_req = (PseudoVeosMessage *)pti->pseudo_proc_msg;
@@ -1638,7 +1661,19 @@ int psm_handle_signal_req(struct veos_thread_arg *pti)
 	memcpy((char *)&signal_info, pseudo_req->pseudo_msg.data,
 			length);
 
-	pid = signal_info.tid;
+	/* Convert namespace pid to host pid */
+	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, signal_info.tid);
+	if (pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				signal_info.tid,
+				strerror(errno));
+		retval = -errno;
+		goto signal_error;
+	}
 
 	VEOS_DEBUG("Caller PID %d Callee PID %d", caller_pid, pid);
 
@@ -2630,6 +2665,7 @@ int psm_handle_clk_cputime_req(struct veos_thread_arg *pti)
 	struct ve_task_struct *current = NULL;
 	struct timespec tp = {0};
 	struct ve_clockinfo clockinfo = {0};
+	pid_t pid = -1;
 
 	VEOS_TRACE("Entering");
 
@@ -2643,6 +2679,24 @@ int psm_handle_clk_cputime_req(struct veos_thread_arg *pti)
 
 	memcpy(&clockinfo, (clk_cputime_req->pseudo_msg.data),
 			clk_cputime_req->pseudo_msg.len);
+
+	/* Convert namespace pid to host pid */
+	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, clockinfo.pid);
+	if (pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				clockinfo.pid,
+				strerror(errno));
+		retval = -errno;
+		goto send_ack1;
+	}
+
+	clockinfo.current =
+		((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
+	clockinfo.pid = pid;
 
 	VEOS_DEBUG("Clock id: %d, PID : %d",
 			clockinfo.clockid, clockinfo.pid);
@@ -2670,6 +2724,7 @@ int psm_handle_clk_cputime_req(struct veos_thread_arg *pti)
 		/* third bit checks process or thread
 		 * rest two bits checks for clock validity
 		 */
+
 		if (CPUCLOCK_PERTHREAD(clockinfo.clockid)) {
 			if (current->sighand == tsk->sighand)
 				clk_type = 0;
@@ -2808,7 +2863,7 @@ int psm_handle_getcpu_req(struct veos_thread_arg *pti)
 	if (NULL != ve_task_curr) {
 		retval = 0;
 		cpu_info.cpu = ve_task_curr->core_id;
-		cpu_info.node = ve_task_curr->node_id;
+		cpu_info.numa_node = ve_task_curr->numa_node;
 		put_ve_task_struct(ve_task_curr);
 		retval = psm_pseudo_send_get_cpu_ack(pti,
 				retval, &cpu_info);
@@ -2839,6 +2894,7 @@ int psm_handle_get_interval_req(struct veos_thread_arg *pti)
 	struct timespec tp = {0};
 	pid_t pid = -1;
 	pid_t ve_pid = -1;
+	pid_t namespace_ve_pid = -1;
 	int length = -1;
 
 	VEOS_TRACE("Entering");
@@ -2854,9 +2910,24 @@ int psm_handle_get_interval_req(struct veos_thread_arg *pti)
 			"Pseudo with pid :%d", pid);
 
 	length = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_msg.len;
-	memcpy(&ve_pid, ((PseudoVeosMessage *)pti->
+	memcpy(&namespace_ve_pid, ((PseudoVeosMessage *)pti->
 				pseudo_proc_msg)->pseudo_msg.data,
 			length);
+
+	/* Convert namespace pid to host pid */
+	ve_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, namespace_ve_pid);
+	if (ve_pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				namespace_ve_pid,
+				strerror(errno));
+		retval = -errno;
+		retval = psm_pseudo_send_get_interval_ack(pti, retval, NULL);
+		goto hndl_return;
+	}
 
 	ve_task_curr = find_ve_task_struct(ve_pid);
 	if (NULL != ve_task_curr) {
@@ -2895,6 +2966,7 @@ int psm_handle_get_rlimit_req(struct veos_thread_arg *pti)
 	struct ve_task_struct *tsk = NULL;
 	struct rlimit rlim = {0};
 	struct rlimit_info rlimit = {0};
+	pid_t pid = -1;
 
 	VEOS_TRACE("Entering");
 
@@ -2908,6 +2980,21 @@ int psm_handle_get_rlimit_req(struct veos_thread_arg *pti)
 
 	memcpy(&rlimit, rlimit_req->pseudo_msg.data,
 			rlimit_req->pseudo_msg.len);
+
+	/* Convert namespace pid to host pid */
+	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, rlimit.pid);
+	if (pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				rlimit.pid,
+				strerror(errno));
+		retval = -errno;
+		goto send_ack;
+	}
+	rlimit.pid = pid;
 
 	VEOS_DEBUG("Resource : %d, pid : %d",
 			rlimit.resource, rlimit.pid);
@@ -3009,6 +3096,7 @@ int psm_handle_set_rlimit_req(struct veos_thread_arg *pti)
 	struct rlimit rlim = {0};
 	struct rlimit_info *rlimit_msg = NULL;
 	int resource = -1;
+	pid_t pid = -1;
 
 	VEOS_TRACE("Entering");
 
@@ -3026,6 +3114,21 @@ int psm_handle_set_rlimit_req(struct veos_thread_arg *pti)
 			sizeof(resource));
 	memcpy(&rlim, &(rlimit_msg->rlim),
 			sizeof(rlim));
+
+	/* Convert namespace pid to host pid */
+	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, rlimit_msg->pid);
+	if (pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				rlimit_msg->pid,
+				strerror(errno));
+		retval = -errno;
+		goto send_ack;
+	}
+	rlimit_msg->pid = pid;
 
 	VEOS_DEBUG("Resource : %d, pid : %d",
 			resource, rlimit_msg->pid);
@@ -3189,7 +3292,7 @@ int psm_handle_getaffinity_req(struct veos_thread_arg *pti)
 	int64_t retval = -1;
 	struct ve_setaffinity_req ve_req = {0};
 	PseudoVeosMessage *getaffinity_req = NULL;
-	pid_t caller_pid = 0;
+	pid_t caller_pid = -1, pid = -1;
 	cpu_set_t mask;
 
 	VEOS_TRACE("Entering");
@@ -3209,9 +3312,25 @@ int psm_handle_getaffinity_req(struct veos_thread_arg *pti)
 	memcpy(&ve_req, getaffinity_req->pseudo_msg.data,
 			getaffinity_req->pseudo_msg.len);
 
+	/* Convert namespace pid to host pid */
+	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, ve_req.pid);
+	if (pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				ve_req.pid,
+				strerror(errno));
+		retval = -errno;
+		goto hndl_return;
+	}
+	ve_req.pid = pid;
+
 	retval = psm_handle_getaffinity_request(ve_req.pid, ve_req.cpusetsize, &mask);
 	if (retval < 0)
-		VEOS_ERROR("Failed to handle getaffinity request");
+		VEOS_DEBUG("Failed to handle getaffinity request");
+
 
 hndl_return:
 	VEOS_DEBUG("PID : %d GET AFFINITY return: %ld",
@@ -3240,7 +3359,7 @@ int psm_handle_setaffinity_req(struct veos_thread_arg *pti)
 	int retval = -1;
 	struct ve_setaffinity_req ve_req = {0};
 	PseudoVeosMessage *setaffinity_req = NULL;
-	pid_t caller_pid = 0;
+	pid_t caller_pid = -1, pid = -1;
 
 	VEOS_TRACE("Entering");
 
@@ -3251,13 +3370,28 @@ int psm_handle_setaffinity_req(struct veos_thread_arg *pti)
 	}
 
 	caller_pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
-	VEOS_DEBUG("Received setaffinity request from"
-			"Pseudo with PID : %d", caller_pid);
+	VEOS_DEBUG("Received setaffinity request from "
+				"Pseudo PID : %d", caller_pid);
 
 	setaffinity_req = (PseudoVeosMessage *)pti->pseudo_proc_msg;
 
 	memcpy(&ve_req, setaffinity_req->pseudo_msg.data,
 			setaffinity_req->pseudo_msg.len);
+
+	/* Convert namespace pid to host pid */
+	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, ve_req.pid);
+	if (pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				ve_req.pid,
+				strerror(errno));
+		retval = -errno;
+		goto hndl_return;
+	}
+	ve_req.pid = pid;
 
 	/* Releasing ipc read lock and acquiring write lock */
 	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock), UNLOCK,
@@ -3353,6 +3487,7 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 	struct ve_rusage ve_r = {{0}};
 	struct ve_rusage_info rusage_task = {0};
 	uint64_t max_rss = 0;
+	pid_t pid = -1, parent_pid = -1;
 
 	VEOS_TRACE("Entering");
 
@@ -3368,15 +3503,44 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 	memcpy(&rusage_task, rusage_req->pseudo_msg.data,
 		rusage_req->pseudo_msg.len);
 
-	VEOS_DEBUG("who : %d, pid : %d",
-			rusage_task.who, rusage_task.pid);
+	if (rusage_task.cleanup) {
+		parent_pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
+			pseudo_pid;
+		tsk = find_child_ve_task_struct(parent_pid, rusage_task.pid);
+		if (NULL == tsk) {
+			VEOS_DEBUG("Fail to find child(%d) tsk from parent(%d)",
+					rusage_task.pid, parent_pid);
+			retval = -ESRCH;
+			goto send_ack1;
+		}
 
-	tsk = find_ve_task_struct(rusage_task.pid);
+		VEOS_DEBUG("Parent(%d) its child(%d) for cleanup %p",
+					parent_pid, tsk->pid, tsk);
+	} else {
+		/* Convert namespace pid to host pid */
+		pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
+				rusage_task.pid);
+		if (pid <= 0) {
+			VEOS_DEBUG("PID conversion failed, host: %d"
+					" namespace: %d"
+					" error: %s",
+					pti->cred.pid,
+					rusage_task.pid,
+					strerror(errno));
+			retval = -errno;
+			goto send_ack1;
+		}
+		rusage_task.pid = pid;
 
-	if (NULL == tsk) {
-		VEOS_ERROR("Failed to find task structure");
-		retval = -ESRCH;
-		goto send_ack1;
+		VEOS_DEBUG("who : %d, pid : %d",
+				rusage_task.who, rusage_task.pid);
+
+		tsk = find_ve_task_struct(rusage_task.pid);
+		if (NULL == tsk) {
+			VEOS_ERROR("Failed to find task structure");
+			retval = -ESRCH;
+			goto send_ack1;
+		}
 	}
 
 	retval = psm_handle_get_rusage_request(tsk, rusage_task.who, &ve_r);
@@ -3406,7 +3570,6 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 			max_rss = group_leader->p_ve_mm->rss_max;
 
 		VEOS_DEBUG("max_rss %ld", max_rss);
-
 		if (group_leader->parent->p_ve_mm->crss_max < max_rss) {
 			group_leader->parent->p_ve_mm->crss_max = max_rss;
 			VEOS_DEBUG("Pid: %d crss_max: %ld",
@@ -4005,9 +4168,9 @@ int psm_handle_giduid_req(struct veos_thread_arg *pti)
 		"Failed to acquire task lock [PID = %d]", pid);
 
 	if (id_info.info_flag == true)
-		ve_task->gid = id_info.data;
+		ve_task->gid = pti->cred.gid;
 	else
-		ve_task->uid = id_info.data;
+		ve_task->uid = pti->cred.uid;
 
 	pthread_mutex_lock_unlock(&(ve_task->ve_task_lock), UNLOCK,
 		 "Failed to release task lock [PID = %d]", pid);
@@ -4072,6 +4235,115 @@ int psm_handle_send_pseudo_giduid_ack(struct veos_thread_arg *pti,
 	}
 
 hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/*
+ * @brief Prepare the acknowledgement and send the mempolicy to Pseudo Process
+ *
+ * @param[in] pti contains the request message received from Pseudo Process
+ * @param[in] memploicy
+ *
+ * @return positive value on success, -1 on failure
+ *
+ * @internal
+ * @author PSMG / Process management */
+
+int psm_pseudo_send_mempolicy_ack(struct veos_thread_arg *pti, int mempolicy)
+{
+	ssize_t retval = -1;
+	PseudoVeosMessage mempolicy_ack = PSEUDO_VEOS_MESSAGE__INIT;
+	char buf[MAX_PROTO_MSG_SIZE] = {0};
+	ssize_t pseudo_msg_len = 0, msg_len = 0;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument(pti) received from "
+				"pseudo process");
+		goto hndl_return;
+	}
+
+	/* Popuate MEMPOLICY ACK process message */
+	mempolicy_ack.has_syscall_retval = true;
+	mempolicy_ack.syscall_retval = mempolicy;
+
+	/* Pack mempolicy_ack before sending */
+	pseudo_msg_len = pseudo_veos_message__get_packed_size(&mempolicy_ack);
+
+	msg_len = pseudo_veos_message__pack(&mempolicy_ack, (uint8_t *)buf);
+	if (msg_len != pseudo_msg_len) {
+		VEOS_ERROR("Packing message protocl buffer error");
+		VEOS_DEBUG("Expected length: %ld, Returned length: %ld",
+				pseudo_msg_len, msg_len);
+		goto hndl_return;
+	}
+
+	VEOS_DEBUG("Sending FORK Acknowledgement");
+	/* Send ACK to the pseudo side */
+	retval = psm_pseudo_send_cmd(pti->socket_descriptor,
+			buf, pseudo_msg_len);
+	if (retval < pseudo_msg_len) {
+		VEOS_ERROR("Failed to send response to pseudo process");
+		VEOS_DEBUG("Expected bytes: %ld, Transferred bytes: %ld",
+				pseudo_msg_len, retval);
+		retval = -1;
+	}
+
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Handles the request of fetching memory policy for VE process
+ *
+ * @param[in] pti Contains the request message received from Pseudo Process
+ *
+ * @return positive value on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_handle_get_mempolicy_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	pid_t pid = -1;
+	struct ve_task_struct *tsk = NULL;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument "
+				"received from pseudo process");
+		goto hndl_return1;
+	}
+
+	pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
+
+	tsk  = find_ve_task_struct(pid);
+	if (!tsk) {
+		VEOS_ERROR("Failed to find task structure");
+		VEOS_DEBUG("Failed to fetch task structure for PID %d", pid);
+		retval = -1;
+		goto hndl_return;
+	}
+
+	VEOS_DEBUG("VE process with PID %d", pid);
+	retval = veos_get_mempolicy(tsk);
+	if (retval < 0)
+		VEOS_ERROR("Failed to find mempolicy"
+				"for PID : %d", pid);
+hndl_return:
+	if (tsk)
+		put_ve_task_struct(tsk);
+
+	retval = psm_pseudo_send_mempolicy_ack(pti, retval);
+	if (retval < 0)
+		VEOS_ERROR("Failed to send mempolicy acknowledgement");
+
+hndl_return1:
 	VEOS_TRACE("Exiting");
 	return retval;
 }

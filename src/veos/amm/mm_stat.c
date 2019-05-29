@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2019 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -33,6 +33,8 @@
 #include "veos.h"
 #include "buddy.h"
 #include "pmap.h"
+#include "mempolicy.h"
+#include "veos_sock.h"
 
 /*
    Supported Vmflags
@@ -159,7 +161,7 @@ uint64_t get_vm_size(struct ve_mm_struct *mm)
 {
 	uint64_t max_vm = 0;
 	int type = 0;
-	atb_reg_t *atb = &(mm->atb);
+	atb_reg_t *atb = &(mm->atb[0]);
 	int entry_cntr = -1, dir_cntr = -1;
 
 	VEOS_TRACE("invoked for task with mm desc %p", mm);
@@ -231,13 +233,11 @@ int veos_pidstatm_info(int pid, struct velib_pidstatm *pidstatm)
 	pidstatm->size = tsk->p_ve_mm->rss_cur; /*In Bytes*/
 	pidstatm->resident = tsk->p_ve_mm->rss_cur; /*In Butes*/
 	pidstatm->share = tsk->p_ve_mm->shared_rss; /* In Bytes */
+	pidstatm->trs = ALIGN(tsk->p_ve_mm->end_code, tsk->p_ve_mm->pgsz) -
+			tsk->p_ve_mm->start_code; /*In Bytes*/
+	pidstatm->drs = pidstatm->size - pidstatm->trs; /*In Bytes*/
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, UNLOCK,
 			"Failed to release thread-group-mm-lock");
-
-	pidstatm->trs = ALIGN(tsk->p_ve_mm->end_code, tsk->p_ve_mm->pgsz) -
-		tsk->p_ve_mm->start_code; /*In Bytes*/
-
-	pidstatm->drs = pidstatm->size - pidstatm->trs; /*In Bytes*/
 
 	put_ve_task_struct(tsk);
 
@@ -247,21 +247,22 @@ error:
 }
 
 /**
-* @brief Function will populate the field of struct ve_mem_info_request.
-*
-* @param[out] mem_info Pointer to struct ve_mem_info_request.
-*
-* @return 0 on success, negative of errno on failure.
-*/
+ * @brief Function will populate the field of struct ve_mem_info_request.
+ *
+ * @param[out] mem_info Pointer to struct ve_mem_info_request.
+ *
+ * @return 0 on success, negative of errno on failure.
+ */
 int veos_meminfo(struct velib_meminfo *mem_info)
 {
 	struct ve_node_struct *vnode = VE_NODE(0);
-	uint64_t i, count = 0;
+	struct buddy_mempool *numa_mp = NULL;
+	uint64_t i = 0, count = 0;
 	int ret = 0;
 
 	VEOS_TRACE("invoked with meminfo %p", mem_info);
 
-	if (NULL == mem_info) {
+	if (mem_info == NULL) {
 		VEOS_DEBUG("Invalid input argument");
 		ret = -EINVAL;
 		goto error;
@@ -270,21 +271,26 @@ int veos_meminfo(struct velib_meminfo *mem_info)
 	/* Total VE memory in Bytes */
 	mem_info->kb_main_total = (vnode->mem).ve_mem_size;
 
-	/* Total VE memory used in Bytes */
-	mem_info->kb_main_used = (vnode->mp->small_page_used +
-		(HUGE_PAGE_IDX * vnode->mp->huge_page_used)) * PAGE_SIZE_2MB;
+	mem_info->kb_main_used = 0;
+	mem_info->kb_main_free = 0;
+	mem_info->kb_hugepage_used = 0;
+	for (i = 0; i < vnode->numa_count; i++) {
+		numa_mp = vnode->numa[i].mp;
+		/* Total VE memory used in Bytes */
+		mem_info->kb_main_used += (numa_mp->small_page_used +
+			 (HUGE_PAGE_IDX * numa_mp->huge_page_used)) * PAGE_SIZE_2MB;
 
-	/* Total VE memory free in Bytes*/
-	mem_info->kb_main_free = (vnode->mp->total_pages -
-			(vnode->mp->small_page_used +
-		(HUGE_PAGE_IDX * vnode->mp->huge_page_used))) * PAGE_SIZE_2MB;
+		/* Total VE memory free in Bytes*/
+		mem_info->kb_main_free += (numa_mp->total_pages -
+					  (numa_mp->small_page_used +
+			   (HUGE_PAGE_IDX * numa_mp->huge_page_used))) * PAGE_SIZE_2MB;
 
-	/*Total VE memory used by HUGEPAGE in Bytes*/
-	mem_info->kb_hugepage_used = (vnode->mp->huge_page_used * PAGE_SIZE_64MB);
-
+		/*Total VE memory used by HUGEPAGE in Bytes*/
+		mem_info->kb_hugepage_used += (numa_mp->huge_page_used * PAGE_SIZE_64MB);
+	}
 
 	for (i = 0; i < vnode->nr_pages; i++) {
-		if (NULL == VE_PAGE(vnode, i))
+		if (VE_PAGE(vnode, i) == NULL)
 			continue;
 		if (PG_SHM & VE_PAGE(vnode, i)->flag || MAP_SHARED
 				& VE_PAGE(vnode, i)->flag)
@@ -297,6 +303,7 @@ error:
 	VEOS_TRACE("returned");
 	return ret;
 }
+
 
 /**
 * @brief Function will populate the max rss field of struct ve_rusage.
@@ -336,14 +343,16 @@ int veos_getrusage(int who, struct ve_rusage *ve_r,
 *		respective process for given pid.
 *
 * @param[in] pid pid of process.
+* @param[in] gid GID of caller process.
+* @param[in] uid UID of caller process.
 * @param[in] header map hearder.
 *
 * @return return 0 on success and negative of errno on failure.
 */
-int veos_pmap(pid_t pid, struct ve_mapheader *header)
+int veos_pmap(pid_t pid, uid_t gid, uid_t uid, struct ve_mapheader *header)
 {
 	int pmapcount = 0;
-	int i = 0, shmid = 0;
+	int i = 0, fd = 0;
 	struct ve_node_struct *vnode = VE_NODE(0);
 	struct _psuedo_pmap *ve_map = NULL;
 	struct _psuedo_pmap *vemap_l = NULL;
@@ -353,6 +362,8 @@ int veos_pmap(pid_t pid, struct ve_mapheader *header)
 	int ret = 0;
 	int str_len = 0;
 	void *shmaddr = NULL;
+	char *file_base_name = NULL;
+	char *filename = NULL;
 
 	VEOS_TRACE("invoked for task:pid(%d) and header %p", pid, header);
 	/* Find the VE task for given pid */
@@ -365,28 +376,64 @@ int veos_pmap(pid_t pid, struct ve_mapheader *header)
 	}
 
 	pmapcount = get_vepmap(&ve_map, tsk);
-	if (0 == pmapcount) {
+	if (0 >= pmapcount) {
 		VEOS_DEBUG("no segment to dump");
-		ret = 0;
-		header->shmid = 0;
+		ret = pmapcount;
 		goto err;
 	}
 	vemap_l = ve_map;
-	shmid = shmget(IPC_PRIVATE, sizeof(struct ve_mapinfo)*pmapcount,
-			IPC_CREAT | 0666);
-	if (0 > shmid) {
-		VEOS_DEBUG("VHOS shmget failed for pmap");
-		ret = -errno;
+
+	filename = (char *)malloc(PATH_MAX);
+	if (NULL == filename) {
+		ret = -ENOMEM;
+		VEOS_CRIT("Internal memory allocation fails.");
+		VEOS_DEBUG("malloc fails: %s", strerror(errno));
 		goto err;
 	}
 
-	shmaddr = shmat(shmid, NULL, 0);
-	if ((void *)-1 == shmaddr) {
-		VEOS_DEBUG("VHOS shmat failed for pmap");
+	sprintf(filename, "%s/veos%d-tmp/rpm_cmd_XXXXXX",
+			VEOS_SOC_PATH, header->node_id);
 
-		if (0 > shmctl(shmid, IPC_RMID, NULL))
-			VEOS_DEBUG("Failed to set shared memory for deletion");
+	VEOS_DEBUG("File path: %s", filename);
+
+	/* create a unique temporary file and opens it */
+	fd =  mkstemp(filename);
+	if (fd < 0) {
 		ret = -errno;
+		VEOS_DEBUG("mkstemp fails: %s", strerror(errno));
+		goto err;
+	}
+
+	/* Change file onwership so that RPM command can access file */
+	if (fchown(fd, uid, gid)) {
+		ret = -errno;
+		VEOS_DEBUG("fail to change file onwer: %s", strerror(errno));
+		close(fd);
+		unlink(filename);
+		goto err;
+	}
+
+	/* truncate file to size PAGE_SIZE_4KB */
+	ret = ftruncate(fd, sizeof(struct ve_mapinfo)*pmapcount);
+	if (-1 == ret) {
+		ret = -errno;
+		VEOS_DEBUG("ftruncate fails: %s", strerror(errno));
+		close(fd);
+		unlink(filename);
+		goto err;
+	}
+
+	shmaddr = mmap(NULL,
+			sizeof(struct ve_mapinfo)*pmapcount,
+			PROT_READ|PROT_WRITE,
+			MAP_SHARED,
+			fd,
+			0);
+	if ((void *)-1 == shmaddr) {
+		ret = -errno;
+		VEOS_DEBUG("VHOS mmap failed for pmap: %s", strerror(errno));
+		close(fd);
+		unlink(filename);
 		goto err;
 	}
 
@@ -462,20 +509,29 @@ int veos_pmap(pid_t pid, struct ve_mapheader *header)
 		free(vemap_tmp);
 	}
 
-	header->shmid = shmid;
+	file_base_name = basename(filename);
 	header->length = (unsigned int)pmapcount;
+	strncpy(header->filename, file_base_name, S_FILE_LEN);
+	VEOS_DEBUG("File name: %s", file_base_name);
 
-	ret = shmdt(shmaddr);
-	if (0 > ret) {
-		VEOS_DEBUG("VHOS shmdt failed for pmap");
-		if (0 > shmctl(shmid, IPC_RMID, NULL))
-			VEOS_DEBUG("Failed to set shared memory for deletion");
+	if (msync(shmaddr, pmapcount*sizeof(struct ve_mapinfo), MS_SYNC)) {
 		ret = -errno;
+		unlink(filename);
+		VEOS_DEBUG("VHOS msync failed : %s", strerror(errno));
 	}
 
+	if (munmap(shmaddr, pmapcount*sizeof(struct ve_mapinfo))) {
+		ret = -errno;
+		unlink(filename);
+		VEOS_DEBUG("VHOS munmap() failed for pmap");
+	}
+	close(fd);
 err:
 	if (tsk)
 		put_ve_task_struct(tsk);
+	if (filename)
+		free(filename);
+
 	return ret;
 }
 
@@ -504,7 +560,7 @@ size_t get_map_attr(vemva_t vemap, size_t map_sz, struct ve_mm_struct *mm, char 
 		vemap, map_sz, attr);
 
 	while (map_sz > 0) {
-		phy = __veos_virt_to_phy(vemap, &mm->atb, NULL, &pgmod);
+		phy = __veos_virt_to_phy(vemap, &mm->atb[0], NULL, &pgmod);
 		if (phy < 0) {
 			VEOS_DEBUG("No physical mapping for(0x%lx)", vemap);
 			break;
@@ -603,7 +659,7 @@ bool check_flag(vemva_t vemap, uint64_t flag, struct ve_mm_struct *mm)
 	struct ve_node_struct *vnode = VE_NODE(0);
 	VEOS_TRACE("invoked");
 
-	phy = __veos_virt_to_phy(vemap, &mm->atb, NULL, &pgmod);
+	phy = __veos_virt_to_phy(vemap, &mm->atb[0], NULL, &pgmod);
 	if (phy < 0) {
 		VEOS_DEBUG("No physical mapping for(0x%lx)", vemap);
 		return is_flag;
@@ -657,5 +713,150 @@ int change_owner_shm(int uid, int shmid)
 	}
 	VEOS_TRACE("returning");
 err:
+	return ret;
+}
+
+
+/**
+ * @brief  This function will set memory policy to ve_task_struct.
+ *
+ * @param[out] ve_task Pointer of struct ve_task_struct
+ * @param[in] mempolicy Memory policy (MPOL_DEFAULT or MPOL_BIND)
+ *
+ * @return if success return 0 else negative of errno.
+ */
+int veos_set_mempolicy(struct ve_task_struct *ve_task, int mempolicy)
+{
+	int ret = 0;
+
+	VEOS_TRACE("invoked with ve_task %p", ve_task);
+
+	if (ve_task == NULL) {
+		VEOS_DEBUG("Invalid input argument");
+		ret = -EINVAL;
+		goto error;
+	}
+
+	if (mempolicy != MPOL_DEFAULT && mempolicy != MPOL_BIND) {
+		VEOS_DEBUG("Invalid input argument mempolicy %d", mempolicy);
+		ret = -EINVAL;
+		goto error;
+	}
+
+	pthread_mutex_lock_unlock(&ve_task->p_ve_mm->thread_group_mm_lock, LOCK,
+			"Failed to acquire thread-group-mm-lock");
+	ve_task->p_ve_mm->mem_policy = mempolicy;
+	pthread_mutex_lock_unlock(&ve_task->p_ve_mm->thread_group_mm_lock, UNLOCK,
+			"Failed to release thread-group-mm-lock");
+	VEOS_DEBUG("Setting mempolicy %d", mempolicy);
+error:
+	VEOS_TRACE("returned");
+	return ret;
+}
+
+/**
+ * @brief  This function will get memory policy from ve_task_struct.
+ *
+ * @param[in] ve_task Pointer of struct ve_task_struct
+ *
+ * @return if success returns memory policy of ve_task (MPOL_DEFAULT or MPOL_BIND)
+ *         else  negative of errno.
+ */
+int veos_get_mempolicy(struct ve_task_struct *ve_task)
+{
+	int ret = 0;
+
+	VEOS_TRACE("invoked with ve_task %p", ve_task);
+	if (ve_task == NULL) {
+		VEOS_DEBUG("Invalid input argument");
+		ret = -EINVAL;
+		goto error;
+	}
+
+	pthread_mutex_lock_unlock(&ve_task->p_ve_mm->thread_group_mm_lock, LOCK,
+			"Failed to acquire thread-group-mm-lock");
+	ret = ve_task->p_ve_mm->mem_policy;
+	pthread_mutex_lock_unlock(&ve_task->p_ve_mm->thread_group_mm_lock,
+			UNLOCK,
+			"Failed to release thread-group-mm-lock");
+	VEOS_DEBUG("Get mempolicy %d", ret);
+error:
+	VEOS_TRACE("returned");
+	return ret;
+}
+
+/**
+ * @brief  This function is used to get the VE memory information and
+ *	   update the data structure array struct velib_meminfo per NUMA node.
+ *
+ * @param[out] mem_info Pointer of struct ve_lib_meminfo array.
+ * @param[in] size Size of struct velib_meminfo array.
+ *
+ * @return If success returns the number of NUMA nodes count,
+ *	   else negative value.
+ */
+int veos_numa_meminfo(struct velib_meminfo *mem_info, size_t size)
+{
+	struct ve_node_struct *vnode = VE_NODE(0);
+	uint64_t index = 0, i = 0;
+	uint64_t count[VE_MAX_NUMA_NODE] = {};
+	struct buddy_mempool *numa_mp = NULL;
+	int ret = 0;
+	int mp_num = 0;
+
+	VEOS_TRACE("invoked with numa_meminfo %p", mem_info);
+
+	if (mem_info == NULL) {
+		VEOS_DEBUG("Invalid input argument");
+		ret = -EINVAL;
+		goto error;
+	}
+
+	if (vnode->numa_count != size/sizeof(struct velib_meminfo)) {
+		VEOS_DEBUG("Invalid velib size count :%ld, numa_count :%d",
+			size/sizeof(struct velib_meminfo), vnode->numa_count);
+		ret = -EINVAL;
+		goto error;
+	}
+	for (index = 0; index < vnode->numa_count; index++) {
+		numa_mp = vnode->numa[index].mp;
+		/* Total VE memory in Bytes */
+		mem_info[index].kb_main_total =
+			(vnode->mem).ve_mem_size / vnode->numa_count;
+
+		/* Total VE memory used in Bytes */
+		mem_info[index].kb_main_used = (numa_mp->small_page_used +
+			(HUGE_PAGE_IDX * numa_mp->huge_page_used)) * PAGE_SIZE_2MB;
+
+		/* Total VE memory free in Bytes*/
+		mem_info[index].kb_main_free = (numa_mp->total_pages -
+				(numa_mp->small_page_used +
+			(HUGE_PAGE_IDX * numa_mp->huge_page_used))) * PAGE_SIZE_2MB;
+
+		/*Total VE memory used by HUGEPAGE in Bytes*/
+		mem_info[index].kb_hugepage_used =
+			(numa_mp->huge_page_used * PAGE_SIZE_64MB);
+	}
+
+	for (i = 0; i < vnode->nr_pages; i++) {
+		if (VE_PAGE(vnode, i) == NULL)
+			continue;
+		if (PG_SHM & VE_PAGE(vnode, i)->flag || MAP_SHARED
+				& VE_PAGE(vnode, i)->flag) {
+			if (vnode->partitioning_mode) {
+				mp_num = (int)paddr2mpnum(pbaddr(i, PG_2M),
+						  numa_sys_info.numa_mem_blk_sz,
+						  numa_sys_info.first_mem_node);
+			}
+			count[mp_num] = (count[mp_num] + PAGE_SIZE_2MB);
+		}
+	}
+	/*Total VE shared memory in Bytes*/
+	for (index = 0; index < vnode->numa_count; index++)
+		mem_info[index].kb_main_shared = count[index];
+
+	ret = vnode->numa_count;
+error:
+	VEOS_TRACE("returned");
 	return ret;
 }

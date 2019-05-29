@@ -253,14 +253,17 @@ void *ve_get_nearby_vemva(veos_handle *handle, struct vemva_struct *vemva_tmp,
 	void *vemva = (void *)-1;
 
 	PSEUDO_TRACE("invoked");
-	PSEUDO_DEBUG("invoked with to get vaddr: %p\n", (void *)vaddr);
+	PSEUDO_DEBUG("invoked with to get vaddr: %p from dir %p\n",
+			(void *)vaddr, vemva_tmp->vemva_base);
 
 	/*Check If VEMVA are available or not*/
 	if (check_bits(vemva_tmp, entry, count, MARK_UNUSED)) {
+		PSEUDO_DEBUG("free vemva is found in dir %p", vemva_tmp->vemva_base);
 		mark_bits(vemva_tmp, entry, count, MARK_USED);
 		vemva = (void *)vaddr;
 	} else {
-		vemva = ve_get_free_vemva(handle, vemva_tmp, vaddr, count);
+		PSEUDO_DEBUG("free vemva is not found in dir %p", vemva_tmp->vemva_base);
+		vemva = ve_get_free_vemva(handle, vemva_tmp, 0, count);
 	}
 
 	PSEUDO_DEBUG("returned with %p", vemva);
@@ -332,6 +335,8 @@ void *avail_vemva(veos_handle *handle, uint64_t vaddr,
 			break;
 		} else if (vemva_base == vemva_tmp->vemva_base &&
 				!(flag & MAP_FIXED)) {
+			PSEUDO_DEBUG("Searching for nearby vemva in dir %p",
+						vemva_tmp->vemva_base);
 			vemva = ve_get_nearby_vemva(handle, vemva_tmp,
 					vaddr, entry, count, flag);
 			break;
@@ -350,20 +355,50 @@ void *avail_vemva(veos_handle *handle, uint64_t vaddr,
 		}
 		/*Check If the requested block of VEMVA lies in this chunk*/
 		if (vemva_tmp->vemva_base == vemva_base) {
-			mark_bits(vemva_tmp, entry, count,
-					MARK_USED);
-			vemva = (void *)vaddr;
+			PSEUDO_DEBUG("vemva_base %p entry %ld count %ld", vemva_base, entry, count);
+			/*Checking for free vemva*/
+			if (check_bits(vemva_tmp, entry, count, MARK_UNUSED)) {
+				mark_bits(vemva_tmp, entry, count, MARK_USED);
+				vemva = (void *)vaddr;
+				PSEUDO_DEBUG("Allocated vemva is :%p", vemva);
+			} else {
+				PSEUDO_DEBUG("Required free vemva is not found");
+				PSEUDO_DEBUG("Again trying with dir:%p expantion",
+								vemva_tmp->vemva_base);
+				vemva = ve_get_free_vemva(handle, vemva_tmp, vaddr, count);
+				if (vemva == (void *)-1) {
+					PSEUDO_DEBUG("New directory can't expanded");
+					PSEUDO_DEBUG("Deallocating directory :%p",
+								vemva_tmp->vemva_base);
+					/*freeing newly allocated directory*/
+					if (dealloc_vemva_dir(vemva_tmp))
+						PSEUDO_DEBUG("error while deallocating vemva directory.");
+
+					if (flag & MAP_FIXED) {
+						/*fixed vemva not available  */
+						PSEUDO_DEBUG("Unable to allocate fixed vemva");
+						goto err_exit;
+					} else {
+						PSEUDO_DEBUG("trying to allocated elsewhere");
+						vemva_tmp = alloc_vemva_dir(handle, NULL, vaddr, count, flag);
+						if (NULL == vemva_tmp) {
+							PSEUDO_DEBUG("No free directory available");
+						} else {
+							vemva = ve_get_free_vemva(handle, vemva_tmp, 0, count);
+							PSEUDO_DEBUG("allocated vemva %p instead of 0x%lx",
+									vemva, vaddr);
+						}
+					}
+				}
+			}
 		} else if (flag & MAP_FIXED) {
 			if (dealloc_vemva_dir(vemva_tmp))
 				PSEUDO_DEBUG("error while deallocating vemva directory.");
 			goto err_exit;
-		} else {
+		} else
 			/*Serve the request from this chunk*/
-			vemva = ve_get_free_vemva(handle, vemva_tmp, vaddr,
-						count);
-		}
+			vemva = ve_get_free_vemva(handle, vemva_tmp, 0, count);
 	}
-
 err_exit:
 	PSEUDO_DEBUG("returned with vemva: %p", vemva);
 	PSEUDO_TRACE("returned");
@@ -406,7 +441,7 @@ void *ve_get_free_vemva(veos_handle *handle, struct vemva_struct *
 	word_count = (WORDS_PER_BITMAP * vemva_tmp->consec_dir);
 
 	PSEUDO_TRACE("invoked");
-	PSEUDO_DEBUG("invoked with word count = %ld", word_count);
+	PSEUDO_DEBUG("invoked with word count = %ld, entry_index %d", word_count, entry_index);
 
 	for (index = word_index; index < word_count; index++, word_index++) {
 		if (word_index >= WORDS_PER_BITMAP) {
@@ -438,6 +473,7 @@ void *ve_get_free_vemva(veos_handle *handle, struct vemva_struct *
 	}
 
 	if (contigious_free) {
+		PSEUDO_DEBUG("contigious_free from previous dir %ld", contigious_free);
 		/*Check if dir is expandable or not*/
 		PSEUDO_DEBUG("Trying to expand vemva");
 		vemva_dir = alloc_vemva_dir(handle, vemva_dir,
@@ -452,6 +488,7 @@ void *ve_get_free_vemva(veos_handle *handle, struct vemva_struct *
 	PSEUDO_DEBUG("returned with failure");
 	return (void *)-1;
 out:
+	PSEUDO_DEBUG("entry %ld word %ld", entry, word);
 	mark_bits(vemva_dir, ((word*BITS_PER_WORD) + entry),
 			count, MARK_USED);
 	/*

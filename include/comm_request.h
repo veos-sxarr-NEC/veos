@@ -31,6 +31,7 @@
 #include <sys/uio.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
+#include <sys/shm.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <sched.h>
@@ -54,6 +55,7 @@
 #define CPUCLOCK_PERTHREAD_MASK 4
 #define CPUCLOCK_CLOCK_MASK     3
 #define CLOCKFD_MASK            (CPUCLOCK_PERTHREAD_MASK|CPUCLOCK_CLOCK_MASK)
+#define S_FILE_LEN	15
 
 
 /**
@@ -131,7 +133,8 @@ struct pseudo_ve_clone_info {
 				 * CLONE_CHILD_CLEARTID clone flag.*/
 	struct veshm_struct veshm_dir[32];
 	uint64_t shm_lhm_addr;
-	int shmid;
+	int node_id;		/*!< Node id of ve process */
+	char sfile_name[S_FILE_LEN];	/*!< syscall args file name */
 };
 
 struct pseudo_ve_fork_info {
@@ -202,16 +205,20 @@ struct ve_exit_req {
  * @brief New VE process creation request
  */
 struct new_ve_proc {
-	int core_id;
-	char exe_name[ACCT_COMM+1];
+	int namespace_pid;	/*!< Namespace pid of VE process */
+	int core_id;		/*!< Core id of ve process */
+	int node_id;		/*!< Node id of ve process */
+	char exe_name[ACCT_COMM+1]; /*!< Binary name */
+	char sfile_name[S_FILE_LEN]; /*!< Syscall argument file */
 	uint64_t exec_path;	/*!< path of ve_exec */
 	bool traced_proc;       /*!< VE process is getting traced */
 	pid_t tracer_pid;       /*!< Pid of VE tracer */
 	uint64_t shm_lhm_addr;
-	int shmid;
 	struct rlimit lim[RLIM_NLIMITS];
-	uint64_t gid; /*!< VE process group ID*/
-	uint64_t uid; /*!< VE process user ID*/
+	uint64_t gid;		/*!< VE process group ID*/
+	uint64_t uid;		/*!< VE process user ID*/
+	int numa_node;		/*!< NUMA node ID */
+	int mem_policy;		/*!< memory policy for VE process*/
 };
 
 
@@ -303,6 +310,7 @@ struct ve_shm_cmd {
 	int64_t shmid;
 	int64_t shmperm;
 	bool create;
+	struct shmid_ds shm_stat;
 };
 
 /**
@@ -311,6 +319,7 @@ struct ve_shm_cmd {
 struct new_proc_info {
 	int core_id; /*!< Core ID */
 	int node_id; /*!< Node ID */
+	int numa_node; /*!< Numa Node ID */
 };
 
 
@@ -327,7 +336,7 @@ struct vemva_init_atb_cmd {
  */
 struct ve_cpu_info {
 	int cpu; /*!< Core ID */
-	int node; /*!< Node ID */
+	int numa_node; /*!< NUMA Node ID */
 };
 
 /**
@@ -445,6 +454,7 @@ struct ve_start_ve_req_cmd {
  * @brief Shared memory info for VE process.
  */
 struct shm_seginfo {
+	int shmid;      /*!< id for shared memory segment*/
 	int pgmod; /*!< Page mode of shm segment */
 	uint64_t size; /*!< Size of shm segment */
 	int err; /*!< Errno while geting shm segment */
@@ -603,6 +613,7 @@ enum pseudo_veos_msg_id {
 	CMD_TPROC,
 	GET_REGVAL_REQ,
 	GIDUID_REQ,
+	GET_MEMPOLICY,
 #if 0
 	CMD_CR_RLIM,
 #endif

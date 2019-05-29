@@ -36,6 +36,7 @@
 #include <pthread.h>
 #include <errno.h>
 
+#include "libved.h"
 #include "comm_request.h"
 #include "proto_buff_schema.pb-c.h"
 #include "ve_memory.h"
@@ -241,8 +242,12 @@ veos_veshm_attach(veos_thread_arg_t *pti, struct veshm_args *subcmd,
 	request_attach.user_pid  = (uint32_t)cred->pid;
 	request_attach.user_vemva= (uint64_t)
 		subcmd->arg.args_veshm_sub_attach.user_vemva;
+
+	/* Convert owner pid which specified by an API argument. */
 	request_attach.owner_pid = (uint32_t)
-		subcmd->arg.args_veshm_sub_attach.owner_pid;
+		vedl_host_pid(VE_HANDLE(0), cred->pid,
+			      subcmd->arg.args_veshm_sub_attach.owner_pid);
+
 	request_attach.vemva	 = (uint64_t)
 		subcmd->arg.args_veshm_sub_attach.vemva;
 	request_attach.size	 = (uint64_t)
@@ -261,6 +266,11 @@ veos_veshm_attach(veos_thread_arg_t *pti, struct veshm_args *subcmd,
 	set_flag(request_attach.mode_flag, VE_REQ_PROC);
 
 	reply.veshm_ret = &veshm_ret;
+
+	IVED_DEBUG(log4cat_veos_ived,
+		   "VESHM attaching request for pid:%d (host pid:%d)",
+		   subcmd->arg.args_veshm_sub_attach.owner_pid,
+		   request_attach.owner_pid);
 
 	ret = veos_veshm_attach_common(&request_attach, &reply);
 	if (ret != 0){
@@ -499,6 +509,7 @@ get_pgmode_syscall(veos_thread_arg_t *pti, struct veshm_args *subcmd)
 	int rpc_reterr = 0;
 	int8_t page_mode = 0;
 	uint64_t mode_flag;
+	pid_t host_pid;
 
 	if (pti == NULL || subcmd == NULL) {
 		IVED_CRIT(log4cat_veos_ived, "Argument is NULL.");
@@ -520,9 +531,13 @@ get_pgmode_syscall(veos_thread_arg_t *pti, struct veshm_args *subcmd)
 		goto err_ret_invalid_arg;
 	}
 
+	host_pid = vedl_host_pid(VE_HANDLE(0),
+				 pti->cred.pid,
+				 (pid_t)subcmd->arg.args_veshm_pgsize.pid);
+
 	page_mode = veos_get_pgmode
 		((uint8_t)subcmd->arg.args_veshm_pgsize.mode_flag,
-		 (pid_t)subcmd->arg.args_veshm_pgsize.pid,
+		 host_pid,
 		 (uint64_t)subcmd->arg.args_veshm_pgsize.address);
 	if (page_mode < 0){
 		rpc_reterr = page_mode;	/* negative of errno */
@@ -530,7 +545,9 @@ get_pgmode_syscall(veos_thread_arg_t *pti, struct veshm_args *subcmd)
 	}
 
 	veos_ived_reply((uint64_t)page_mode, NULL, pti);
-	IVED_DEBUG(log4cat_veos_ived, "rpc_retval:%d", page_mode);
+	IVED_DEBUG(log4cat_veos_ived, "pid:%d(host pid:%d) rpc_retval:%d", 
+		   (pid_t)subcmd->arg.args_veshm_pgsize.pid, host_pid,
+		   page_mode);
 
 	return(0); 
 

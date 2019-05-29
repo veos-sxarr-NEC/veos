@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2019 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -164,7 +164,7 @@ int64_t veos_alloc_dmaatb_entry_for_vemva(pid_t requester, pid_t owner,
 
 	pthread_mutex_lock_unlock(&own_tsk->p_ve_mm->thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
-	memcpy(&tmp_atb, &own_tsk->p_ve_mm->atb, sizeof(atb_reg_t));
+	memcpy(&tmp_atb, &own_tsk->p_ve_mm->atb[0], sizeof(atb_reg_t));
 
 	tsize = size;
 	vaddr = vemva_addr;
@@ -187,7 +187,7 @@ int64_t veos_alloc_dmaatb_entry_for_vemva(pid_t requester, pid_t owner,
 
 		if (((pgmod == -1) || (pgmod == tpgmod)))
 			pgmod = tpgmod;
-		else{
+		else {
 			ret = -EINVAL;
 			pthread_mutex_lock_unlock(&own_tsk->p_ve_mm->
 					thread_group_mm_lock, UNLOCK,
@@ -391,8 +391,8 @@ int64_t veos_alloc_dmaatb_entry_for_aa_tsk(struct ve_task_struct *tsk,
 	}
 
 	vehva = (vehva_t)ret;
-	memset(&tsk_cp, 0 , sizeof(dmaatb_reg_t));
-	memset(&node_cp, 0 , sizeof(dmaatb_reg_t));
+	memset(&tsk_cp, 0, sizeof(dmaatb_reg_t));
+	memset(&node_cp, 0, sizeof(dmaatb_reg_t));
 	/* Here we save the content of node_dmaatb and task_dmaatb.
 	 * so in case of failure we can do proper cleanup.
 	 */
@@ -406,7 +406,8 @@ int64_t veos_alloc_dmaatb_entry_for_aa_tsk(struct ve_task_struct *tsk,
 		dir_num = validate_vehva(vehva+(i*pgsize), prot,
 				pfnum(addr[i], pgmod),
 				&tsk->p_ve_mm->dmaatb,
-				pgmod, addr_flag, tsk->jid, vehva_flag);
+				pgmod, addr_flag, tsk->jid, vehva_flag,
+				tsk->numa_node);
 		if (0 > dir_num) {
 				ret = -ENOMEM;
 			VEOS_DEBUG("Error (%s) while setting vehva 0x%lx",
@@ -428,7 +429,7 @@ int64_t veos_alloc_dmaatb_entry_for_aa_tsk(struct ve_task_struct *tsk,
 		dir_num = dirs[i++];
 		if (DMAATB_DIR_NUM == dir_num)
 			continue;
-		psm_sync_hw_regs(tsk, _DMAATB, &(vnode->dmaatb),
+		psm_sync_hw_regs(tsk, _DMAATB,
 				halt_all,
 				dir_num, 1);
 	}
@@ -486,7 +487,7 @@ int veos_scheduleout_dmaatb(struct ve_task_struct *tsk)
 		goto err_handle;
 	}
 
-	psm_sync_hw_regs(tsk, _DMAATB, &(vnode->dmaatb), false, ret, 1);
+	psm_sync_hw_regs(tsk, _DMAATB, false, ret, 1);
 	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
 			"Failed to release node dmaatb lock");
 	amm_dump_dmaatb(tsk, true);
@@ -562,7 +563,7 @@ int veos_schedulein_dmaatb(struct ve_task_struct *tsk)
 		}
 
 		VEOS_DEBUG("current_dir = %lx", dir_num);
-		psm_sync_hw_regs(tsk, _DMAATB, &(vnode->dmaatb),
+		psm_sync_hw_regs(tsk, _DMAATB,
 				false, dir_num, 1);
 		pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
 				"Failed to release node dmaatb lock");
@@ -696,7 +697,7 @@ int64_t veos_free_dmaatb_entry_tsk(struct ve_task_struct *req_tsk,
 
 	while (0 <= dirs[i]) {
 		if ((dirs[i] >= noc) || (req_tsk->p_ve_mm->is_sched == true)) {
-			psm_sync_hw_regs(req_tsk, _DMAATB, &(vnode->dmaatb),
+			psm_sync_hw_regs(req_tsk, _DMAATB,
 					true, dirs[i++], 1);
 		} else
 			i++;

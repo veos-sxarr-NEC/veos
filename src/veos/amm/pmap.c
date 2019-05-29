@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2019 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -77,7 +77,7 @@ int8_t isheap(uint64_t vaddr, struct ve_task_struct *tsk, int pgmod)
 	struct ve_page *ve_page = NULL;
 	struct ve_node_struct *vnode = VE_NODE(0);
 
-	dir_num =  __get_pgd(vaddr, (void *)&tsk->p_ve_mm->atb, -1, false);
+	dir_num =  __get_pgd(vaddr, (void *)&tsk->p_ve_mm->atb[0], -1, false);
 	if (0 > dir_num) {
 		VEOS_DEBUG("ATB Directory not available"
 				"for vaddr %p", (void *)vaddr);
@@ -91,8 +91,8 @@ int8_t isheap(uint64_t vaddr, struct ve_task_struct *tsk, int pgmod)
 		ret = -EINVAL;
 		goto end;
 	}
-	if (pg_isvalid(&(tsk->p_ve_mm->atb.entry[dir_num][pgoff]))) {
-		pgno = pg_getpb(&(tsk->p_ve_mm->atb.entry[dir_num][pgoff]),
+	if (pg_isvalid(&(tsk->p_ve_mm->atb[0].entry[dir_num][pgoff]))) {
+		pgno = pg_getpb(&(tsk->p_ve_mm->atb[0].entry[dir_num][pgoff]),
 				PG_2M);
 		if ((!pgno) || (pgno == PG_BUS)) {
 			VEOS_DEBUG("Invalid page");
@@ -105,7 +105,7 @@ int8_t isheap(uint64_t vaddr, struct ve_task_struct *tsk, int pgmod)
 		else
 			ret = 1;
 	} else {
-		pgno = pg_getpb(&(tsk->p_ve_mm->atb.entry[dir_num][pgoff]),
+		pgno = pg_getpb(&(tsk->p_ve_mm->atb[0].entry[dir_num][pgoff]),
 				PG_2M);
 		if (pgno) {
 			ret = 1;
@@ -139,7 +139,7 @@ int8_t isstack(uint64_t vaddr,	struct ve_task_struct *tsk, int pgmod)
 	struct ve_page *ve_page = NULL;
 	struct ve_node_struct *vnode = VE_NODE(0);
 
-	dir_num =  __get_pgd(vaddr, (void *)&tsk->p_ve_mm->atb, -1, false);
+	dir_num =  __get_pgd(vaddr, (void *)&tsk->p_ve_mm->atb[0], -1, false);
 	if (0 > dir_num) {
 		VEOS_DEBUG("ATB Directory not available"
 				"for vaddr %p", (void *)vaddr);
@@ -153,8 +153,8 @@ int8_t isstack(uint64_t vaddr,	struct ve_task_struct *tsk, int pgmod)
 		ret = -EINVAL;
 		goto end;
 	}
-	if (pg_isvalid(&(tsk->p_ve_mm->atb.entry[dir_num][pgoff]))) {
-		pgno = pg_getpb(&(tsk->p_ve_mm->atb.entry[dir_num][pgoff]),
+	if (pg_isvalid(&(tsk->p_ve_mm->atb[0].entry[dir_num][pgoff]))) {
+		pgno = pg_getpb(&(tsk->p_ve_mm->atb[0].entry[dir_num][pgoff]),
 				PG_2M);
 		if ((!pgno) || (pgno == PG_BUS)) {
 			VEOS_DEBUG("Invalid page");
@@ -167,7 +167,7 @@ int8_t isstack(uint64_t vaddr,	struct ve_task_struct *tsk, int pgmod)
 		else
 			ret = 1;
 	} else {
-		pgno = pg_getpb(&(tsk->p_ve_mm->atb.entry[dir_num][pgoff]),
+		pgno = pg_getpb(&(tsk->p_ve_mm->atb[0].entry[dir_num][pgoff]),
 				PG_2M);
 		if (pgno) {
 			ret = 1;
@@ -191,7 +191,7 @@ end:
  *
  * @return On success it return 0 else -1.
  */
-int valid_map_range( struct _psuedo_pmap *pmap,
+int valid_map_range(struct _psuedo_pmap *pmap,
 		struct _psuedo_pmap **pvemap, int idx,
 		struct ve_task_struct *tsk)
 {
@@ -216,13 +216,13 @@ int valid_map_range( struct _psuedo_pmap *pmap,
 		pgsz = (pgmod == PG_2M) ? (1 << PSSHFT) :
 					((uint64_t)1 << PSSHFT_H);
 
-                /*Aligned starting address*/
+		/*Aligned starting address*/
 		begin_addr = pmap[idx].begin;
-                if (!IS_ALIGNED(begin_addr, pgsz))
-                        begin_addr =  ALIGN_RD(begin_addr, pgsz);
+		if (!IS_ALIGNED(begin_addr, pgsz))
+			begin_addr =  ALIGN_RD(begin_addr, pgsz);
 		end_addr = pmap[idx].end;
-                if (!IS_ALIGNED(end_addr, pgsz))
-                        end_addr = ALIGN(end_addr, pgsz);
+		if (!IS_ALIGNED(end_addr, pgsz))
+			end_addr = ALIGN(end_addr, pgsz);
 
 		aligndiff = end_addr - begin_addr;
 		diff = aligndiff/pgsz;
@@ -232,7 +232,7 @@ int valid_map_range( struct _psuedo_pmap *pmap,
 				(void *)(pmap[idx].begin), (void *)(pmap[idx].end),
 				(void *)aligned_addr,
 				loop, diff, (void *)pgsz);
-		while ( loop < diff ) {
+		while (loop < diff) {
 			retval = isstack(aligned_addr, tsk, pgmod);
 			/* Initially flag is 0, it enters the condition.
 			* To find the begin address as "stack" */
@@ -241,25 +241,25 @@ int valid_map_range( struct _psuedo_pmap *pmap,
 					/* Dump the "anon" memory */
 					struct _psuedo_pmap tpmap[2];
 					tpmap[0].flag = pmap[idx].flag;
-                                        tpmap[0].begin = pmap[idx].begin;
-                                        tpmap[0].end = aligned_addr;
-                                        tpmap[0].size= pmap[idx].size;
-                                        tpmap[0].inode = pmap[idx].inode;
-                                        tpmap[0].foo = pmap[idx].foo;
-                                        (void)strncpy(tpmap[0].perm,
-                                                        pmap[idx].perm,
-                                                        sizeof(pmap[idx].perm));
-                                        (void)strncpy(tpmap[0].dev,
-                                                        pmap[idx].dev,
-                                                        sizeof(pmap[idx].dev));
-                                        (void)strncpy(tpmap[0].mapname, "[anon]",
-                                                        sizeof("[anon]"));
-                                        if (fill_ve_pmap(tpmap, pvemap, 0)) {
-                                                VEOS_WARN(
-                                                                "Record not inserted: %p - %p",
-                                                                (void *)tpmap[0].begin,
-                                                                (void *)tpmap[0].end);
-                                        }
+					tpmap[0].begin = pmap[idx].begin;
+					tpmap[0].end = aligned_addr;
+					tpmap[0].size = pmap[idx].size;
+					tpmap[0].inode = pmap[idx].inode;
+					tpmap[0].foo = pmap[idx].foo;
+					(void)strncpy(tpmap[0].perm,
+							pmap[idx].perm,
+							sizeof(pmap[idx].perm));
+					(void)strncpy(tpmap[0].dev,
+							pmap[idx].dev,
+							sizeof(pmap[idx].dev));
+					(void)strncpy(tpmap[0].mapname, "[anon]",
+							sizeof("[anon]"));
+					if (fill_ve_pmap(tpmap, pvemap, 0)) {
+						VEOS_WARN(
+								"Record not inserted: %p - %p",
+								(void *)tpmap[0].begin,
+								(void *)tpmap[0].end);
+					}
 				}
 				(void)strncpy(pmap[idx].mapname, "[stack]",
 						sizeof("[stack]"));
@@ -274,7 +274,7 @@ int valid_map_range( struct _psuedo_pmap *pmap,
 					tpmap[0].flag = pmap[idx].flag;
 					tpmap[0].begin = aligned_addr;
 					tpmap[0].end = pmap[idx].end;
-					tpmap[0].size= pmap[idx].size;
+					tpmap[0].size = pmap[idx].size;
 					tpmap[0].inode = pmap[idx].inode;
 					tpmap[0].foo = pmap[idx].foo;
 					(void)strncpy(tpmap[0].perm,
@@ -306,10 +306,10 @@ int valid_map_range( struct _psuedo_pmap *pmap,
 					break;
 				}
 				if (3 == flag) {
-                                        /* Take this addr as "anon" */
-                                        pmap[idx].end = aligned_addr;
-                                        break;
-                                }
+					/* Take this addr as "anon" */
+					pmap[idx].end = aligned_addr;
+					break;
+				}
 			} else {
 			}
 			aligned_addr += pgsz;
@@ -510,7 +510,7 @@ void final_pmap(struct _psuedo_pmap *pvemap,
 				curr->begin = prev->end;
 				if (prev->end == curr->end) {
 					VEOS_DEBUG("removing mapping BEGIN: (0x%lx) END: (0x%lx)",
-                                                curr->begin, curr->end);
+						curr->begin, curr->end);
 					prev->next = curr->next;
 					free(curr);
 					counter++;
@@ -562,7 +562,7 @@ int parse_psuedopmap(struct _psuedo_pmap *pmap,
 			ptempdir = pve_dir;
 			continue;
 		}
-		while(ptempdir != NULL) {
+		while (ptempdir != NULL) {
 			if ((pmap[indx].begin >=  ptempdir->begin) &&
 					(pmap[indx].begin <  ptempdir->end)) {
 				if (1 != pmap[indx].flag) {
@@ -773,10 +773,10 @@ int fill_maps(struct _psuedo_pmap **pmap,
 				sizeof(psuedo_map) * nentry);
 		if (NULL == head) {
 			ret = -errno;
-            if (free_pmap) {
-                free(free_pmap);
-                free_pmap = NULL;
-            }
+			if (free_pmap) {
+				free(free_pmap);
+				free_pmap = NULL;
+			}
 			VEOS_DEBUG("%s: %s",
 					"Realloc fail: Parsing pmap file",
 					strerror(-ret));
@@ -815,11 +815,11 @@ int fill_maps(struct _psuedo_pmap **pmap,
 	free_pmap = *pmap;
 	(*pmap) = (psuedo_map *)realloc((*pmap), sizeof(psuedo_map)*nentry);
 	if (!*pmap) {
-        ret = -errno;
-        if (free_pmap) {
-            free(free_pmap);
-            free_pmap = NULL;
-        }
+		ret = -errno;
+		if (free_pmap) {
+			free(free_pmap);
+			free_pmap = NULL;
+		}
 		VEOS_DEBUG("%s: %s", "Realloc fail: Parsing pmap file",
 				strerror(-ret));
 		nentry = ret;
@@ -873,7 +873,7 @@ int get_vepmap(struct _psuedo_pmap **pvemap,
 	}
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
-	ve_entry = parse_valid_atbdir(&pve_atb, &tsk->p_ve_mm->atb);
+	ve_entry = parse_valid_atbdir(&pve_atb, &tsk->p_ve_mm->atb[0]);
 	if (0 >= ve_entry) {
 		VEOS_DEBUG("No valid atb directories");
 		pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock,

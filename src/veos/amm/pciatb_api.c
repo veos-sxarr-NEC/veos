@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2019 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -318,7 +318,8 @@ int64_t veos_get_vhsaa_pciatb(vemaa_t vemaa, pid_t pid)
 		? PGMOD_2MB : PGMOD_64MB);
 
 	page_no = pfnum(vemaa, PGMOD_2MB);
-	if ((page_no > vnode_info->mp->total_pages) ||
+
+	if ((page_no > vnode_info->nr_pages) ||
 			(NULL == VE_PAGE(vnode_info, page_no))) {
 		pthread_mutex_lock_unlock(&vnode_info->pciatb_lock, UNLOCK,
 				"Failed to release pci lock");
@@ -577,12 +578,12 @@ int veos_delete_vdso_pcientry(uint64_t entry_number)
 }
 
 /*
-* @brief This function will allocate pcientry for quick call area.
-*
-* @param[in] pairnum PCISYAR0 and PCISYMR0 pair number.
-* @param[in] sync sync bit to be set.
-* @return return 0 on success and negative of errno on failure.
-*/
+ * @brief This function will allocate pcientry for quick call area.
+ *
+ * @param[in] pairnum PCISYAR0 and PCISYMR0 pair number.
+ * @param[in] sync sync bit to be set.
+ * @return return 0 on success and negative of errno on failure.
+ */
 int veos_alloc_vdso_pcientry(uint8_t pairnum, uint64_t sync)
 {
 	struct ve_node_struct *vnode = VE_NODE(0);
@@ -593,70 +594,61 @@ int veos_alloc_vdso_pcientry(uint8_t pairnum, uint64_t sync)
 	uint64_t vdso_addr = -1;
 	int ret = 0;
 
+	uint64_t pgmod = PGMOD_2MB;
+	size_t pgsz = PAGE_2MB;
+
 	VEOS_TRACE("invoked to allocate pcientry "
 		"for vdso with pairnum(%u) sync(%ld)",
 		pairnum, sync);
 
-	/*If PCIATB page size is 64MB then free prev*/
+	VEOS_DEBUG("Allocating VDSO page");
 	if (vnode->pci_bar01_pgsz == PAGE_64MB) {
-		VEOS_DEBUG("Allocating VDSO page 64MB");
-		/*First Release vdso 2MB page*/
-		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
-					LOCK,
-					"Fail to acquire ve page lock");
-		ret = veos_free_page(vdso_pgno);
-		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
-					UNLOCK,
-					"Fail to release ve page lock");
-		if (ret < 0) {
-			VEOS_DEBUG("Error(%s) to free old vdso page :%ld",
-			strerror(-ret), vdso_pgno);
-			return ret;
-		}
-		/* Required if this fails then old VDSO page
-		 * may be used by VE process
-		 */
-		vnode->vdso_pfn = -1;
-		/*Now allocate 64MB page*/
-		vdso_addr = (uint64_t)buddy_alloc(vnode->mp,
-				size_to_order(PAGE_64MB));
-		if ((void *)vdso_addr == BUDDY_FAILED) {
-			ret = -ENOMEM;
-			VEOS_ERROR("Error(%s) pciatb entry not available",
-					strerror(-ret));
-			return ret;
-		}
-		vdso_pgno = vdso_addr >> LARGE_PSHFT;
-		ret = __page_entry(vnode->mp, vdso_pgno,
-			PGMOD_64MB, size_to_order(PAGE_64MB));
-		if (ret < 0) {
-			VEOS_DEBUG("Error(%s) can't make entry in page array",
-				strerror(-ret));
-			veos_delloc_memory(vdso_pgno, PGMOD_64MB);
-			return ret;
-		}
-		/*Increament the ref count of vdso*/
-		ret = common_get_put_page(vdso_addr, GET_PAGE, true);
-		if (ret < 0) {
-			VEOS_DEBUG("Error(%s) in inc page(%ld) ref count",
-				strerror(-ret), vdso_pgno);
-			pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
-						LOCK,
-						"Fail to acquire ve page lock");
-			veos_free_page(vdso_pgno);
-			pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
-						UNLOCK,
-						"Fail to release ve page lock");
-			return ret;
-		}
-
-		VEOS_DEBUG("new page(%ld) allocated for vdso", vdso_pgno);
-
-		/*Save newly allocated page to vnode struct*/
-		vnode->vdso_pfn = vdso_pgno;
-		++vnode->mp->huge_page_used;
+		pgmod = PGMOD_64MB;
+		pgsz = PAGE_64MB;
+	}
+	vnode->vdso_pfn = -1;
+	/* allocate VE page */
+	vdso_addr = (uint64_t)buddy_alloc(vnode->numa[0].mp,
+					  size_to_order(pgsz));
+	if ((void *)vdso_addr == BUDDY_FAILED) {
+		ret = -ENOMEM;
+		VEOS_ERROR("failed to allocate VDSO page (%s)",
+			   strerror(-ret));
+		return ret;
 	}
 
+	vdso_pgno = vdso_addr >> LARGE_PSHFT;
+	ret = __page_entry(vnode->numa[0].mp, vdso_pgno,
+			   pgmod, size_to_order(pgsz));
+	if (ret < 0) {
+		VEOS_DEBUG("Error(%s) can't make entry in page array",
+			   strerror(-ret));
+		veos_delloc_memory(vdso_pgno, pgmod, 0);
+		return ret;
+	}
+	/*Increament the ref count of vdso*/
+	ret = common_get_put_page(vdso_addr, GET_PAGE, true);
+	if (ret < 0) {
+		VEOS_DEBUG("Error(%s) in inc page(%ld) ref count",
+			   strerror(-ret), vdso_pgno);
+		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+					  LOCK,
+					  "Fail to acquire ve page lock");
+		veos_free_page(vdso_pgno);
+		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+					  UNLOCK,
+					  "Fail to release ve page lock");
+		return ret;
+	}
+
+	/*Save newly allocated page to vnode struct*/
+	vnode->vdso_pfn = vdso_pgno;
+	if (pgmod == PGMOD_64MB)
+		++vnode->numa[0].mp->huge_page_used;
+	else
+		++vnode->numa[0].mp->small_page_used;
+	VEOS_DEBUG("VE page(%ld) %ld rsvd for quick calls (VDSO)",
+			vdso_pgno, vdso_addr);
 
 	pci_addr = (uint64_t)buddy_alloc(vnode->pci_mempool,
 			size_to_order(vnode->pci_bar01_pgsz));
@@ -677,15 +669,6 @@ int veos_alloc_vdso_pcientry(uint8_t pairnum, uint64_t sync)
 			"Failed to acquire pci lock");
 	vnode->pciatb[pcientry].data =
 		(vdso_pgno << LARGE_PSHFT) & PCIATB_PAGE_BASE_MASK;
-
-	/*Increament the ref count of page*/
-	ret = common_get_put_page((vdso_pgno << LARGE_PSHFT),
-			GET_PAGE, true);
-	if (ret < 0) {
-		VEOS_DEBUG("Error(%s) in inc page(%ld) ref count",
-				strerror(-ret), vdso_pgno);
-		goto pci_buddy_delloc;
-	}
 
 	/* Setting PCISYAR0 and PCISYMR0
 	 * and Enable synchronization.*/
@@ -717,16 +700,8 @@ int veos_alloc_vdso_pcientry(uint8_t pairnum, uint64_t sync)
 	VEOS_DEBUG("returned(%ld)", pcientry);
 	return pcientry;
 
-pci_buddy_delloc:
-	pthread_mutex_lock_unlock(&vnode->pciatb_lock, UNLOCK,
-			"Failed to release pci lock");
-	if (vnode->pci_bar01_pgsz == PAGE_64MB)
-		veos_delloc_memory(pcientry, PGMOD_64MB);
-	else
-		veos_delloc_memory(pcientry, PGMOD_2MB);
 ve_buddy_delloc:
-	if (vnode->pci_bar01_pgsz == PAGE_64MB)
-		amm_put_page((vdso_pgno << LARGE_PSHFT));
+	amm_put_page(vdso_addr);
 	VEOS_DEBUG("returned(%d)", ret);
 	return ret;
 }
@@ -762,7 +737,7 @@ int mk_pci_pgent(uint64_t vaddr, uint64_t page_cnt,
 	tmp_addr = vaddr;
 	while (tmp_size < size) {
 		page_base[idx] = __veos_virt_to_phy(tmp_addr,
-			&mm_struct->atb, (access_ok) ? &prot : NULL, NULL);
+			&mm_struct->atb[0], (access_ok) ? &prot : NULL, NULL);
 			if (-1 == page_base[idx]) {
 				VEOS_DEBUG("Error in physical address translation");
 				pthread_mutex_lock_unlock(&mm_struct->thread_group_mm_lock,

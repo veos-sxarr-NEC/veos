@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2019 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -36,7 +36,6 @@
 #include "ve_mem.h"
 #include "vesync.h"
 
-static void ve_dma__terminate_nolock(ve_dma_req_hdl *);
 /**
  * @brief Initialize DMA engine on VE node
  *
@@ -211,7 +210,6 @@ ve_dma_req_hdl *ve_dma_post_p_va(ve_dma_hdl *hdl, ve_dma_addrtype_t srctype,
 {
 	ve_dma_req_hdl *ret;
 	int64_t n_dma_req;
-	int rv_post;
 
 	VE_DMA_TRACE("called");
 	VE_DMA_DEBUG("DMA request is posted. "
@@ -264,7 +262,10 @@ ve_dma_req_hdl *ve_dma_post_p_va(ve_dma_hdl *hdl, ve_dma_addrtype_t srctype,
 	}
 	ret->engine = hdl;
 	pthread_cond_init(&ret->cond, NULL);
+	ret->cancel = 0;
 	INIT_LIST_HEAD(&ret->reqlist);
+	INIT_LIST_HEAD(&ret->ptrans_src);
+	INIT_LIST_HEAD(&ret->ptrans_dst);
 
 	n_dma_req = ve_dma_reqlist_make(ret, srctype, srcpid, srcaddr, dsttype,
 					dstpid, dstaddr, length);
@@ -279,37 +280,7 @@ ve_dma_req_hdl *ve_dma_post_p_va(ve_dma_hdl *hdl, ve_dma_addrtype_t srctype,
 		free(ret);
 		return NULL;
 	}
-
-	/*
-	 * post DMA requests
-	 */
-	pthread_mutex_lock(&hdl->mutex);
-	if (hdl->should_stop) {
-		VE_DMA_ERROR("DMA post failed because DMA engine is now "
-			     "closing");
-		goto error_dma_engine;
-	}
-
-	rv_post = ve_dma_reqlist_post(ret);
-	if (rv_post < 0) {
-		goto error_post;
-	}
-	/* start DMA engine */
-	ve_dma_hw_start(hdl->vedl_handle, hdl->control_regs);
-
-	veos_commit_rdawr_order();
-	pthread_mutex_unlock(&hdl->mutex);
-
 	return ret;
-
-error_post:
-	ve_dma__terminate_nolock(ret);
-error_dma_engine:
-	veos_commit_rdawr_order();
-	pthread_mutex_unlock(&hdl->mutex);
-	ve_dma_reqlist_free(ret);
-	free(ret);
-	return NULL;
 }
 
 /**
@@ -483,40 +454,13 @@ void ve_dma__stop_engine(ve_dma_hdl *hdl)
 	}
 }
 
-/**
- * @brief Terminate a DMA request
- *
- * @param req DMA request handle
- *
- * Stop DMA engine, remove descriptors corresponding to the specified
- * request, and restart DMA engine.
- */
-static void ve_dma__terminate_nolock(ve_dma_req_hdl *req)
-{
-	ve_dma_hdl *hdl = req->engine;
-
-	VE_DMA_TRACE("called");
-	/* stop DMA engine */
-	ve_dma__stop_engine(hdl);
-	ve_dma_reqlist__cancel(req);
-
-	/* if one or more free descriptors exist, use them. */
-	ve_dma_reqlist_drain_waiting_list(hdl);
-	/* restart */
-	VE_DMA_TRACE("%d descriptors are used from #%d", hdl->desc_num_used,
-		     hdl->desc_used_begin);
-	if (hdl->should_stop == 0 && hdl->desc_num_used > 0)
-		ve_dma_hw_start(hdl->vedl_handle, hdl->control_regs);
-	pthread_cond_broadcast(&req->cond);
-}
-
 void ve_dma_terminate(ve_dma_req_hdl *req)
 {
-	ve_dma_hdl *hdl = req->engine;
-	pthread_mutex_lock(&hdl->mutex);
-	ve_dma__terminate_nolock(req);
-	veos_commit_rdawr_order();
-	pthread_mutex_unlock(&hdl->mutex);
+        ve_dma_hdl *hdl = req->engine;
+        pthread_mutex_lock(&hdl->mutex);
+        ve_dma__terminate_nolock(req);
+        veos_commit_rdawr_order();
+        pthread_mutex_unlock(&hdl->mutex);
 }
 
 /**

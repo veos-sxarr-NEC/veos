@@ -95,6 +95,7 @@ buddy_init(
 #define ALIGN_RD(x, a)  (x & (~((typeof(x))(a) - 1)))
 
 struct buddy_mempool *veos_buddy_init(uint64_t, size_t, size_t);
+struct buddy_mempool *veos_numa_buddy_init(uint64_t, size_t, size_t, int, size_t);
 void buddy_deinit(struct buddy_mempool *mp);
 void *buddy_alloc(struct buddy_mempool *mp, unsigned long order);
 void buddy_free(struct buddy_mempool *mp, struct block  *block);
@@ -109,7 +110,7 @@ int veos_page_entry(struct buddy_mempool *mp, uint64_t flag, pgno_t *map);
 void *buddy_non_compac_alloc(struct buddy_mempool *mp, int order);
 int veos_alloc_memory(struct buddy_mempool *mp,
 	size_t mem_size, uint64_t pgmod);
-int veos_delloc_memory(uint64_t page_num, uint64_t pgmod);
+int veos_delloc_memory(uint64_t page_num, uint64_t pgmod, int mp_num);
 int size_to_order(size_t x);
 void dump_free_count(struct buddy_mempool *);
 bool is_pow_two(uint64_t);
@@ -118,4 +119,5 @@ uint64_t roundup_pow_of_two(uint64_t);
 void veos_dump_ve_pages(void);
 size_t get_size_to_be_free(size_t extra_sz, int order, int count);
 size_t calc_free_sz(struct buddy_mempool *mp, int pgmod);
+size_t calc_allocated_sz(struct buddy_mempool *mp);
 #endif

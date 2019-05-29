@@ -273,6 +273,7 @@ struct ve_core_struct {
 	bool core_running; /*!< Core running/halt status */
 	uint64_t nr_switches; /*!< Number of context switches on core */
 	sem_t core_sem; /* Semaphore for performing scheduling on core */
+	int numa_node; /* !< NUMA node to which this core belongs. */
 };
 
 /**
@@ -362,12 +363,14 @@ struct ve_task_struct {
 	unsigned int policy; /*!< Assume we have only one SCHED_OTHER policy */
 	int rt_priority; /*!< realtime priority */
 	pid_t pid; /*!< VE proces PID */
+	pid_t namespace_pid; /*!< Namespace VE proces PID */
 	jid_t jid;    /*!< Job ID */
 	int priority; /*!< Assume all ve tasks have same priority */
 	int sched_class; /*!< Assume all ve tasks have same scheduling class */
 	enum proc_state ve_task_state; /*!< Whether this ve process is assigned some VE core or not */
 	int core_id; /*!< VE core ID of this process */
 	int node_id; /*!< VE node ID of this process */
+	int numa_node;/*!< NUMA node number of this process */
 	struct ve_core_struct *p_ve_core; /*!< Pointer to VE core this task is assigned */
 	struct ve_task_struct *next; /*!< Pointer to next ve_task on this Core */
 	core_user_reg_t *p_ve_thread; /*!< VE core related information and state of this task */
@@ -390,7 +393,6 @@ struct ve_task_struct {
 					* This flags helps in handling this scenario.
 					*/
 	struct ve_task_struct *group_leader; /*!< thread group leader */
-	pid_t tgid; /*!< thread group ID */
 	int exit_signal; /*!< VE Process exit signal */
 	int *set_child_tid; /*!< VE Process set child tid address */
 	int *clear_child_tid; /*!< VE Process clear child tid address */
@@ -433,7 +435,6 @@ struct ve_task_struct {
 	struct ve_ptrace_info *p_ve_ptrace; /*!< Tracing information */
 	uint64_t gid; /*!< VE Process group ID */
 	uint64_t uid; /*!< VE Process user ID */
-	int lshmid; /*!< Storing lshm id of task */
 	int rpm_preserve_task; /*!< Flag to indicate to preseve RPM task*/
 	bool rpm_create_task; /*!< Flag to indicate to RPM created the task */
 	struct ived_shared_resource_data *ived_resource; /*!< VESHM/CR */
@@ -446,7 +447,11 @@ struct ve_task_struct {
 	enum assign_task assign_task_flag; /*!< VE task assign status for driver */
 	bool wake_up_parent;    /*!< Flag to indicate whether vforked child should waken its parent */
 	bool thread_execed;	/*!< VE thread apart from main thread invoked execve() syscall */
+	bool dummy_task;	/*!< RPM dummy task identifier, to disable accounting
+				* information in case RPM sends delete dummy
+				* task request */
 };
+
 
 /**
  * @brief VE process fork system call request information
@@ -456,10 +461,11 @@ struct ve_fork_info {
 	int core_id; /*!< VE process core id */
 	int parent_pid; /*!< VE process parent PID */
 	int child_pid; /*!< VE process child PID */
+	int child_namespace_pid; /*!< VE process namespace pid */
 	int offset; /*!< VE process thread offset */
 	uint64_t shm_lhm_addr;
 	struct veshm_struct *veshm;
-	int shmid;
+	char sfile_name[S_FILE_LEN];
 };
 
 /**
@@ -504,7 +510,7 @@ void populate_1_5_15_sys_load(struct ve_node_struct *, double, uint64_t);
 void calc_sys_load_per_sched_interval(struct ve_node_struct *);
 int psm_relocate_ve_task(int, int, int, int, struct ve_task_struct *);
 int psm_least_loaded_node_n_core(void);
-int get_ve_core_n_node_new_ve_proc(struct ve_task_struct *, int *, int *);
+int get_ve_core_n_node_new_ve_proc(struct ve_task_struct *, int *, int *, int *);
 int init_psm_daemon(char *);
 void list_ve_proc(void);
 int handle_get_priortiy(pid_t);
@@ -512,9 +518,10 @@ int insert_ve_task(int, int, struct ve_task_struct *);
 int64_t psm_handle_set_tid_addr(pid_t, uint64_t);
 int64_t psm_handle_schedule_ve_process(pid_t);
 int psm_handle_exec_ve_process(struct veos_thread_arg *, int *,
-		int *, int, char *, bool, pid_t,  uint64_t, int, struct rlimit *,
-		uint64_t, uint64_t, bool, char *);
-int psm_pseudo_send_load_binary_req(struct veos_thread_arg *, int, int, int);
+                int *, int, int, char *, bool, pid_t,  uint64_t, char *,
+                struct rlimit *, uint64_t, uint64_t, bool, char *, int *,
+                int);
+int psm_pseudo_send_load_binary_req(struct veos_thread_arg *, int, int, int, int);
 int psm_handle_delete_ve_process(struct ve_task_struct *);
 void delete_entries(struct ve_task_struct *);
 void clear_ve_task_struct(struct ve_task_struct *);
@@ -557,4 +564,6 @@ void psm_st_rst_context(struct ve_task_struct *, reg_t *, reg_t *, bool);
 void psm_set_task_state(struct ve_task_struct *, enum proc_state);
 void psm_do_process_cleanup(struct ve_task_struct *, struct ve_task_struct *, int);
 int psm_get_regval(struct ve_task_struct *, int, int *, uint64_t *);
+int psm_map_lhm_shm_area(struct ve_task_struct *, int, char *, uint64_t);
+struct ve_task_struct *find_child_ve_task_struct(pid_t, pid_t);
 #endif

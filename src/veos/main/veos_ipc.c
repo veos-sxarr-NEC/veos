@@ -108,6 +108,7 @@ int pseudo_proc_veos_handler(veos_thread_arg_t *pti)
 	pthread_t tid = pthread_self();
 	PseudoVeosMessage *pseudo_msg = NULL;
 	char cmd_buff[MAX_PROTO_MSG_SIZE];
+	pid_t host_pid = -1;
 
 	VEOS_TRACE("Entering");
 
@@ -159,11 +160,26 @@ int pseudo_proc_veos_handler(veos_thread_arg_t *pti)
 		goto hndl_error;
 	}
 
+	/* Convert namespace pid to host pid */
+	host_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
+			pseudo_msg->pseudo_pid);
+	if (host_pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				pseudo_msg->pseudo_pid,
+				strerror(errno));
+		goto hndl_error;
+	}
+
+	pseudo_msg->pseudo_pid = host_pid;
 	ret = syscall(SYS_tgkill, pti->cred.pid, pseudo_msg->pseudo_pid, 0);
 	if (ret == -1) {
 		VEOS_ERROR("Authentication failure");
-		VEOS_DEBUG("PID: %d is not a valid process",
-				pseudo_msg->pseudo_pid);
+		VEOS_DEBUG("PID: %d is not a valid process cred pid: %d",
+				pseudo_msg->pseudo_pid, pti->cred.pid);
 		goto hndl_error;
 	}
 
@@ -182,6 +198,7 @@ int pseudo_proc_veos_handler(veos_thread_arg_t *pti)
 	}
 	ret = pseudo_veos_cmd[pseudo_msg->pseudo_veos_cmd_id].handler(pti);
 	if (0 > ret) {
+		ret = -1;
 		VEOS_ERROR("Failed to handle system call request from "
 				"pseudo process");
 		pthread_rwlock_unlock(&(VE_NODE(0)->ve_relocate_lock));

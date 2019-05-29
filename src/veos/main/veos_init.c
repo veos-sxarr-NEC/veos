@@ -44,12 +44,19 @@
 
 #define CLEAN_PSEUDO_SLEEP_TIME 3
 #define TERMINATE_DMA_SLEEP_TIME 3
+#define VE_MIN_NUMA_NODE 1
+#define VE_PARTITIONING_MODE 1
+#define VE_NORMAL_MODE 0
 
 pthread_t terminate_dma_th; /* a thread executing veos_terminate_dma() */
 /* Buffer to store PCISYARs value. */
 static uint64_t pcisyar_argval[VE_PCI_SYNC_PAR_NUM] = {0, 0, 0, 0};
 /*  Buffer to store PCISYMRs value. */
 static uint64_t pcisymr_argval[VE_PCI_SYNC_PAR_NUM] = {0, 0, 0, 0};
+
+static void init_ve_numa_struct(struct ve_node_struct *);
+static int veos_make_numa_core_map(struct ve_node_struct *, int *);
+static int init_veos_mode (struct ve_node_struct *);
 
 /**
  * @brief Initialize VE Node structure.
@@ -302,6 +309,10 @@ int init_ve_node_struct(struct ve_node_struct *p_ve_node, int node_id,
 		goto hndl_dstry_attr;
 	}
 
+	p_ret = init_veos_mode(p_ve_node);
+	if (p_ret != 0)
+		goto hndl_dstry_attr;
+
 	ve_init_task.sighand = alloc_ve_sighand_struct_node();
 	if (!ve_init_task.sighand) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
@@ -354,8 +365,7 @@ hndl_return1:
  * @author VEOS main
  */
 int init_ve_core_struct(struct ve_core_struct *p_ve_core,
-					struct ve_node_struct *p_ve_node,
-					int core_loop)
+		struct ve_node_struct *p_ve_node, int core_loop, int numa_num)
 {
 	int retval = -1;
 	int p_ret = 0;
@@ -384,6 +394,15 @@ int init_ve_core_struct(struct ve_core_struct *p_ve_core,
 	p_ve_core->usr_regs_addr = NULL;
 	p_ve_core->sys_regs_addr = NULL;
 	p_ve_core->p_ve_node = p_ve_node;
+	p_ve_core->numa_node = numa_num;
+	if (p_ve_core->numa_node == -1) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"This core does not belong to any NUMA nodes, "
+				"Logical core ID: %d physical core ID: %d",
+				p_ve_core->core_num, p_ve_core->phys_core_num);
+		goto hndl_return;
+	}
+
 	if (sem_init(&p_ve_core->core_sem, 0, 1) == -1) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 			"Initializing semaphore failed for core %d", p_ve_core->core_num);
@@ -393,8 +412,9 @@ int init_ve_core_struct(struct ve_core_struct *p_ve_core,
 	gettimeofday(&(p_ve_core->core_uptime), NULL);
 
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_DEBUG,
-				"Logical core ID: %d physical core ID: %d",
-				p_ve_core->core_num, p_ve_core->phys_core_num);
+		"Logical core ID: %d physical core ID: %d NUMA Node ID: %d",
+		p_ve_core->core_num, p_ve_core->phys_core_num,
+		p_ve_core->numa_node);
 
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_DEBUG,
 				"Mapping user register and system register for core %d",
@@ -510,6 +530,9 @@ int veos_init_ve_node(void)
 	struct ve_core_struct *p_ve_core;
 	int core_loop = 0;
 	int retval = -1;
+	int ret = 0;
+	/* Initialized at veos_make_numa_core_map() */
+	int numa_core_map[VE_MAX_CORE_PER_NODE];
 	reg_t regdata;
 
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "In Func");
@@ -539,6 +562,10 @@ int veos_init_ve_node(void)
 	if (init_ve_node_struct(p_ve_node, 0, drv_sock_file) != 0)
 		goto hndl_ve;
 
+	ret = veos_make_numa_core_map(p_ve_node, numa_core_map);
+	if (ret != 0)
+		goto hndl_core;
+
 	/* Allocates and initialize struct ve_core_struct */
 	for (core_loop = 0; core_loop < p_ve_node->nr_avail_cores;
 								core_loop++) {
@@ -551,7 +578,8 @@ int veos_init_ve_node(void)
 			goto hndl_core;
 		}
 		p_ve_node->p_ve_core[core_loop] = p_ve_core;
-		if (init_ve_core_struct(p_ve_core, p_ve_node, core_loop) != 0)
+		if (init_ve_core_struct(p_ve_core, p_ve_node, core_loop,
+						numa_core_map[core_loop]) != 0)
 			goto hndl_core;
 
 		/* Ensure VE core is halt state. */
@@ -570,6 +598,8 @@ int veos_init_ve_node(void)
 			goto hndl_core;
 		}
 	}
+
+	init_ve_numa_struct(p_ve_node);
 
 	retval = 0;
 	goto hndl_return;
@@ -1328,4 +1358,273 @@ int64_t veos_convert_sched_options(char *value, int min, int max)
 
 hndl_return:
 	return ret;
+}
+
+/**
+ * @brief Decide VEOS mode in accordance with "Partitioning Mode".
+ *
+ * @param[in] p_ve_node Pointer to VE Node which was initialized.
+ *
+ * @return 0 on on Success, -1 on failure.
+ *
+ * @internal
+ *
+ * @author VEOS main
+ */
+
+static int init_veos_mode (struct ve_node_struct *p_ve_node)
+{
+	int ret = 0;
+	int retval = -1;
+	int fd = 0;
+	char partition_path[PATH_MAX] = {};
+	char partition_mode[LINE_MAX] = {};
+	char *end_ptr = NULL;
+
+	errno = 0;
+	ret = snprintf(partition_path, PATH_MAX,
+			"%s/partitioning_mode", p_ve_node->ve_sysfs_path);
+	if (ret >= PATH_MAX) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"partitioning_mode filepath is too long");
+		goto hndl_return;
+	} else if (ret < 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+			"Failed to set partitioning_mode filepath due to %s",
+			strerror(errno));
+		goto hndl_return;
+	}
+
+	fd = open(partition_path, (O_RDONLY|O_NOFOLLOW));
+	if (fd == -1) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+			"Failed to open partitioning_mode due to %s",
+			strerror(errno));
+		goto hndl_return;
+	}
+
+	ret = (int)read(fd, partition_mode, LINE_MAX - 1);
+	if (ret <= 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Failed to read partitioning_mode, "
+				"read returned %d, %s", ret, strerror(errno));
+		goto hndl_close;
+	}
+
+	end_ptr = strchr(partition_mode, '\n');
+	if (end_ptr != NULL)
+		*end_ptr = '\0';
+
+	errno = 0;
+	p_ve_node->partitioning_mode =
+				(int)strtol(partition_mode, &end_ptr, 10);
+	if (errno != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+			"Failed to convert partitioning_mode due to %s",
+			strerror(errno));
+		goto hndl_close;
+	}
+	if (*end_ptr != '\0') {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+		       "partitioning_mode is not only numbers, 0x%x", *end_ptr);
+		goto hndl_close;
+	}
+
+	if (p_ve_node->partitioning_mode == VE_NORMAL_MODE) {
+		p_ve_node->numa_count = VE_MIN_NUMA_NODE;
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
+					"VEOS mode : normal");
+	} else if (p_ve_node->partitioning_mode == VE_PARTITIONING_MODE) {
+		p_ve_node->numa_count = VE_MAX_NUMA_NODE;
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
+					"VEOS mode : NUMA");
+	} else {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+						"Wrong partitioning_mode, %d",
+						p_ve_node->partitioning_mode);
+		goto hndl_close;
+	}
+
+	retval = 0;
+
+hndl_close:
+	ret = close(fd);
+	if (ret != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Failed to close due to %s", strerror(errno));
+		retval = -1;
+	}
+
+hndl_return:
+	return retval;
+}
+
+/**
+ * @brief Create a mapping between NUMA nodes and logical cores.
+ *
+ * @param[in] p_ve_node Pointer to VE Node which was initialized.
+ * @param[in, out] numa_core_map An initialized array of int,
+ * and its length must be VE_MAX_CORE_PER_NODE.
+ *
+ * @detail Indexes of numa_core_map indicate logical cores,
+ * and values of numa_core_map indicate NUMA node to which the logical core
+ * belongs.
+ *
+ * @return 0 on on Success, -1 on failure.
+ *
+ * @internal
+ *
+ * @author VEOS main
+ */
+
+static int veos_make_numa_core_map(
+		struct ve_node_struct *p_ve_node, int *numa_core_map)
+{
+	int retval = -1;
+	int ret = 0;
+	int i = 0;
+	int j = 0;
+	int phys_core = 0;
+	int fd = 0;
+	uint64_t numa_cores[VE_MAX_NUMA_NODE] = {};
+	char numa_cores_path[PATH_MAX] = {};
+	char tmp[LINE_MAX] = {};
+	char *endptr = NULL;
+
+	/* Initialize */
+	for (i = 0; i < VE_MAX_CORE_PER_NODE; i++) {
+		numa_core_map[i] = -1;
+	}
+
+	if (p_ve_node->partitioning_mode == VE_NORMAL_MODE) {
+		/* All cores are mapped to numa_node-0 */
+		for (i = 0; i < p_ve_node->nr_avail_cores; i++) {
+			numa_core_map[i] = 0;
+		}
+		retval = 0;
+		goto hndl_return;
+	}
+
+	for (i = 0; i < p_ve_node->numa_count; i++) {
+		errno = 0;
+		ret = snprintf(numa_cores_path, PATH_MAX,
+			       "%s/numa%d_cores", p_ve_node->ve_sysfs_path, i);
+		if (ret >= PATH_MAX) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+					"numa%d_cores filepath is too long", i);
+			goto hndl_return;
+		} else if (ret < 0) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Failed to set numa%d_cores filepath due to %s",
+				i, strerror(errno));
+			goto hndl_return;
+		}
+
+		fd = open(numa_cores_path, (O_RDONLY|O_NOFOLLOW));
+		if (fd == -1) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+					"Failed to open numa%d_cores due to %s",
+							i, strerror(errno));
+			goto hndl_return;
+		}
+
+		memset(tmp, '0', LINE_MAX);
+
+		ret = (int)read(fd, tmp, LINE_MAX - 1);
+		if (ret <= 0) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+			       "Failed to read numa%d_cores, "
+			       "read returned %d, %s", i, ret, strerror(errno));
+			goto hndl_close;
+		}
+
+		endptr = strchr(tmp, '\n');
+		if (endptr != NULL)
+			*endptr = '\0';
+
+		errno = 0;
+		numa_cores[i] = (uint64_t)strtoull(tmp, &endptr, 16);
+		if (errno != 0) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Failed to convert numa%d_cores due to %s",
+				i, strerror(errno));
+			goto hndl_close;
+		}
+		if (*endptr != '\0') {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"numa%d_cores is not only numbers, 0x%x",
+				i, *endptr);
+			goto hndl_close;
+		}
+
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_DEBUG,
+				"numa%d_cores, 0x%lx", i, numa_cores[i]);
+
+		ret = close(fd);
+		if (ret != 0) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Failed to close due to %s", strerror(errno));
+			goto hndl_return;
+		}
+	}
+
+	for (i = 0; i < p_ve_node->nr_avail_cores; i++) {
+		phys_core = p_ve_node->ve_phys_core_id[i];
+		for (j = 0; j < p_ve_node->numa_count; j++) {
+			if ((numa_cores[j] & (1 << phys_core)) != 0) {
+				if (numa_core_map[i] == -1) {
+					numa_core_map[i] = j;
+				} else {
+					VE_LOG(CAT_OS_CORE,
+					       LOG4C_PRIORITY_ERROR,
+					       "numa_cores overlaps with each other");
+					goto hndl_return;
+				}
+			}
+		}
+	}
+
+	retval = 0;
+	goto hndl_return;
+
+hndl_close:
+	errno = 0;
+	ret = close(fd);
+	if (ret != 0)
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Failed to close due to %s", strerror(errno));
+
+hndl_return:
+	return retval;
+}
+
+/**
+ * @brief Initialize ve_numa_struct.
+ *
+ * @param[in] p_ve_node Pointer to VE Node which was initialized.
+ *
+ * @internal
+ *
+ * @author VEOS main
+ */
+
+static void init_ve_numa_struct(struct ve_node_struct *p_ve_node)
+{
+	int i = 0;
+	int j = 0;
+	int cntr = 0;
+
+	for (i = 0; i < VE_MAX_NUMA_NODE; i++) {
+		p_ve_node->numa[i].node_number = i;
+		p_ve_node->numa[i].mp = NULL;
+		for (j = 0; j < VE_MAX_CORE_PER_NODE; j++) {
+			p_ve_node->numa[i].cores[j] = NULL;
+		}
+		for (j = 0, cntr = 0; j < p_ve_node->nr_avail_cores; j++) {
+			if (p_ve_node->p_ve_core[j]->numa_node == i) {
+				p_ve_node->numa[i].cores[cntr++] =
+							p_ve_node->p_ve_core[j];
+			}
+		}
+	}
 }

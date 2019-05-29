@@ -71,6 +71,7 @@ struct veos_cmd_entry pseudo_veos_cmd[PSEUDO_VEOS_MAX_MSG_NUM] = {
 	{"CMD_TPROC", amm_handle_set_totol_process},
 	{"GET_REGVAL_REQ", psm_handle_get_regval_req},
 	{"GIDUID_REQ", psm_handle_giduid_req},
+	{"GET_MEMPOLICY" , psm_handle_get_mempolicy_req},
 #if 0
 	{"CMD_CR_RLIM", set_cr_rlimit_req},
 #endif

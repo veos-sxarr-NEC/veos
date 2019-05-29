@@ -562,8 +562,8 @@ void fill_psinfo(struct elf_prpsinfo *psinfo,
 
 	VEOS_DEBUG("After removing space, ARGV: %s", psinfo->pr_psargs);
 
-	psinfo->pr_ppid = (p->parent)->pid;
-	psinfo->pr_pid = p->pid;
+	psinfo->pr_ppid = (p->parent)->namespace_pid;
+	psinfo->pr_pid = p->namespace_pid;
 	psinfo->pr_pgrp = 0;
 	psinfo->pr_sid = 0;
 
@@ -615,8 +615,8 @@ static void fill_prstatus(struct elf_prstatus *prstatus,
 	prstatus->pr_info.si_signo = prstatus->pr_cursig = signr;
 	prstatus->pr_sigpend = (unsigned long)p->sigpending;
 	prstatus->pr_sighold = (unsigned long)p->sigpending;
-	prstatus->pr_ppid = p->parent->pid;
-	prstatus->pr_pid = p->pid;
+	prstatus->pr_ppid = p->parent->namespace_pid;
+	prstatus->pr_pid = p->namespace_pid;
 	prstatus->pr_pgrp = 0;
 	prstatus->pr_sid = 0;
 	prstatus->pr_utime = (struct timeval){0};
@@ -1082,19 +1082,16 @@ static int write_note_info(struct elf_note_info *info,
  * @param[in] ve_cprm pointer to dump_params.
  * @param[in] map_count count of ve pmap.
  *
- * @return On success 1, On failure, 0.
+ * @return On success 0, On failure negative of errno.
  */
 int fill_ve_core_data(struct _psuedo_pmap *ve_pmap,
 		struct dump_params *ve_cprm,
 		int map_count)
 {
-	int fd = -1;
 	int idx = 1;
 	int count = 0;
 	int retval = 0;
 	int sz = 0;
-	char buf[2] = {0};
-	char fname[PATH_MAX] = {0};
 	char *phdrImage = NULL;
 	struct _psuedo_pmap *head = NULL;
 	struct elf_note_info info = { };
@@ -1107,50 +1104,8 @@ int fill_ve_core_data(struct _psuedo_pmap *ve_pmap,
 			ve_pmap = ve_pmap->next;
 			continue;
 		}
-		if ((!(strcmp(ve_pmap->mapname, "[stack]"))) ||
-				(!(strcmp(ve_pmap->mapname, "[heap]"))) ||
-				(!(strcmp(ve_pmap->mapname, "[anon]")))) {
-			ve_pmap->flag = 1;
-			count++;
-			ve_pmap = ve_pmap->next;
-			continue;
-		}
-		if ((strcmp(ve_pmap->mapname, fname)) != 0) {
-			memset(buf, 0, sizeof(buf));
-			fd = open((char *)ve_pmap->mapname, O_RDONLY);
-			if (0 > fd) {
-				retval = -errno;
-				VEOS_ERROR("Failed to get VE ELF file"
-						" descriptor");
-				VEOS_DEBUG("%s: %s", ve_pmap->mapname,
-						strerror(-retval));
-				goto end;
-			}
-			VEOS_DEBUG("filename: %s, fd: %d", ve_pmap->mapname, fd);
-			if (0 > (pread(fd, buf, 1, 0))) {
-				retval = -errno;
-				VEOS_ERROR("Failed to read VE ELF");
-				VEOS_DEBUG("%s: %s", ve_pmap->mapname,
-						strerror(-retval));
-				close(fd);
-				goto end;
-			}
-			(void)strncpy(fname, (char *)ve_pmap->mapname,
-					sizeof(fname));
-			close(fd);
-
-		}
-		/* 127 ensure that the file is ELF */
-		if (FILE_ELF == buf[0]) {
-			VEOS_DEBUG(
-					"%p - %p, %s, %s",
-					(void *)ve_pmap->begin,
-					(void *)ve_pmap->end,
-					ve_pmap->perm,
-					ve_pmap->mapname);
-			ve_pmap->flag = 1;
-			count++;
-		}
+		ve_pmap->flag = 1;
+		count++;
 		ve_pmap = ve_pmap->next;
 	}
 	ve_pmap = head;

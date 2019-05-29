@@ -1,4 +1,4 @@
-/* Copyright (C) 2017-2018 by NEC Corporation
+/* Copyright (C) 2018 by NEC Corporation
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -18,45 +18,20 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  */
+
 /**
- * @file vhcall.h
+ * @file mempolicy.h
+ *
+ * @internal
+ * @author AMM
  */
-#ifndef __VE_VHCALL_H
-#define __VE_VHCALL_H
-#include <stdint.h>
-#include <stddef.h>
+#ifndef __MEMPOLICY_H
+#define __MEMPOLICY_H
 
-#define VHCALL_SYMNAME_MAX (1023)
-#define VHCALL_MAX_INTREG 6
-#define VHCALL_MAX_SSEREG 8
-
-typedef uint64_t vhcall_handle;
-
-enum vhcall_args_class {
-        VHCALL_CLASS_INT = 1,
-	VHCALL_CLASS_DBL,
-	VHCALL_CLASS_CDB,
-	VHCALL_CLASS_PTR,
-	VHCALL_CLASS_HDL
+/* Policies */
+enum mempolicy {
+        MPOL_DEFAULT,
+        MPOL_BIND = 2,
 };
-
-enum vhcall_args_intent {
-	VHCALL_INTENT_IN = 1,
-	VHCALL_INTENT_INOUT,
-	VHCALL_INTENT_OUT
-};
-
-typedef struct vhcall_data {
-	enum vhcall_args_class cl;
-	enum vhcall_args_intent inout;
-	uint64_t val[2];
-	size_t size;
-} vhcall_data;
-
-typedef struct vhcall_args {
-	int num;
-	vhcall_data data;
-	struct vhcall_args *next;
-} vhcall_args;
 
 #endif

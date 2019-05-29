@@ -1396,6 +1396,7 @@ hndl_return:
 int veos_handle_ptrace_req(struct veos_thread_arg *pti)
 {
 	int retval = -1;
+	pid_t host_pid = -1;
 	ptrace_req pt_req = {0};
 	ProtobufCBinaryData proto_msg;
 
@@ -1406,6 +1407,26 @@ int veos_handle_ptrace_req(struct veos_thread_arg *pti)
 
 	proto_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_msg;
 	memcpy(&pt_req, proto_msg.data, proto_msg.len);
+
+	/* Convert namespace pid to host pid */
+	host_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, pt_req.pid);
+	if (host_pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				pt_req.pid,
+				strerror(errno));
+		retval = -errno;
+
+		/* Send the failure response back to libveptrace */
+		veos_ptrace_send_cmd_response(pti->socket_descriptor,
+				NULL, 0, retval);
+
+		goto hndl_return;
+	}
+	pt_req.pid = host_pid;
 
 	VEOS_DEBUG("Recevied PTRACE request:%d for pid :%d",
 			pt_req.ptrace_cmd,

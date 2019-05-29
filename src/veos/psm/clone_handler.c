@@ -243,7 +243,8 @@ int copy_ve_mm(struct ve_task_struct *current, unsigned long clone_flags,
 	if (clone_flags & CLONE_VFORK) {
 		VEOS_DEBUG("CLONE_VFORK set");
 		retval = amm_copy_mm_struct(oldmm, &mm,
-				REQUEST_FOR_VFORK_PROCESS);
+				REQUEST_FOR_VFORK_PROCESS,
+				current->numa_node);
 		if (0 != retval) {
 			VEOS_ERROR("Failed to copy memory structure from "
 					"parent to child");
@@ -260,7 +261,8 @@ int copy_ve_mm(struct ve_task_struct *current, unsigned long clone_flags,
 		VEOS_DEBUG("CLONE_VM set");
 		/* Share mm_struct between child and parent */
 		amm_copy_mm_struct(oldmm, &mm,
-					REQUEST_FOR_PROCESS_SHARED);
+					REQUEST_FOR_PROCESS_SHARED,
+					current->numa_node);
 		new_tsk->p_ve_mm = mm;
 		new_tsk->atb_dirty = true;
 		new_tsk->crd_dirty = true;
@@ -270,7 +272,8 @@ int copy_ve_mm(struct ve_task_struct *current, unsigned long clone_flags,
 
 	/* Create mm_struct for child and copy data from parent */
 	retval = amm_copy_mm_struct(oldmm, &mm,
-			REQUEST_FOR_PROCESS_PRIVATE);
+			REQUEST_FOR_PROCESS_PRIVATE,
+			current->numa_node);
 	if (0 != retval) {
 		VEOS_ERROR("Failed to copy memory structure from "
 				"parent to child");
@@ -576,6 +579,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	 * just allocated.
 	 */
 	new_task->pid = fork_info->child_pid;
+	new_task->namespace_pid = fork_info->child_namespace_pid;
 
 	new_task->thread_execed = false;
 	new_task->vforked_proc = false;
@@ -610,7 +614,6 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 		new_task->flags |= PF_FORKNOEXEC;
 		new_task->exit_signal = 0;
 		new_task->group_leader = new_task;
-		new_task->tgid = new_task->pid;
 		new_task->real_parent = current;
 		new_task->parent = current->group_leader;
 		new_task->offset = clone_flags & CLONE_VFORK ?
@@ -663,7 +666,6 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	if (clone_flags & CLONE_THREAD) {
 		new_task->exit_signal = -1;
 		new_task->group_leader = current->group_leader;
-		new_task->tgid = current->tgid;
 		new_task->parent = current->parent;
 		new_task->p_ve_thread->SR[11] = stack_start;
 	} else {
@@ -833,7 +835,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	if (current->ptraced == true) {
 		VEOS_DEBUG("Parent pid: %d is traced", current->pid);
 
-		current->p_ve_ptrace->ptrace_message = new_task->pid;
+		current->p_ve_ptrace->ptrace_message = new_task->namespace_pid;
 
 		VEOS_DEBUG("Child pid: %d is set untraced", new_task->pid);
 
@@ -961,7 +963,8 @@ int do_ve_fork(unsigned long clone_flags,
 			"Failed to acquire VE node mutex lock");
 		retval = get_ve_core_n_node_new_ve_proc(new_task,
 				&child_node_id,
-				&child_core_id);
+				&child_core_id,
+				&new_task->numa_node);
 		if (retval < 0) {
 			/* Temporarily insert task to node "0" core "0"
 			 * and invoke psm_handle_delete_ve_process()
@@ -979,7 +982,6 @@ int do_ve_fork(unsigned long clone_flags,
 			retval = -EAGAIN;
 			goto hndl_return1;
 		}
-		fork_info->node_id = new_task->node_id = child_node_id;
 		fork_info->core_id = new_task->core_id = child_core_id;
 		new_task->p_ve_core = VE_CORE(child_node_id, child_core_id);
 
@@ -999,7 +1001,7 @@ int do_ve_fork(unsigned long clone_flags,
 		/* store child PID in parent memory */
 		retval = amm_send_data(fork_info->parent_pid,
 				(vemva_t)parent_tidptr, sizeof(pid_t),
-				&(new_task->pid));
+				&(new_task->namespace_pid));
 		if (0 != retval) {
 			VEOS_ERROR("Failed to store child PID in "
 					"parent memory");
@@ -1027,36 +1029,17 @@ int do_ve_fork(unsigned long clone_flags,
 	new_task->is_crt_drv = true;
 
 	if (!(clone_flags & CLONE_THREAD) && !(clone_flags & CLONE_VFORK)) {
-		/* Get SHM/LHM area */
-		new_task->sighand->lshm_addr =
-			(uint64_t)shmat(fork_info->shmid, NULL, 0);
-		if ((void *)-1 == (void *)new_task->sighand->lshm_addr) {
-			VEOS_ERROR("Failed to attach shared memory");
-			VEOS_DEBUG("Failed to attach shared memory, return "
-					"value %d, mapped value %d",
-					-errno, -ENOMEM);
+		/* map the LHM/SHM area of pseudo process in veos */
+		retval = psm_map_lhm_shm_area(new_task, fork_info->node_id,
+				fork_info->sfile_name, fork_info->shm_lhm_addr);
+		if (retval < 0) {
+			VEOS_ERROR("Failed to map syscall args file");
+			VEOS_DEBUG("Failed to map syscall args file return value "
+					"%d, mapped value %d",
+					retval, -ENOMEM);
 			retval = -ENOMEM;
 			goto hndl_return1;
 		}
-		new_task->lshmid = fork_info->shmid;
-		new_task->p_ve_mm->shm_lhm_addr = fork_info->shm_lhm_addr;
-
-		new_task->p_ve_mm->shm_lhm_addr_vhsaa = vedl_get_dma_address(VE_HANDLE(0),
-				(void *)(new_task->p_ve_mm->shm_lhm_addr),
-				fork_info->child_pid, 1, 0, 0);
-		if (new_task->p_ve_mm->shm_lhm_addr_vhsaa == -1) {
-			VEOS_ERROR("Failure in convertion of address");
-			VEOS_DEBUG("VHVA->VHSAA conversion failed for %p",
-					(void *)(new_task->p_ve_mm->shm_lhm_addr));
-			VEOS_DEBUG("Failed to convert the address, return "
-					"value %d, mapped value %d",
-					-errno, -ENOMEM);
-			retval = -ENOMEM;
-			goto hndl_return1;
-		}
-		VEOS_DEBUG("Virtual Address: %lx Physical address: %lx",
-				new_task->p_ve_mm->shm_lhm_addr,
-				new_task->p_ve_mm->shm_lhm_addr_vhsaa);
 	}
 
 	if (clone_flags & CLONE_VFORK) {
@@ -1065,16 +1048,7 @@ int do_ve_fork(unsigned long clone_flags,
 		new_task->p_ve_mm->shm_lhm_addr_vhsaa =
 			new_task->parent->p_ve_mm->shm_lhm_addr_vhsaa;
 		new_task->sighand->lshm_addr =
-			(uint64_t)shmat(new_task->parent->lshmid, NULL, 0);
-		if ((void *)-1 == (void *)new_task->sighand->lshm_addr) {
-			VEOS_ERROR("Failed to attach shared memory");
-			VEOS_DEBUG("Failed to attach shared memory, return "
-					"value %d, mapped value %d",
-					-errno, -ENOMEM);
-			retval = -ENOMEM;
-			goto hndl_return1;
-		}
-
+			new_task->parent->sighand->lshm_addr;
 	}
 
 	/*Update the thread offset in the libc thread descriptor area (TP + 0x18)*/

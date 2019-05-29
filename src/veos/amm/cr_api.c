@@ -1548,9 +1548,6 @@ void veos_set_crd(struct ve_task_struct *tsk, uint8_t crd_entry,
 		int count, bool all, bool halt_all)
 {
 
-	struct ve_mm_struct *mm = NULL;
-
-	mm = tsk->p_ve_mm;
 	VEOS_TRACE("invoked");
 	VEOS_DEBUG("sync crd(%d) with count(%d)"
 			"all (%d) halt(%d) for tsk:pid(%d)", crd_entry,
@@ -1558,11 +1555,11 @@ void veos_set_crd(struct ve_task_struct *tsk, uint8_t crd_entry,
 
 	if (all) {
 		/*SET all entries in core CRD registor*/
-		psm_sync_hw_regs(tsk, _CRD, mm->crd, halt_all, 0, 4);
+		psm_sync_hw_regs(tsk, _CRD, halt_all, 0, 4);
 	} else {
 		/* SET perticular  crd_entry
 		 * */
-		psm_sync_hw_regs(tsk, _CRD, mm->crd, halt_all, crd_entry, 1);
+		psm_sync_hw_regs(tsk, _CRD, halt_all, crd_entry, 1);
 	}
 
 	VEOS_TRACE("returned");

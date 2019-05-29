@@ -232,6 +232,7 @@ ok:
 	if (NULL == ptrace_info) {
 		VEOS_CRIT("Internal memory allocation failed: %s",
 				strerror(errno));
+		retval = -1;
 		goto hndl_return;
 	}
 	/*MEMSET*/
@@ -943,8 +944,8 @@ int psm_get_ve_proc_info(pid_t pid, proc_t *ve_proc_info)
 	if (!ve_proc_info)
 		goto hndl_return;
 	/* initialize process information from /proc/ */
-	proc = openproc(PROC_FILLMEM|PROC_FILLSTAT|PROC_FILLSTATUS|PROC_PID,
-			&pid);
+	proc = openproc(PROC_FILLMEM|PROC_FILLSTAT|PROC_FILLSTATUS|PROC_PID|
+			PROC_FILLNS, &pid);
 	if (NULL == proc) {
 		VEOS_DEBUG("Fails to open proc interface for pid: %d", pid);
 		goto hndl_return;

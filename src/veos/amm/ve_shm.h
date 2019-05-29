@@ -67,6 +67,7 @@ struct shm {
 	struct shmid_ds ipc_stat; /*!<shared memory statistics*/
 	pthread_mutex_t shm_lock;  /*!< lock fot shared memory segment*/
 	struct list_head shm_list; /*!< global list for shared memory segment*/
+	long ipc_namespace;	/*!< namespace of the shared memory */
 };
 
 /**
@@ -82,8 +83,8 @@ struct shm_map {
 
 /* Shared memory related API's in veos */
 int amm_do_shmat(key_t, int, vemva_t, size_t,
-		int64_t, struct ve_task_struct *);
-int amm_do_shmctl(int);
+		int64_t, struct ve_task_struct *, long, struct shmid_ds);
+int amm_do_shmctl(int, long);
 int amm_do_shmdt(vemva_t, struct ve_task_struct *,
 			struct shm_seginfo *);
 int amm_shm_detach(struct shm*, int);
@@ -91,11 +92,11 @@ int amm_release_shm_segment(struct shm *);
 
 struct shm *del_shm_map_entry(vemva_t, struct ve_mm_struct *);
 int insert_shm_map_entry(vemva_t, struct shm *, struct ve_mm_struct *);
-struct shm *amm_get_shm_segment(key_t, int, size_t, int, bool);
+struct shm *amm_get_shm_segment(key_t, int, size_t, int, bool, long, struct shmid_ds);
 
-/*shared memory rpm command related API's*/
-int veos_ipc_op(pid_t, struct ve_shm_info *, struct ve_mapheader *, struct shm_summary *);
-void ve_shm_summary(struct shm_summary *);
-int rm_or_ls_segment(pid_t, bool, struct ve_mapheader *);
-void veos_key_id_query(int shmid, bool *shmid_valid, bool is_key);
+void ve_shm_summary(struct shm_summary *, long);
+int rm_or_ls_segment(proc_t *, bool, struct ve_mapheader *);
+void veos_key_id_query(int shmid, bool *shmid_valid, bool is_key, long);
+int is_capable(proc_t *, int *, bool);
+int get_shm_info(int, sdata_t *, long);
 #endif

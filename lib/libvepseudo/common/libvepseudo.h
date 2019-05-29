@@ -20,6 +20,9 @@
  * @file   libvepseudo.h
  * @brief  A header file for VH-called programs
  */
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #ifndef __LIBVEPSEUDO_H
 #define __LIBVEPSEUDO_H
@@ -35,3 +38,7 @@ int ve_recv_data(veos_handle *, uint64_t, size_t, void *);
 int64_t ve_vhva_to_vehva(veos_handle *, const void *);
 
 #endif /* __LIBVEPSEUDO_H */
+
+#ifdef __cplusplus
+}
+#endif

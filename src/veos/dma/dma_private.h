@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2019 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -80,10 +80,12 @@ struct ve_dma_req_hdl_struct {
 	struct ve_dma_hdl_struct *engine;/*!< DMA engine on which this request is posted */
 	pthread_cond_t cond;/*!< condition variable to wait for status of DMA reqlist entries in reqlist to change */
 	struct list_head reqlist;/*!< a list of DMA reqlist entries composing this request */
+	struct list_head ptrans_src;/*!< list of blocks with physical translation info for src addresses*/
+	struct list_head ptrans_dst;/*!< list of blocks with physical translation info for dst addresses*/
+	int cancel;/*!< flag of cancel to DMA requset posting*/
 };
 
 /* in dma_intr.c */
 void ve_dma__drain_waiting_list(ve_dma_hdl *);
 void ve_dma__stop_engine(ve_dma_hdl *);
-
 #endif

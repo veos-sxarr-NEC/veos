@@ -929,13 +929,16 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 {
 	ret_t retval = -1;
 	ret_t delete_ret = 0;
-	pid_t pid, child_pid = -1;
+	pid_t pid;
+	char *file_name = NULL;
+	char *sfile = NULL;
 	volatile int *shared_var = NULL;
 	struct pseudo_ve_clone_info ve_fork_info = {0};
 	int offset = -1;
-	int shmid = 0;
+	int fd = -1;
 	int trace = 0;
 	int index = 0;
+	int node_id = -1;
 	pid_t tid = syscall(SYS_gettid);
 
 	PSEUDO_TRACE("Entering");
@@ -961,7 +964,7 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 		fprintf(stderr, "Internal resource usage error\n");
 		pseudo_abort();
 	}
-	child_pid = pid =  fork();
+	pid =  fork();
 	if (0 < pid) {
 		retval = pthread_rwlock_unlock(&sync_fork_dma);
 		if (retval) {
@@ -1081,6 +1084,7 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 				retval = -EAGAIN;
 				goto hndl_fail3;
 			}
+
 			/* Update global handle */
 			g_handle = handle;
 			PSEUDO_DEBUG("Closing parent's threads fd in vforked child");
@@ -1100,7 +1104,7 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 			/* Set the offset of VH Child */
 			vedl_set_syscall_area_offset(handle->ve_handle, offset);
 		} else {
-			shmdt(handle->ve_handle->lshm_addr);
+			munmap(handle->ve_handle->lshm_addr, PAGE_SIZE_4KB);
 
 			PSEUDO_DEBUG("Closing parent's threads fd in forked child");
 			for (index = 0; index < VEOS_MAX_VE_THREADS; index++) {
@@ -1169,9 +1173,18 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 		PSEUDO_DEBUG("handle: %p", handle);
 
 		if (!(clone_args[0] & CLONE_VFORK)) {
+			sfile = (char *)malloc((NAME_MAX+PATH_MAX)*sizeof(char));
+			if (NULL == sfile) {
+				PSEUDO_DEBUG("failed to create buffer for syscall args"
+						"file");
+				PSEUDO_ERROR("failed to create internal buffer");
+				retval = -ENOMEM;
+				goto hndl_fail1;
+			}
+
 			PSEUDO_DEBUG("Initialising lshm area for child");
-			shmid = init_lhm_shm_area(handle);
-			if (shmid < 0) {
+			fd = init_lhm_shm_area(handle, &node_id, sfile);
+			if (fd < 0) {
 				PSEUDO_ERROR("%s failure: Intialising shared "
 						"memory region failed",
 						syscall_name);
@@ -1182,17 +1195,20 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 				retval = -ENOMEM;
 				goto hndl_fail1;
 			}
+			file_name = basename(sfile);
+			strncpy(ve_fork_info.sfile_name, file_name, S_FILE_LEN);
 		}
 
 		/* prepare structure to be sent to PSM */
 		ve_fork_info.parent_pid = tid;
+		ve_fork_info.child_pid = syscall(SYS_gettid);
 		ve_fork_info.flags = clone_args[0];
 		ve_fork_info.stack_ptr = clone_args[1];
 		ve_fork_info.ptid = clone_args[2];
 		ve_fork_info.ctid = clone_args[3];
 		ve_fork_info.shm_lhm_addr =
 			(uint64_t)vedl_get_shm_lhm_addr(handle->ve_handle);
-		ve_fork_info.shmid = shmid;
+		ve_fork_info.node_id = node_id;
 
 		memset(&ve_fork_info.veshm_dir, BYTE_MASK,
 				sizeof(struct veshm_struct) * VESHM_DIR_SIZE);
@@ -1225,6 +1241,16 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 						(int)retval);
 				goto hndl_fail2;
 			}
+		}
+
+		/* After veos maps the file succesfully then close the file
+		 * descriptor and remove the file
+		 */
+		if (!(clone_args[0] & CLONE_VFORK)) {
+			close(fd);
+			unlink(sfile);
+			free(sfile);
+			sfile = NULL;
 		}
 
 		/* Store child thread ID in child memory */
@@ -1329,15 +1355,16 @@ hndl_fail1:
 				strerror(retval));
 
 hndl_fail2:
+	if (sfile)
+		free(sfile);
+
 	veos_handle_free(handle);
 
 hndl_fail3:
 	*shared_var = retval;
 	munmap((void *)shared_var, sizeof(int));
-	if (child_pid == 0) {
-		PSEUDO_ERROR("Child process creation failed");
-		exit(EXIT_FAILURE);
-	}
+	PSEUDO_ERROR("Child process creation failed");
+	exit(EXIT_FAILURE);
 hndl_fail4:
 	PSEUDO_TRACE("Exiting");
 	return retval;
@@ -1469,9 +1496,10 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 	uint64_t args[3] = {0};
 	struct statvfs st = {0};
 	struct stat sb = {0};
-	char ve_env[][24] = {"VE_EXEC_PATH=", "PWD=", "LOG4C_RCPATH=", "HOME=","VE_LD_ORIGIN_PATH="};
+	char ve_env[][24] = {"VE_EXEC_PATH=", "PWD=", "LOG4C_RCPATH=", "HOME=",
+			"VE_LD_ORIGIN_PATH=", "VE_NODE_NUMBER="};
 	int indx = 0;
-	int ve_env_given[5] = {0};
+	int ve_env_given[6] = {0};
 	/* To fetch VE pointers */
 	char *execve_arg[EXECVE_MAX_ARGS] = {NULL};
 	char *execve_envp[EXECVE_MAX_ENVP] = {NULL};
@@ -1626,13 +1654,15 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 			shift_cntr = VE_EXECVE_ARGS;
 			/* Insertion of ve specific arguments inherited
 			 * from current process */
+			/* "--" option is added to specify the end of option */
 
 			execve_vh_arg[0] = VE_EXEC_PATH;
 			execve_vh_arg[1] = "-d";
 			execve_vh_arg[2] = handle->device_name;
 			execve_vh_arg[3] = "-s";
 			execve_vh_arg[4] = handle->veos_sock_name;
-			execve_vh_arg[5] = real_exe_name;
+			execve_vh_arg[5] = "--";
+			execve_vh_arg[6] = real_exe_name;
 
 			PSEUDO_DEBUG("CREATED VE ARGUMENT LIST AT VH");
 			for (cntr = 0; cntr <= shift_cntr; cntr++) {
@@ -1743,7 +1773,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 		 * to execve()
 		 * */
 		if (exe_flag) {
-			for (indx = 0; indx < 5; indx++) {
+			for (indx = 0; indx < 6; indx++) {
 				if (!strncmp(execve_vh_envp[cntr],
 					ve_env[indx], strlen(ve_env[indx]))) {
 					ve_env_given[indx] = 1;
@@ -1764,7 +1794,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 	 * in environment variable array received as argument to execve().
 	 * */
 	if (exe_flag) {
-		for (indx = 0; indx < 5; indx++) {
+		for (indx = 0; indx < 6; indx++) {
 			if (ve_env_given[indx])
 				continue;
 
@@ -1806,6 +1836,11 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 			case 4:
 				sprintf(execve_vh_envp[cntr],
 						"VE_LD_ORIGIN_PATH=%s", getenv("VE_LD_ORIGIN_PATH"));
+				execve_vh_envp[++cntr] = NULL;
+				break;
+			case 5:
+				sprintf(execve_vh_envp[cntr],
+						"VE_NODE_NUMBER=%s", getenv("VE_NODE_NUMBER"));
 				execve_vh_envp[++cntr] = NULL;
 				break;
 			}
@@ -4674,7 +4709,7 @@ ret_t ve_getcpu(int syscall_num, char *syscall_name, veos_handle *handle)
 	ret_t retval = -1;
 	uint64_t args[3];
 	unsigned int cpu = -1;
-	unsigned int node = -1;
+	unsigned int numa_node = -1;
 	struct ve_cpu_info cpu_info = {0};
 
 	PSEUDO_TRACE("Entering");
@@ -4692,7 +4727,7 @@ ret_t ve_getcpu(int syscall_num, char *syscall_name, veos_handle *handle)
 		retval = -EFAULT;
 		goto hndl_return;
 	}
-	/* Send veos request to get cpu id and node id */
+	/* Send veos request to get cpu id and numa node id */
 	retval = pseudo_psm_send_getcpu_req(handle->veos_sock_fd);
 	if (-1 == retval) {
 		PSEUDO_ERROR("getcpu() failure: veos request error");
@@ -4714,8 +4749,8 @@ ret_t ve_getcpu(int syscall_num, char *syscall_name, veos_handle *handle)
 		goto hndl_return;
 	} else {
 		cpu = cpu_info.cpu;
-		node = cpu_info.node;
-		PSEUDO_DEBUG("cpu is %d node is %d", cpu, node);
+		numa_node = cpu_info.numa_node;
+		PSEUDO_DEBUG("cpu is %d numa node is %d", cpu, numa_node);
 		retval = 0;
 		if (args[0] != 0)
 			if (0 > ve_send_data(handle, args[0],
@@ -4729,7 +4764,7 @@ ret_t ve_getcpu(int syscall_num, char *syscall_name, veos_handle *handle)
 		if (args[1] != 0)
 			if (0 > ve_send_data(handle, args[1],
 						sizeof(unsigned int),
-						(unsigned int *)(&node))) {
+						(unsigned int *)(&numa_node))) {
 				PSEUDO_DEBUG("retval: %d, mapped value: %d",
 						-errno, -EFAULT);
 				retval = -EFAULT;

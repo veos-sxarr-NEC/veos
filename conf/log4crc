@@ -8,13 +8,17 @@
                 <nocleanup>0</nocleanup>
         </config>
 
+        <category name="veos.veo" priority="DEBUG" appender="veo_appender" />
+        <appender name="veo_appender" layout="ve" type="rollingfile" rollingpolicy="veo_rp" logdir="." prefix="veo.log"/>
+        <rollingpolicy name="veo_rp" type="sizewin" maxsize="4194304" maxnum="10" />
+
         <category name="veos.pseudo_process" priority="INFO" appender="ve_exec_appender" />
         <appender name="ve_exec_appender" layout="ve" type="stream" />
 
         <category name="veos.os_module" priority="INFO" appender="veos_appender" />
         <category name="veos.os_module.dma" priority="CRIT" appender="veos_appender" />
         <appender name="veos_appender" layout="ve" type="rollingfile" rollingpolicy="veos_rp" logdir="/var/opt/nec/ve/veos" prefix="veos.log"/>
-        <rollingpolicy name="veos_rp" type="sizewin" maxsize="4194304" maxnum="32" />
+        <rollingpolicy name="veos_rp" type="sizewin" maxsize="4194304" maxnum="8" />
 
         <category name="veos.ived" priority="INFO" appender="ived_appender" />
         <appender name="ived_appender" layout="ve" type="rollingfile" rollingpolicy="ived_rp" logdir="/var/opt/nec/ve/veos" prefix="ived.log"/>
@@ -57,6 +61,7 @@
 	<category name="veos.command.lslocks" priority="INFO" appender="veos_command_appender" />
 	<category name="veos.command.ipcs" priority="INFO" appender="veos_command_appender" />
 	<category name="veos.command.ipcrm" priority="INFO" appender="veos_command_appender" />
+	<category name="veos.command.venumainfo" priority="INFO" appender="veos_command_appender" />
 	<appender name="veos_command_appender" layout="ve" type="rollingfile" rollingpolicy="veos_command_rp" logdir="." prefix="veos_command.log"/>
 	<rollingpolicy name="veos_command_rp" type="sizewin" maxsize="4194304" maxnum="10" />
 

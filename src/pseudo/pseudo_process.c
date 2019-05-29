@@ -42,6 +42,8 @@
 #include <log4c.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <mempolicy.h>
+#include <libgen.h>
 #include "config.h"
 #include "libved.h"
 #include "loader.h"
@@ -57,6 +59,7 @@
 #include "sys_process_mgmt.h"
 
 #define PROGRAM_NAME "ve_exec"
+#define ISDIGIT(c)      ((unsigned)c-'0' < 10)
 
 __thread sigset_t ve_proc_sigmask;
 __thread veos_handle *g_handle;
@@ -76,6 +79,28 @@ uint64_t default_page_size;
 struct ve_load_data load_elf;
 struct vemva_header vemva_header;
 
+
+/**
+ * @brief Fetches the node number from VEOS socket file.
+ *
+ * @param[in] s string contains the veos socket file path
+ *
+ * @return node number on which this ve process will run
+ */
+static int get_ve_node_num(char *s)
+{
+	int n = 0;
+
+	while (*s != '\0') {
+		if (ISDIGIT(*s))
+			n = 10*n + (*s - '0');
+		else if (*s == '.')
+			break;
+
+		s++;
+	}
+	return n;
+}
 
 /**
 * @brief Function to abort Pseudo Process.
@@ -171,7 +196,11 @@ void usage(char *ve_exec_path)
 	fprintf(stderr, "Usage: %s [OPTION] -d,--driver=<path> "
 			"-s,--socket=<path> <binary> [arguments]\n"
 			"Options\n"
-			"  -c,--core=core	set core value\n"
+			"  -c,--core=core		set core value\n"
+			"  --cpunodebind=<NUMA node ID> NUMA node number on which"
+							"VE process is to be"
+							"executed\n"
+			"  --localmembind	Memory policy is set MPOL_BIND\n"
 			"  -h,--help		Display help version information\n"
 			"  -V,--version		Display ve_exec version information\n"
 			"   --			End of options (Requires if binary name "
@@ -183,58 +212,98 @@ void usage(char *ve_exec_path)
 * @brief Creates shared memory region used as lhm/shm area
 *
 * @param[in] handle Pointer to handler structure for using library functions
+* @param[out] node_id Provide the node_id on which this ve process will run
+* @param[out] sfile_name randaomly generated file name with complete path
 *
-* @return shared memory region ID on success and -1 on failure
+* @return fd on success, -1 on failure
 */
-int init_lhm_shm_area(veos_handle *handle)
+int init_lhm_shm_area(veos_handle *handle, int *node_id, char *sfile_name)
 {
-	int retval = 0;
+	int retval = -1, fd = -1;
+	char *base_name = NULL, *dir_name = NULL;
+	char *tmp_sock0 = NULL, *tmp_sock1 = NULL;
+	char *shared_tmp_file = NULL;
 	uint64_t shm_lhm_area = 0;
 
 	PSEUDO_TRACE("Entering");
 
-	/* Allocate shared memory segment */
-	retval = shmget(IPC_PRIVATE, PAGE_SIZE_4KB, IPC_CREAT|S_IRWXU);
+	tmp_sock0 = (char *)calloc(NAME_MAX+PATH_MAX, sizeof(char));
+	if (NULL == tmp_sock0) {
+		PSEUDO_DEBUG("failed to create buffer to store veos socket"
+				" name");
+		PSEUDO_ERROR("failed to create internal buffer");
+		goto hndl_return;
+	}
+
+	tmp_sock1 = (char *)calloc(NAME_MAX+PATH_MAX, sizeof(char));
+	if (NULL == tmp_sock1) {
+		PSEUDO_DEBUG("failed to create buffer to store veos socket"
+				" name");
+		PSEUDO_ERROR("failed to create internal buffer");
+		goto hndl_return;
+	}
+
+	shared_tmp_file = (char *)calloc(NAME_MAX+PATH_MAX, sizeof(char));
+	if (NULL == shared_tmp_file) {
+		PSEUDO_DEBUG("failed to create buffer to store shared file"
+				" name");
+		PSEUDO_ERROR("failed to create internal buffer");
+		goto hndl_return;
+	}
+
+	strncpy(tmp_sock0, handle->veos_sock_name, NAME_MAX+PATH_MAX);
+	strncpy(tmp_sock1, handle->veos_sock_name, NAME_MAX+PATH_MAX);
+
+	base_name = basename(tmp_sock0);
+	dir_name = dirname(tmp_sock1);
+
+	/* get node number from veos socket file basename */
+	*node_id = get_ve_node_num(base_name);
+
+	sprintf(shared_tmp_file, "%s/veos%d-tmp/ve_exec_XXXXXX",
+			dir_name, *node_id);
+
+	PSEUDO_DEBUG("Shared file path: %s", shared_tmp_file);
+
+	/* create a unique temporary file and opens it */
+	fd =  mkstemp(shared_tmp_file);
+	if (fd < 0) {
+		PSEUDO_DEBUG("mkstemp fails: %s", strerror(errno));
+		goto hndl_return;
+	}
+
+	/* truncate file to size PAGE_SIZE_4KB */
+	retval = ftruncate(fd, PAGE_SIZE_4KB);
 	if (-1 == retval) {
-		PSEUDO_ERROR("Failed to get shared memory");
-		PSEUDO_DEBUG("Failed to get shared memory, return value %s",
-				strerror(errno));
-		goto out_error1;
+		PSEUDO_DEBUG("ftruncate fails: %s", strerror(errno));
+		goto hndl_return;
 	}
 
-	/* Attach to the above allocated shared memory segment */
-	shm_lhm_area = (uint64_t)shmat(retval, NULL, 0);
+	/* map the file in shared mode */
+	shm_lhm_area = (uint64_t)mmap(NULL, PAGE_SIZE_4KB,
+			PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
 	if ((void *)-1 == (void *)(shm_lhm_area)) {
-		PSEUDO_ERROR("Failed to attach shared memory");
-		PSEUDO_DEBUG("Failed to attach shared memory, return value %s",
+		PSEUDO_DEBUG("Failed to map file, return value %s",
 				strerror(errno));
 		retval = -1;
-		goto out_error;
+		goto hndl_return;
 	}
 
-	PSEUDO_DEBUG("%lx", shm_lhm_area);
-
-	/* stay on memory until the process exits */
-	if (-1 == mlock((void *)shm_lhm_area, PAGE_SIZE_4KB))
-	{
-		PSEUDO_ERROR("Failed to lock memory");
-		PSEUDO_DEBUG("Failed to lock memory, return value %s",
-				strerror(errno));
-		retval = -1;
-		goto out_error1;
-	}
+	PSEUDO_DEBUG("shm_lhm_area: %lx", shm_lhm_area);
 	memset((void *)shm_lhm_area, 0, PAGE_SIZE_4KB);
-
 	vedl_set_shm_lhm_addr(handle->ve_handle, (void *)shm_lhm_area);
-out_error:
-	/* Mark shared memory segment as destroyed */
-	if (-1 == shmctl(retval, IPC_RMID, NULL)) {
-		PSEUDO_ERROR("Failed to destroy shared memory");
-		PSEUDO_DEBUG("Failed to destroy shared memory, return value %s",
-				strerror(errno));
-		retval = -1;
-	}
-out_error1:
+
+	strncpy(sfile_name, shared_tmp_file, NAME_MAX+PATH_MAX);
+	PSEUDO_DEBUG("Unique syscall args filename: %s", sfile_name);
+	retval = fd;
+hndl_return:
+	if (tmp_sock0)
+		free(tmp_sock0);
+	if (tmp_sock1)
+		free(tmp_sock1);
+	if (shared_tmp_file)
+		free(shared_tmp_file);
+
 	PSEUDO_TRACE("Exiting");
 	return retval;
 }
@@ -284,6 +353,23 @@ void init_rwlock_to_sync_dma_fork()
 }
 
 /**
+* @brief close the fd of syscall args file and remove the file.
+*
+* @param[in] fd, contains the fd of syscall args file.
+* @param[in] sfile_name string contains the syscall args file path.
+*/
+void close_syscall_args_fille(int fd, char *sfile_name)
+{
+	PSEUDO_TRACE("Entering");
+
+	close(fd);
+	unlink(sfile_name);
+	free(sfile_name);
+
+	PSEUDO_TRACE("Exiting");
+}
+
+/**
 * @brief Main function of  pseudo process.
 *	Function performs the following:
 *	Reads command line arguments required for execution of pseudo process
@@ -311,6 +397,8 @@ int main(int argc, char *argv[], char *envp[])
 	int option_index = 0;
 	int i = 0, retval = -1, vefd = 0;
 	int ret = -1;
+	char *file_name = NULL;
+	char *sfile_name = NULL;
 	char *exe_name = NULL;
 	char *exe_base_name = NULL;
 	char **ve_argv = NULL;
@@ -335,6 +423,8 @@ int main(int argc, char *argv[], char *envp[])
 	char log4c_home_file_path[NAME_MAX] = {0};
 	char log4c_curr_file_path[NAME_MAX] = {0};
 	const struct log4c_appender_type *type;
+	int numa_node = -1;
+	int mem_policy = MPOL_DEFAULT;
 	char *io_type = NULL;
 
 	/* Block all the signals till we successfully create VE process
@@ -354,7 +444,7 @@ int main(int argc, char *argv[], char *envp[])
 
 	/* fetch the log4c layout type */
 	type = log4c_appender_get_type(app_pseudo_core);
-	if (strcmp(type->name, "stream")) {
+	if (!type || strcmp(type->name, "stream")) {
 		fprintf(stderr, "VE process setup failed,"
 				" log4c configuration file error\n");
 		pseudo_abort();
@@ -474,20 +564,32 @@ int main(int argc, char *argv[], char *envp[])
 	veos_sock_name = (char *)malloc((NAME_MAX+PATH_MAX)*sizeof(char));
 	if (NULL == veos_sock_name) {
 		PSEUDO_DEBUG("failed to create buffer to store veos socket"
-					"name");
+					" name");
 		PSEUDO_ERROR("failed to create internal buffer");
 		fprintf(stderr, "VE process setup failed\n");
 		pseudo_abort();
 	}
+	sfile_name = (char *)malloc((NAME_MAX+PATH_MAX)*sizeof(char));
+	if (NULL == sfile_name) {
+		PSEUDO_DEBUG("failed to create buffer for syscall args"
+					" file");
+		PSEUDO_ERROR("failed to create internal buffer");
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
+
 	/*MEMSET */
 	memset(exe_name, '\0', (NAME_MAX + PATH_MAX) * sizeof(char));
 	memset(sock_name, '\0', (NAME_MAX + PATH_MAX) * sizeof(char));
 	memset(veos_sock_name, '\0', (NAME_MAX + PATH_MAX) * sizeof(char));
+	memset(sfile_name, '\0', (NAME_MAX + PATH_MAX) * sizeof(char));
 	static struct option long_options[] = {
 		{"driver", required_argument, NULL, 'd'},
 		{"socket", required_argument, NULL, 's'},
 		{"core", optional_argument, NULL, 'c'},
 		{"dump", optional_argument, NULL, 0},
+		{"localmembind", optional_argument, NULL, 0},
+		{"cpunodebind", optional_argument, NULL, 0},
 		{"traceme", no_argument, 0, 0},
 		{"version", no_argument, NULL, 'V'},
 		{"help", no_argument, NULL, 'h'},
@@ -522,6 +624,18 @@ int main(int argc, char *argv[], char *envp[])
 					long_options[option_index].name) == 0) {
 					ve_trace_me = true;
 					PSEUDO_TRACE("traceme\n");
+				}
+				if (strcmp("localmembind",
+					long_options[option_index].name) == 0) {
+					mem_policy = MPOL_BIND;
+				}
+				if (strcmp("cpunodebind",
+					long_options[option_index].name) == 0) {
+					numa_node = strtol(optarg, &endptr, 0);
+					if (optarg == endptr) {
+						fprintf(stderr,
+							"invalid numa node ID");
+					}
 				}
 				break;
 			case 'h':
@@ -575,12 +689,6 @@ int main(int argc, char *argv[], char *envp[])
 		exit(1);
 	}
 
-	/* Copy ve executable file path/name to ve arguments */
-	if (((strlen(exe_name) + 1)*sizeof(char)) > UINT_MAX) {
-		PSEUDO_ERROR("Executable file path is to big");
-		fprintf(stderr, "VE process setup failed\n");
-		pseudo_abort();
-	}
 	ve_argv[0] = (char *)malloc((strlen(exe_name) + 1) *
 				sizeof(char));
 	if (NULL == ve_argv[0]) {
@@ -699,27 +807,27 @@ int main(int argc, char *argv[], char *envp[])
 		pseudo_abort();
 	}
 
-	PSEUDO_DEBUG("CORE ID : %d\t NODE ID : %d", core_id, node_id);
-
-	ret = init_lhm_shm_area(handle);
+	ret = init_lhm_shm_area(handle, &node_id, sfile_name);
 	if (ret < 0) {
-		PSEUDO_ERROR("failed to create shared memory region");
+		PSEUDO_ERROR("failed to create temporary file");
 		fprintf(stderr, "VE process setup failed\n");
 		pseudo_abort();
 	}
 
-	ve_proc.gid = syscall(SYS_getgid);
-	ve_proc.uid = syscall(SYS_getuid);
+	ve_proc.namespace_pid = syscall(SYS_gettid);
 	ve_proc.shm_lhm_addr = (uint64_t)vedl_get_shm_lhm_addr(handle->ve_handle);
-	ve_proc.shmid = ret;
 	ve_proc.core_id = core_id;
+	ve_proc.node_id = node_id;
 	ve_proc.traced_proc = ve_trace_me;
 	ve_proc.tracer_pid = getppid();
 	ve_proc.exec_path = (uint64_t)&exec_path[0];
-
+	ve_proc.numa_node = numa_node;
+	ve_proc.mem_policy = mem_policy;
+	file_name = basename(sfile_name);
 	memset(&(ve_proc.exe_name), '\0', ACCT_COMM + 1);
 	strncpy(ve_proc.exe_name, exe_base_name, ACCT_COMM);
 	memcpy(ve_proc.lim, ve_rlim, sizeof(ve_rlim));
+	strncpy(ve_proc.sfile_name, file_name, S_FILE_LEN);
 
 	/* Request to veos to create new VE process.
 	 * veos also create VE process task structure on VE driver
@@ -731,31 +839,47 @@ int main(int argc, char *argv[], char *envp[])
 		PSEUDO_DEBUG("Failed to send NEW VE PROC request to veos,"
 				"return value %d", retval);
 		veos_handle_free(handle);
+		close_syscall_args_fille(ret, sfile_name );
 		fprintf(stderr, "VE process setup failed\n");
 		pseudo_abort();
 	} else {
 		retval = pseudo_psm_recv_load_binary_req(handle->veos_sock_fd,
 				&core_id,
-				&node_id);
+				&node_id,
+				&numa_node);
 		if (0 > retval) {
 			PSEUDO_ERROR("VEOS acknowledgement error");
 			if (-EINVAL == retval) {
-				PSEUDO_ERROR("ERROR: Core '%d' doesn't exist",
-						core_id);
-				veos_handle_free(handle);
-				fprintf(stderr, "ERROR: Core '%d' doesn't exist\n",
-					core_id);
+				if (core_id != -1) {
+					PSEUDO_ERROR("ERROR: Core '%d' "
+						"doesn't exist", core_id);
+					veos_handle_free(handle);
+					fprintf(stderr, "ERROR: Core '%d' "
+						"doesn't exist\n", core_id);
+				} else {
+					PSEUDO_ERROR("ERROR: Numa node '%d' "
+						"doesn't exist", numa_node);
+					veos_handle_free(handle);
+					fprintf(stderr,
+						"ERROR: Numa node"
+						" argument out of range\n");
+				}
+				close_syscall_args_fille(ret, sfile_name );
 				exit(EXIT_FAILURE);
 			}
 			PSEUDO_DEBUG("Failed to create VE process, return "
 					"value %d", retval);
 			fprintf(stderr, "VE process setup failed\n");
 			veos_handle_free(handle);
+			close_syscall_args_fille(ret, sfile_name );
 			pseudo_abort();
 		}
 	}
 
-	PSEUDO_DEBUG("CORE ID : %d\t NODE ID : %d", core_id, node_id);
+	PSEUDO_DEBUG("CORE ID : %d\t NODE ID : %d NUMA NODE ID : %d",
+			core_id, node_id, numa_node);
+	/* close the fd of syscall args file and remove the file */
+	close_syscall_args_fille(ret, sfile_name );
 
 	/* Set offset to zero just in case */
 	vedl_set_syscall_area_offset(handle->ve_handle, 0);

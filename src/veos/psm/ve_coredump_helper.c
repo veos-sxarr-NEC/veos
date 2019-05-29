@@ -41,6 +41,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <sched.h>
+#include <linux/limits.h>
 
 #define COREDUMP_FAILED 1
 
@@ -112,7 +114,10 @@ void send_ve_corefile_fd(int sockfd, int ve_cffd)
  */
 int main(int argc, const char *argv[])
 {
+	int fd, ve_pid;
 	int ve_cffd, sockfd;
+	int gid, uid;
+	char buf[PATH_MAX] = {'0'};
 	int ret_status = COREDUMP_FAILED;
 
 	errno = 0;
@@ -121,18 +126,56 @@ int main(int argc, const char *argv[])
 	if (errno)
 		goto handle_exit;
 
+	errno = 0;
+	/* Get VE process PID */
+	ve_pid = strtol(argv[3], NULL, 10);
+	if (errno)
+		goto handle_exit;
+
+	errno = 0;
+	/* Get gid of VE process */
+	gid = strtol(argv[4], NULL, 10);
+	if (errno)
+		goto handle_exit;
+
+	errno = 0;
+	/* Get uid of VE process */
+	uid = strtol(argv[5], NULL, 10);
+	if (errno)
+		goto handle_exit;
+
+	sprintf(buf, "/proc/%d/ns/mnt", ve_pid);
+
+	/* Open the mnt namespace of VE process */
+	fd = open(buf, O_RDONLY);
+	if (-1 == fd)
+		goto close_socket;
+
+	/* Enter the namespace of VE process */
+	if (setns(fd, CLONE_NEWNS) == -1)
+		goto close_proc_file;
+
+	/* Set the VE process gid to the current process */
+	if (setgid(gid) == -1)
+		goto close_proc_file;
+
+	/* Set the VE process uid to the current process */
+	if (setuid(uid) == -1)
+		goto close_proc_file;
+
 	/* Get file descriptor of ve core file */
 	ve_cffd = open(argv[1], O_CREAT | O_NOFOLLOW | O_LARGEFILE |
 			O_RDWR, 0600);
 	if (-1 == ve_cffd)
-		goto close_socket;
+		goto close_proc_file;
 
 	/* Send VE core file fd so that VE OS can perform elf dumping */
 	send_ve_corefile_fd(sockfd, ve_cffd);
 
 	close(ve_cffd);
 	ret_status = status;
-
+close_proc_file:
+	close(fd);
 close_socket:
 	close(sockfd);
 handle_exit:

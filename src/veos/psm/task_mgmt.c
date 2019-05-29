@@ -62,6 +62,80 @@
 #include "ptrace_req.h"
 #include "locking_handler.h"
 #include "psm_stat.h"
+#include "veos_sock.h"
+
+/**
+ * @brief Maps the LHM/SHM area of pseudo process in veos
+ *
+ * @param[in] tsk Pointer to VE task struct
+ * @param[in] node_id Actual node id of pseudo process
+ * @param[in] sfile_name LHM/SHM area file of pseudo process
+ * @param[in] r_lhm_shm LHM/SHM address of pseudo process
+ *
+ * @return 0 in case of success and -errno on failure
+ */
+int psm_map_lhm_shm_area(struct ve_task_struct *tsk, int node_id,
+		char *sfile_name, uint64_t r_lhm_shm)
+{
+
+	int fd = -1, retval = -1;
+	char sfile_path[PATH_MAX] = {0};
+
+	VEOS_TRACE("Entering");
+
+	if (!tsk || !sfile_name)
+		goto hndl_return;
+
+	sprintf(sfile_path, "%s/veos%d-tmp/%s", VEOS_SOC_PATH,
+			node_id, sfile_name);
+	VEOS_DEBUG("Syscall file with complete path: %s", sfile_path);
+
+	/* open the file */
+	fd = open(sfile_path, O_RDWR);
+	if (-1 == fd) {
+		VEOS_DEBUG("open fails: %s", strerror(errno));
+		retval = -errno;
+		goto hndl_return;
+	}
+
+	tsk->sighand->lshm_addr = (uint64_t)mmap(NULL, PAGE_SIZE_4KB,
+			PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+	if ((void *)-1 == (void *)tsk->sighand->lshm_addr) {
+		VEOS_DEBUG("Failed to map syscall args file return value "
+				"%d", -errno);
+		retval = -errno;
+		close(fd);
+		goto hndl_return;
+	}
+
+	/* Store the SHM/LHM address of pseudo process
+	 * in mm_struct.
+	 */
+	tsk->p_ve_mm->shm_lhm_addr = r_lhm_shm;
+	VEOS_DEBUG("SHM/LHM address %lx of pid %d",
+			r_lhm_shm, tsk->pid);
+
+	tsk->p_ve_mm->shm_lhm_addr_vhsaa = vedl_get_dma_address(VE_HANDLE(0),
+			(void *)(tsk->p_ve_mm->shm_lhm_addr),
+			tsk->pid, 1, 0, 0);
+	if (0 > (tsk->p_ve_mm->shm_lhm_addr_vhsaa)) {
+		VEOS_DEBUG("Failed to convert the address(VHVA->VHSAA),"
+				"return value %d, mapped value %d",
+				-errno, -EFAULT);
+		retval = -EFAULT;
+		close(fd);
+		goto hndl_return;
+	}
+
+	VEOS_DEBUG("Virtual address: %lx Physical address: %lx",
+			tsk->p_ve_mm->shm_lhm_addr,
+			tsk->p_ve_mm->shm_lhm_addr_vhsaa);
+	retval = 0;
+	close(fd);
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
 
 /**
 * @brief Get the content of register value of the VE process.
@@ -1085,10 +1159,11 @@ hndl_return:
  */
 int psm_least_loaded_node_n_core(void)
 {
-	int ve_core_id = -1 , ve_node_id = -1;
+	int ve_core_id = -1 , ve_node_id = -1, numa_node = -1;
 
 	VEOS_TRACE("Entering");
-	get_ve_core_n_node_new_ve_proc(&ve_init_task, &ve_node_id, &ve_core_id);
+	get_ve_core_n_node_new_ve_proc(&ve_init_task, &ve_node_id, &ve_core_id,
+			&numa_node);
 	VEOS_DEBUG("Least Loaded Node: %d Core: %d",
 			ve_node_id, ve_core_id);
 	VEOS_TRACE("Exiting");
@@ -1108,7 +1183,7 @@ int psm_least_loaded_node_n_core(void)
  * @author PSMG / Scheduling and context switch
  */
 int get_ve_core_n_node_new_ve_proc(struct ve_task_struct *p_ve_task,
-		int *ve_node_id, int *ve_core_id)
+		int *ve_node_id, int *ve_core_id, int *ve_numa_id)
 {
 	int retval = -1;
 	/* Per Node */
@@ -1152,7 +1227,7 @@ int get_ve_core_n_node_new_ve_proc(struct ve_task_struct *p_ve_task,
 	}
 
 	if (-1 == min_proc_num_node) {
-		VEOS_ERROR("All VE resources are busy,"
+		VEOS_DEBUG("All VE resources are busy,"
 				" unable to accept new request");
 		*ve_node_id = min_proc_num_node;
 		*ve_core_id = min_proc_num_core;
@@ -1164,9 +1239,19 @@ int get_ve_core_n_node_new_ve_proc(struct ve_task_struct *p_ve_task,
 	VEOS_DEBUG("Number of processes on node %d is %d",
 			*ve_node_id, p_ve_node->num_ve_proc);
 
+	/* 1. If VE mode is normal mode and specified core id is valid then add
+	 *    core id.
+	 * 2. If VE mode is in partition mode specified core id is valid then add
+	 *    core id and also update the numa node id coressponding to core id.
+	 * 3. Else return with EINVAL
+	 * */
 	if ((-1 < *ve_core_id) && (*ve_core_id < p_ve_node->nr_avail_cores)) {
 		CPU_ZERO(&(p_ve_task->cpus_allowed));
 		CPU_SET(*ve_core_id, &(p_ve_task->cpus_allowed));
+		if (*ve_numa_id == -1) {
+			p_ve_core = VE_CORE(*ve_node_id, *ve_core_id);
+			*ve_numa_id = p_ve_core->numa_node;
+		}
 		goto skip_get_core_num;
 	} else if ((*ve_core_id >= p_ve_node->nr_avail_cores)) {
 		VEOS_DEBUG("Invalid core id: %d", *ve_core_id);
@@ -1184,21 +1269,21 @@ int get_ve_core_n_node_new_ve_proc(struct ve_task_struct *p_ve_task,
 					core_loop);
 			continue;
 		}
+
 		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), RDLOCK,
-			"Failed to acquire ve core read lock");
+				"Failed to acquire ve core read lock");
 		num_proc_core = p_ve_core->num_ve_proc;
 		if (num_proc_core < num_proc_core_min) {
 			num_proc_core_min = num_proc_core;
 			min_proc_num_core = core_loop;
 		}
 		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
-			"Failed to release ve core lock");
+				"Failed to release ve core lock");
 	}
 
 	*ve_core_id = min_proc_num_core;
 	if (-1 == min_proc_num_core) {
-		VEOS_ERROR("All VE resources are busy,"
-				" unable to accept new request");
+		VEOS_DEBUG("No CPU is allowed for the task");
 		*ve_node_id = -1;
 		retval = -ENOMEM;
 		goto hndl_return;
@@ -1206,8 +1291,9 @@ int get_ve_core_n_node_new_ve_proc(struct ve_task_struct *p_ve_task,
 
 skip_get_core_num:
 	retval = 0;
-	VEOS_DEBUG("Selected Node %d Core %d",
+	VEOS_DEBUG("Selected Node %d  NUMA node %d Core %d",
 			*ve_node_id,
+			*ve_numa_id,
 			*ve_core_id);
 hndl_return:
 	VEOS_TRACE("Exiting");
@@ -1215,7 +1301,7 @@ hndl_return:
 }
 
 /**
- * @brief Set the state of the task as EXITING for process termination.
+ * @brief Set thae state of the task as EXITING for process termination.
  *
  * @param[in] task VE task which is to be terminated
  *
@@ -1712,6 +1798,15 @@ skip_wakeup:
 			"Failed to release tasklist_lock lock");
 	pthread_mutex_lock_unlock(&(del_task_struct->ve_task_lock), LOCK,
 			"Failed to acquire task lock");
+
+	/* unmap the LHM/SHM area */
+	if (false == del_task_struct->vforked_proc)
+		munmap((void *)del_task_struct->sighand->lshm_addr,
+				PAGE_SIZE_4KB);
+	else
+		VEOS_DEBUG("vforked process(%d) not unmapping LHM/SHM",
+				del_task_struct->pid);
+
 	/* resetting vfork related states */
 	del_task_struct->vfork_state = VFORK_C_INVAL;
 	del_task_struct->vforked_proc = false;
@@ -1752,9 +1847,6 @@ skip_wakeup:
 	/* Re-initialise udma_context */
 	memset(del_task_struct->udma_context, 0, sizeof(struct ve_udma));
 
-	/* Free the LHM/SHM area */
-	shmdt((void *)del_task_struct->sighand->lshm_addr);
-
 hndl_return:
 	VEOS_TRACE("Exiting");
 }
@@ -1767,7 +1859,7 @@ hndl_return:
  * @internal
  * @author PSMG / Process management
  */
-static comp_t veos_encode_comp_t(unsigned long val)
+static comp_t veos_encode_comp_t(unsigned long long val)
 {
 	comp_t exp, rnd;
 
@@ -1788,6 +1880,17 @@ static comp_t veos_encode_comp_t(unsigned long val)
 	exp <<= MANTSIZE;	/* Shift the exponent into place */
 	exp += val;		/* and add on the mantissa. */
 	return exp;
+}
+
+/**
+ * @brief Convert usec to AHZ .
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+unsigned long long veos_usec_to_AHZ(unsigned long long val)
+{
+	return val / (USECOND / AHZ);
 }
 
 /**
@@ -1839,13 +1942,15 @@ void veos_acct_ve_proc(struct ve_task_struct *tsk)
 
 	/* elapsed time from process creation to termination */
 	gettimeofday(&now, NULL);
-	acct_info.ac_etime = (timeval_diff(now, tsk->start_time))/USECOND;
+	acct_info.ac_etime = veos_usec_to_AHZ(timeval_diff(now,
+						tsk->start_time));
 
 	/* In VE stime of process would be zero */
 	acct_info.ac_stime = 0;
 
 	/* Time spend by the process while scheduled on VE core */
-	acct_info.ac_utime = veos_encode_comp_t(pacct->ac_utime/USECOND);
+	acct_info.ac_utime = veos_encode_comp_t(veos_usec_to_AHZ
+						(pacct->ac_utime));
 
 	/* Average memory usage (kB) */
 	acct_info.ac_mem = veos_encode_comp_t(pacct->ac_mem);
@@ -1917,11 +2022,12 @@ hndl_return:
  * @param[in] ve_core_id VE Core Id recevied from Pseudo
  * @param[in] ve_node_id VE Node Id recevied from Pseudo
  * @param[in] pid PID of the Pseudo Process
+ * @param[in] namespace_pid Namespace PID of the Pseudo Process
  * @param[in] exe_name VE process exe command name
  * @param[in] traced VE process traced flag
  * @param[in] tracer_pid VE process tracer pid
  * @param[in] vaddr VE process shared memory address
- * @param[in] shmid VE process shared memory identifier
+ * @param[in] sfile_name VE process LHM/SHM area file
  * @param[in] ve_lim VE rlimit structure address recieved
  * from pseudo
  * @param[in] gid VE GID recieved from pseudo
@@ -1938,28 +2044,60 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 				int *ve_core_id,
 				int *ve_node_id,
 				int pid,
+				int namespace_pid,
 				char *exe_name,
 				bool traced,
 				pid_t tracer_pid,
 				uint64_t vaddr,
-				int shmid,
+				char *sfile_name,
 				struct rlimit *velim,
 				uint64_t gid,
 				uint64_t uid,
 				bool rpm_task_create,
-				char *exe_path)
+				char *exe_path,
+				int *numa_node,
+				int mem_policy)
 {
+	pid_t host_pid = -1;
 	int retval = -1, ret = -1;
 	int core_loop = 0;
+	int numa_loop = 0;
 	struct ve_task_struct *tsk = NULL;
+	int max_numa_node = VE_NODE(0)->numa_count;
+	int num_proc_numa_node = -1, min_proc_numa_node = -1;
+	int num_proc_numa_node_min = MAX_TASKS_PER_NODE;
+	int actual_node_id = -1;
 
 	VEOS_TRACE("Entering");
 
-	if (!pti || !ve_core_id || !ve_node_id) {
+	if (!pti || !ve_core_id || !ve_node_id || !numa_node) {
 		retval = -EINVAL;
 		VEOS_ERROR("Invalid (NULL) argument received");
 		goto hndl_return;
 	}
+
+	/* Validate NUMA node ID if received */
+	if (VE_NODE(0)->partitioning_mode) {
+		VEOS_DEBUG("VEOS is in Partition mode");
+		if ((*numa_node >= -1) && (*numa_node <= (max_numa_node - 1))) {
+			VEOS_DEBUG("Numa node id : %d", *numa_node);
+		} else {
+			VEOS_DEBUG("PID : %d Numa node id :"
+					" %d", pid, *numa_node);
+			retval = -EINVAL;
+			goto hndl_return;
+		}
+	} else {
+		VEOS_DEBUG("VEOS is in Normal mode");
+		if (*numa_node >= 1) {
+			VEOS_DEBUG("PID : %d Numa node id : "
+					"%d", pid, *numa_node);
+			retval = -EINVAL;
+			goto hndl_return;
+		}
+		*numa_node = 0;
+	}
+	actual_node_id = *ve_node_id;
 
 	/* Allocate memory for VE task structure */
 	tsk = alloc_ve_task_struct_node();
@@ -1995,20 +2133,15 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 		goto free_mm;
 	}
 
-	/* Initialize CPU MASK of the task */
-	for (; core_loop < VE_NODE(0)->nr_avail_cores ; core_loop++) {
-		CPU_SET(core_loop, &(tsk->cpus_allowed));
-	}
-
 	/* Populate ve_task_struct */
 	strncpy(tsk->ve_comm, exe_name, ACCT_COMM);
 	strncpy(tsk->ve_exec_path, exe_path, PATH_MAX);
 	tsk->pid = pid;
+	tsk->namespace_pid = namespace_pid;
 	tsk->priority = VE_DEF_SCHED_PRIORITY;
 	tsk->sched_class = 0;
 	tsk->ve_task_state = WAIT;
 	tsk->exit_signal = 0;
-	tsk->tgid = tsk->pid;
 	tsk->sas_ss_sp = 0;
 	tsk->sas_ss_size = 0;
 	tsk->syncsignal = 0;
@@ -2032,6 +2165,7 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	tsk->exit_code_set = false;
 	tsk->thread_execed = false;
 	tsk->assign_task_flag = TSK_UNASSIGN;
+	tsk->dummy_task = false;
 	/* Allocate time slice to VE task, however when scheduled
 	 * this value will be initialised again. We are initializing it
 	 * so that it does not contain any junk value. */
@@ -2100,13 +2234,40 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_node_lock), LOCK,
 			"Failed to acquire VE node mutex lock");
 
-	retval = get_ve_core_n_node_new_ve_proc(tsk, ve_node_id, ve_core_id);
+	/* Finding least loaded numa node */
+	if ((*numa_node == -1) && (*ve_core_id == -1)) {
+		for (; numa_loop < max_numa_node; numa_loop++) {
+			num_proc_numa_node = VE_NODE(0)->numa[numa_loop].num_ve_proc;
+			if (num_proc_numa_node < num_proc_numa_node_min) {
+				num_proc_numa_node_min = num_proc_numa_node;
+				min_proc_numa_node = numa_loop;
+			}
+		}
+		*numa_node = min_proc_numa_node;
+		VEOS_DEBUG("Least loaded NUMA node = %d", *numa_node);
+	}
+
+	/* Initialize CPU MASK of task */
+	if ((VE_NODE(0)->partitioning_mode) && (*numa_node != -1)) {
+		for (; core_loop < VE_NODE(0)->nr_avail_cores; core_loop++) {
+			if (VE_NODE(0)->p_ve_core[core_loop]->numa_node == *numa_node)
+				CPU_SET(core_loop, &(tsk->cpus_allowed));
+		}
+	} else {
+		for (; core_loop < VE_NODE(0)->nr_avail_cores; core_loop++)
+			CPU_SET(core_loop, &(tsk->cpus_allowed));
+	}
+
+	retval = get_ve_core_n_node_new_ve_proc(tsk, ve_node_id,
+			ve_core_id, numa_node);
 	if (retval < 0) {
 		VEOS_ERROR("Searching for Node/Core for task failed");
 		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_node_lock), UNLOCK,
 				"Failed to release VE node mutex lock");
 		goto free_dma_data;
 	}
+
+	tsk->numa_node = *numa_node;
 
 	/* Insert VE task list for Node and Core task list */
 	insert_ve_task(*ve_node_id, *ve_core_id, tsk);
@@ -2119,8 +2280,9 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 			"Failed to release VE node mutex lock");
 
 	VEOS_DEBUG("Creating NEW VE Process on NODE : %d"
-			"CORE : %d for PID : %d",
-			*ve_node_id, *ve_core_id, pid);
+			" NUMA NODE : %d"
+			" CORE : %d for PID : %d",
+			*ve_node_id, *numa_node, *ve_core_id, pid);
 
 	/* Create VE process structure at driver server */
 	if (0 > vedl_create_ve_task(VE_NODE(0)->handle, pid)) {
@@ -2133,6 +2295,13 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 
 	/* task created on driver, set flag to true */
 	tsk->is_crt_drv = true;
+
+	/* Set memory policy with MPOL_BIND/MPOL_DEFAULT*/
+	retval = veos_set_mempolicy(tsk, mem_policy);
+	if (retval < 0) {
+		VEOS_DEBUG("Failed to set memory policy with retval=%d", retval);
+		goto delete_ve_task;
+	}
 
 	/* Insert the task in it's parent's children list */
 	VEOS_DEBUG("Acquiring tasklist_lock in PID %d", tsk->pid);
@@ -2155,38 +2324,17 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 
 	/* Get SHM/LHM area */
 	if (!rpm_task_create) {
-		tsk->sighand->lshm_addr = (uint64_t)shmat(shmid, NULL, 0);
-		if ((void *)-1 == (void *)tsk->sighand->lshm_addr) {
-			VEOS_ERROR("Failed to attach shared memory");
-			VEOS_DEBUG("Failed to attach shared memory, return "
-					"value %d, mapped value %d",
-					-errno, -EFAULT);
+		/* map the LHM/SHM area of pseudo process in veos */
+		retval = psm_map_lhm_shm_area(tsk, actual_node_id,
+				sfile_name, vaddr);
+		if (retval < 0) {
+			VEOS_ERROR("Failed to map syscall args file");
+			VEOS_DEBUG("Failed to map syscall args file return value "
+					"%d, mapped value %d",
+					retval, -EFAULT);
 			retval = -EFAULT;
 			goto delete_ve_task;
 		}
-
-		/* Saving shmid in task struct to be used by vforked child */
-		tsk->lshmid = shmid;
-
-		/* Store the SHM/LHM address of pseudo process
-		 * in mm_struct.
-		 */
-		tsk->p_ve_mm->shm_lhm_addr = vaddr;
-		VEOS_DEBUG("SHM/LHM address %lx of pid %d",
-				vaddr, tsk->pid);
-
-		tsk->p_ve_mm->shm_lhm_addr_vhsaa = vedl_get_dma_address(VE_HANDLE(0),
-				(void *)(tsk->p_ve_mm->shm_lhm_addr),
-				tsk->pid, 1, 0, 0);
-		if ((uint64_t)-1 == (tsk->p_ve_mm->shm_lhm_addr_vhsaa)) {
-			VEOS_ERROR("VHVA->VHSAA conversion failed for %p",
-					(void *)vaddr);
-			retval = -EFAULT;
-			goto delete_ve_task;
-		}
-		VEOS_DEBUG("Virtual address: %lx Physical address: %lx",
-				tsk->p_ve_mm->shm_lhm_addr,
-				tsk->p_ve_mm->shm_lhm_addr_vhsaa);
 	}
 
 	if (0 != pthread_mutex_init(&(tsk->ptrace_lock), NULL)) {
@@ -2197,7 +2345,21 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 
 	/* Setup VE process tracing information */
 	if (traced == true) {
-		retval = psm_attach_ve_process(tsk, tracer_pid,
+		/* Convert namespace pid to host pid */
+		host_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
+				tracer_pid);
+		if (host_pid <= 0) {
+			VEOS_ERROR("Conversion of namespace to host pid fails");
+			VEOS_DEBUG("PID conversion failed, host: %d"
+					" namespace: %d"
+					" error: %s",
+					pti->cred.pid,
+					tracer_pid,
+					strerror(errno));
+			retval = -errno;
+			goto delete_ve_task;
+		}
+		retval = psm_attach_ve_process(tsk, host_pid,
 				pti->cred.uid, pti->cred.gid, false);
 		if (0 > retval) {
 			VEOS_ERROR("Failed to ATTACH process with pid: %d",
@@ -2338,20 +2500,23 @@ int psm_handle_start_ve_request(struct veos_thread_arg *pti, int pid)
 		"Failed to acquire task lock");
 
 	/* Start time of new VE process is maintained */
-	retval = gettimeofday(&(tsk->start_time), NULL);
-	if (0 != retval) {
-		retval = -errno;
-		VEOS_ERROR("Failed to get the time");
-		goto hndl_return1;
+	/* The birth time of task do not change across exec */
+	if (tsk->rpm_create_task || !tsk->execed_proc) {
+		tsk->rpm_create_task = false;
+		retval = gettimeofday(&(tsk->start_time), NULL);
+		if (0 != retval) {
+			retval = -errno;
+			VEOS_ERROR("Failed to get the time");
+			goto hndl_return1;
+		}
 	}
-
 	if (tsk->ptraced == true) {
 		tsk->ve_task_state = STOP;
 		VEOS_DEBUG("Set state STOP for pid: %d, tracer will"
 				" start this process", tsk->pid);
 	} else
 		psm_set_task_state(tsk, RUNNING);
-
+	retval = 0;
 hndl_return1:
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
 		"Failed to release task lock");
@@ -2433,6 +2598,8 @@ int remove_task_from_core_list(int ve_node_id, int ve_core_id,
 hndl_return1:
 	p_rm_task->next = NULL;
 	ve_atomic_dec(&(VE_NODE(ve_node_id)->num_ve_proc));
+	ve_atomic_dec(&(VE_NODE(ve_node_id)->
+		numa[p_rm_task->numa_node].num_ve_proc));
 	ve_atomic_dec(&(VE_CORE(ve_node_id, ve_core_id)->num_ve_proc));
 	retval = 0;
 hndl_return:
@@ -2515,6 +2682,8 @@ int insert_ve_task(int ve_node_id, int ve_core_id,
 		"Failed to acquire VE node stop mutex lock");
 
 	ve_atomic_inc(&(VE_NODE(ve_node_id)->num_ve_proc));
+	ve_atomic_inc(&(VE_NODE(ve_node_id)->
+		numa[p_ve_task->numa_node].num_ve_proc));
 
 	/* wake up the thread which handles SIGSTOP signal */
 	VEOS_DEBUG("Signal wake up of stopping thread");
@@ -3277,6 +3446,9 @@ int64_t psm_handle_setaffinity_request(pid_t caller, pid_t pid, cpu_set_t mask)
 	proc_t caller_proc_info = {0};
 	cpu_set_t old_mask;
 	CPU_ZERO(&old_mask);
+	struct ve_core_struct *p_ve_core = NULL;
+	struct ve_node_struct *p_ve_node = NULL;
+	int core_loop = 0;
 
 	VEOS_TRACE("Entering");
 	VEOS_DEBUG("Handling set affinity request for PID %d", pid);
@@ -3287,6 +3459,8 @@ int64_t psm_handle_setaffinity_request(pid_t caller, pid_t pid, cpu_set_t mask)
 		retval = -ESRCH;
 		goto hndl_return;
 	}
+
+	p_ve_node = VE_NODE(tsk->node_id);
 	memset(&ve_proc_info, 0, sizeof(proc_t));
 	retval = psm_get_ve_proc_info(pid, &ve_proc_info);
 	if (-1 == retval) {
@@ -3343,22 +3517,42 @@ int64_t psm_handle_setaffinity_request(pid_t caller, pid_t pid, cpu_set_t mask)
 	}
 
 set_affinity:
-	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
-			"Failed to acquire task lock");
+	/*1. Check if VEOS is in partitioning mode
+	 *2. Check all the CPU’s specified in the CPU mask must belong to the
+	 *   NUMA node in which the VE process is executing.
+	 *3. if even one of CPUs specified in CPU mask belongs to another NUMA
+	 *   node return with EINVAL*/
+	if (p_ve_node->partitioning_mode) {
+		for (; core_loop < VE_NODE(0)->nr_avail_cores; core_loop++) {
+			if (!CPU_ISSET(core_loop, &(mask)))
+				continue;
+			p_ve_core = VE_CORE(tsk->node_id, core_loop);
+			if (tsk->numa_node != p_ve_core->numa_node) {
+				VEOS_DEBUG("CPU %d mask belongs "
+						"to another NUMA node",
+						core_loop);
+				retval = -EINVAL;
+				goto hndl_return1;
+			}
+		}
+	}
+        pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
+                        "Failed to acquire task lock");
 	old_mask = tsk->cpus_allowed;
 	tsk->cpus_allowed = mask;
-	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
-			"Failed to release task lock");
+        pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
+                        "Failed to release task lock");
 
 	/* check that after updating the affinity VE process
 	 * need to relocate or not.
 	 */
 	if (!(CPU_ISSET(tsk->core_id, &(tsk->cpus_allowed)))) {
 		retval = get_ve_core_n_node_new_ve_proc(tsk, &node_id,
-				&core_id);
+				&core_id, &tsk->numa_node);
 		if (retval < 0) {
 			VEOS_ERROR("Failed to get Core/Node id");
-			VEOS_DEBUG("Getting VE Node and Core returned %ld", retval);
+			VEOS_DEBUG("Getting VE Node and Core returned"
+					" %ld", retval);
 			retval = -EINVAL;
 			pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
 					"Failed to acquire task lock");
@@ -3742,4 +3936,74 @@ hndl_ret:
 		"Failed to release task lock");
 	VEOS_TRACE("Exiting");
 	return retval;
+}
+
+/**
+ * @brief Finds VE task struct for the given namespace pid of child process
+ *
+ * @param[in] parent_pid Pid of parent process.
+ * @param[in] child_namespace_pid namespace pid of child process
+ *
+ * @return Pointer of ve_task_struct on success or NULL on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+struct ve_task_struct *find_child_ve_task_struct(pid_t parent_pid,
+		pid_t child_namespace_pid)
+{
+	struct ve_task_struct *c_tsk = NULL;
+	struct ve_task_struct *p_tsk = NULL;
+	struct ve_task_struct *tmp_tsk = NULL;
+	struct list_head *p = NULL, *n = NULL;
+
+	VEOS_TRACE("Entering");
+	VEOS_DEBUG("Parent(%d) finding child's(%d) host pid",
+			parent_pid, child_namespace_pid);
+
+	/* find the task struct of parent */
+	p_tsk = find_ve_task_struct(parent_pid);
+	if (NULL == p_tsk) {
+		VEOS_DEBUG("Parent PID %d not found", parent_pid);
+		goto hndl_return;
+	}
+
+	VEOS_DEBUG("Acquiring tasklist_lock");
+	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
+			"Failed to acquire tasklist_lock lock");
+
+	/* Traverse the parent's children list */
+	if (!list_empty(&p_tsk->children)) {
+		list_for_each_safe(p, n, &p_tsk->children) {
+			tmp_tsk = list_entry(p,
+					struct ve_task_struct,
+					siblings);
+			if (tmp_tsk->namespace_pid == child_namespace_pid) {
+				VEOS_DEBUG("Found Child PID %d namespace %d",
+						tmp_tsk->pid,
+						tmp_tsk->namespace_pid);
+				if (get_ve_task_struct(tmp_tsk)) {
+					VEOS_DEBUG("failed to get "
+							"task reference: %d",
+							tmp_tsk->pid);
+					break;
+				}
+				c_tsk = tmp_tsk;
+				break;
+			}
+		}
+	} else {
+		VEOS_DEBUG("No child exists for Parent %d", parent_pid);
+	}
+
+	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
+			"Failed to release tasklist_lock lock");
+	VEOS_DEBUG("Released tasklist_lock");
+hndl_return:
+	/* Release the reference of parent task struct */
+	if (p_tsk)
+		put_ve_task_struct(p_tsk);
+
+	VEOS_TRACE("Exiting");
+	return c_tsk;
 }

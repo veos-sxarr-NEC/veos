@@ -1771,7 +1771,6 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *curr_ve_task,
 		/* Set ATB and ATB image */
 		VEOS_DEBUG("Set ATB context");
 		ret = psm_sync_hw_regs(task_to_schedule, _ATB,
-				&task_to_schedule->p_ve_mm->atb,
 				false, 0, DIR_CNT);
 		if (0 > ret) {
 			VEOS_ERROR("Set atb context failed");
@@ -1821,7 +1820,6 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *curr_ve_task,
 	if (task_to_schedule->atb_dirty) {
 		VEOS_DEBUG("Set ATB context");
 		ret = psm_sync_hw_regs(task_to_schedule, _ATB,
-				&task_to_schedule->p_ve_mm->atb,
 				false, 0, 32);
 		if (-1 == ret) {
 			VEOS_ERROR("Setting ATB context failed");
@@ -2004,7 +2002,7 @@ veos_update_crd_fail:
 *
 * @return -1 on success and 0 on failure.
 */
-int veos_update_atb(uint64_t core_set, void *reg_sw, int dir_num,
+int veos_update_atb(uint64_t core_set, int dir_num,
 		int count, struct ve_task_struct *tsk)
 {
 	int loop_cnt = 0;
@@ -2021,11 +2019,10 @@ int veos_update_atb(uint64_t core_set, void *reg_sw, int dir_num,
 			VEOS_DEBUG("Update ATB for Core %d",
 					core_loop);
 			for (loop_cnt = dir_num; loop_cnt < dir_num + count; loop_cnt++) {
-				if (vedl_update_atb_dir(VE_HANDLE(0),
-							VE_CORE_SYS_REG_ADDR(0,
-								core_loop),
-							(atb_reg_t *)reg_sw,
-							loop_cnt)) {
+				if (amm_update_atb_dir(VE_HANDLE(0),
+								core_loop,
+								tsk,
+								dir_num)) {
 					VEOS_ERROR("Updating ATB directory failed in driver");
 					retval = -1;
 					goto veos_update_atb_fail;
@@ -2142,7 +2139,6 @@ veos_update_dmaatb_fail:
 *
 * @param ve_task Pointer to VE task structure
 * @param reg_type enum denoting register type ATB/DMAATB/CRD
-* @param reg_sw Pointer containing the address of software image of register
 * @param halt_all Flag which denotes syncing will be done for thread group
 *		or only thread
 * @param dir_num Directory number
@@ -2152,7 +2148,6 @@ veos_update_dmaatb_fail:
 */
 int psm_sync_hw_regs(struct ve_task_struct *ve_task,
 		regs_t reg_type,
-		void *reg_sw,
 		bool halt_all,
 		int dir_num,
 		int count)
@@ -2161,11 +2156,14 @@ int psm_sync_hw_regs(struct ve_task_struct *ve_task,
 	int loop_cnt = 0;
 	int retval = 0;
 	reg_t *exception_arr = NULL;
+	struct ve_mm_struct *mm = ve_task->p_ve_mm;
+	struct ve_node_struct *vnode = VE_NODE(0);
 
 	VEOS_TRACE("Entering");
 
 	VEOS_DEBUG("PID %d dir_num %d count %d reg_typ %d",
 			ve_task->pid, dir_num, count, reg_type);
+
 	exception_arr = (reg_t *)malloc(
 			VE_NODE(0)->nr_avail_cores * sizeof(reg_t));
 	if (!exception_arr) {
@@ -2189,7 +2187,7 @@ int psm_sync_hw_regs(struct ve_task_struct *ve_task,
 				VEOS_DEBUG("Core set %ld", core_set);
 				VEOS_DEBUG("Syncing ATB");
 				/* Update ATB on all core in core set */
-				retval = veos_update_atb(core_set, reg_sw,
+				retval = veos_update_atb(core_set,
 						dir_num, count,
 						ve_task);
 				if (-1 == retval) {
@@ -2200,11 +2198,10 @@ int psm_sync_hw_regs(struct ve_task_struct *ve_task,
 		} else {
 			for (loop_cnt = dir_num; loop_cnt < dir_num + count
 					; loop_cnt++) {
-				retval = vedl_update_atb_dir(VE_HANDLE(0),
-						VE_CORE_SYS_REG_ADDR(0,
-							ve_task->core_id),
-						(atb_reg_t *)reg_sw,
-						loop_cnt);
+				retval = amm_update_atb_dir(VE_HANDLE(0),
+							ve_task->core_id,
+							ve_task,
+							loop_cnt);
 				if (0 > retval) {
 					VEOS_ERROR("Update ATB failed in driver");
 					goto hndl_failure;
@@ -2221,7 +2218,8 @@ int psm_sync_hw_regs(struct ve_task_struct *ve_task,
 			if (psm_check_sched_jid_core(&core_set,
 						ve_task, reg_type, exception_arr)) {
 				/* Update DMAATB on all core in core set */
-				retval = veos_update_dmaatb(core_set, reg_sw,
+				retval = veos_update_dmaatb(core_set,
+						&(vnode->dmaatb),
 						dir_num, count, ve_task, exception_arr);
 				if (-1 == retval) {
 					VEOS_ERROR("Update DMAATB failed in VEOS");
@@ -2240,7 +2238,7 @@ directly_update_dmaatb:
 					; loop_cnt++) {
 				retval = vedl_update_dmaatb_dir(VE_HANDLE(0),
 						VE_CORE_CNT_REG_ADDR(0),
-						(dmaatb_reg_t *)reg_sw,
+						&(vnode->dmaatb),
 						loop_cnt);
 				if (0 > retval) {
 					VEOS_ERROR("Update DMAATB failed in driver");
@@ -2256,11 +2254,13 @@ directly_update_dmaatb:
 			 * and update CRD */
 			VEOS_DEBUG("Mark CRD DIRTY for thread group");
 			update_atb_crd_dirty(ve_task, reg_type);
-			if (psm_check_sched_jid_core(&core_set, ve_task, reg_type, exception_arr)) {
+			if (psm_check_sched_jid_core(&core_set,
+						ve_task, reg_type, exception_arr)) {
 				VEOS_DEBUG("Core set %ld", core_set);
 				VEOS_DEBUG("Syncing CRD");
 				/* Update ATB on all core in core set */
-				retval = veos_update_crd(core_set, reg_sw,
+				retval = veos_update_crd(core_set,
+						mm->crd,
 						dir_num, count,
 						ve_task);
 				if (-1 == retval) {
@@ -2270,7 +2270,7 @@ directly_update_dmaatb:
 			}
 		} else {
 			/* Update CRD */
-			retval = amm_set_crd((crd_t *)reg_sw, dir_num, ve_task->core_id,
+			retval = amm_set_crd(mm->crd, dir_num, ve_task->core_id,
 					sizeof(reg_t) * count);
 			if (-1 == retval) {
 				VEOS_ERROR("Setting CRD failed");
@@ -2520,8 +2520,11 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 	int core_loop;
 	int rebalance_flag = 0;
 	struct ve_core_struct *p_another_core;
+	struct ve_core_struct *p_given_core;
 
 	VEOS_TRACE("Entering");
+
+	p_given_core = VE_CORE(ve_node_id, ve_core_id);
 
 	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores;
 			core_loop++) {
@@ -2539,13 +2542,16 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 				"Failed to acquire Core %d read lock",
 				p_another_core->core_num);
 
-		if(NULL == p_another_core->ve_task_list) {
+		if((NULL == p_another_core->ve_task_list) ||
+				(p_another_core->numa_node
+				 != p_given_core->numa_node)) {
 			pthread_rwlock_lock_unlock(
 					&(p_another_core->ve_core_lock),
 					UNLOCK,
 					"Failed to release core's write lock");
 			continue;
 		}
+
 		if (p_another_core->curr_ve_task) {
 			task_to_rebalance = p_another_core->curr_ve_task->next;
 			loop_start = p_another_core->curr_ve_task;
@@ -2593,6 +2599,8 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 			}
 
 			ve_atomic_dec(&(VE_NODE(ve_node_id)->num_ve_proc));
+			ve_atomic_dec(&(VE_NODE(ve_node_id)->
+					numa[p_another_core->numa_node].num_ve_proc));
 			ve_atomic_dec(&(p_another_core->num_ve_proc));
 
 			pthread_rwlock_lock_unlock(
@@ -2661,6 +2669,8 @@ void insert_and_update_task_to_rebalance(
 	ve_atomic_inc(&(VE_CORE(ve_node_id, ve_core_id)->num_ve_proc));
 
 	ve_atomic_inc(&(VE_NODE(ve_node_id)->num_ve_proc));
+	ve_atomic_inc(&(VE_NODE(ve_node_id)->
+		numa[task_to_rebalance->numa_node].num_ve_proc));
 	if (RUNNING == task_to_rebalance->ve_task_state) {
 		ve_atomic_inc(&(VE_CORE(ve_node_id, ve_core_id)->nr_active));
 		VEOS_DEBUG("Core[%d] active task[%d]",

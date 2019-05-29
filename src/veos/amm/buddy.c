@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2019 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -301,7 +301,7 @@ int __veos_init_huge_page_entry(struct buddy_mempool *mp,
 * @param[in] mp buddy mempool.
 * @param[in] pgmod page mode.
 * @param[out] map page number array to store allocated page.
-* @return  return 0 on success and  negative of errno on failure.
+* @return  return idx on success and  negative of errno on failure.
 */
 int veos_page_entry(struct buddy_mempool *mp,
 		uint64_t pgmod, pgno_t *map)
@@ -352,6 +352,7 @@ int veos_page_entry(struct buddy_mempool *mp,
 	}
 
 	VEOS_TRACE("returned");
+	ret = idx;
 	return  ret;
 }
 
@@ -398,10 +399,11 @@ void *buddy_non_compac_alloc(struct buddy_mempool *mp, int order)
 *
 * @param[in] page_num page number to be free.
 * @param[in] pgmod page mode(2MB/64MB).
+* @param[in] mp_num mempool number.
 *
 * @return return 0 on suceess and negative of errno on failure.
 */
-int veos_delloc_memory(uint64_t page_num, uint64_t pgmod)
+int veos_delloc_memory(uint64_t page_num, uint64_t pgmod, int mp_num)
 {
 	struct block *free_block = NULL;
 	struct ve_node_struct *vnode = VE_NODE(0);
@@ -424,7 +426,7 @@ int veos_delloc_memory(uint64_t page_num, uint64_t pgmod)
 	VEOS_DEBUG("freeing buddy blk(%p) with start 0x%lx and order %ld",
 			free_block, free_block->start, free_block->order);
 
-	buddy_free(vnode->mp, free_block);
+	buddy_free(vnode->numa[mp_num].mp, free_block);
 	VEOS_TRACE("returned");
 	return 0;
 }
@@ -716,6 +718,106 @@ struct buddy_mempool *veos_buddy_init(uint64_t start_addr, size_t mem_size, size
 	VEOS_TRACE("returned");
 	return mempool;
 }
+
+/**
+* @brief This function will intialize the buddy mempool for NUMA.
+*
+* @param[in] start_addr starting address of memory.
+* @param[in] mem_size size of memory.
+* @param[in] min_pgsz size of memory.
+* @param[in] unit_num the number of unit divided physical memory.
+* @param[in] blk_sz memory block size of divided physical memory.
+*
+* @return on success in returns mempool and of failure NULL.
+*/
+struct buddy_mempool *veos_numa_buddy_init(uint64_t start_addr, size_t mem_size,
+					size_t min_pgsz, int unit_num, size_t blk_sz)
+{
+	uint64_t nr_pages = 0;
+	size_t f_mx_size = 0;
+	struct block *new_blk = NULL;
+	struct buddy_mempool *mempool = NULL;
+	int nr_memblk_pages = 0;
+	int i = 0;
+	struct ve_node_struct *vnode = VE_NODE(0);
+
+	VEOS_TRACE("invoked");
+	VEOS_DEBUG("buddy memory size is 0x%lx", mem_size/vnode->numa_count);
+
+	if ((unit_num >= vnode->numa_count) || (unit_num < 0)) {
+		VEOS_ERROR("Invalid physical memory unit number %d",
+			   unit_num);
+		return NULL;
+	}
+
+	if (start_addr != 0) {
+		VEOS_ERROR("Invalid start address 0x%lx, unit number %d",
+			start_addr, unit_num);
+		return NULL;
+	}
+
+	if ((mem_size % min_pgsz != 0) || (blk_sz % min_pgsz != 0)) {
+		VEOS_ERROR("Invalid mem size 0x%lx, "
+				"block size 0x%lx of unit number %d",
+				mem_size, blk_sz, unit_num);
+		return NULL;
+	}
+
+	f_mx_size = roundown_pow_of_two(mem_size/vnode->numa_count);
+
+	VEOS_DEBUG("First max size : 0x%lx", f_mx_size);
+
+	mempool = buddy_init(start_addr, size_to_order(f_mx_size),
+			size_to_order(min_pgsz));
+	if (mempool == NULL) {
+		VEOS_ERROR("Error (%s) in buddy initailzaition",
+				strerror(errno));
+		return NULL;
+	}
+
+	/* numa node total memory size */
+	nr_memblk_pages = mem_size / blk_sz;
+	VEOS_INFO("NUMA: unit:%d  size of mem block:%dMB "
+			"total pages of numa node:%d",
+			unit_num, (int)((blk_sz / 1024) / 1024),
+			nr_memblk_pages);
+
+	for (i = nr_memblk_pages-1; i >= 0; i--) {
+		if ((i % vnode->numa_count) == unit_num) {
+
+			new_blk = (struct block *)calloc(1, sizeof(struct block));
+			if (new_blk == NULL) {
+				VEOS_ERROR("error(%s) while allocating memory to buddy block",
+					   strerror(errno));
+				buddy_deinit(mempool);
+				return NULL;
+			}
+
+			new_blk->start = (start_addr
+					  + blk_sz * i);
+			new_blk->order = size_to_order(blk_sz);
+
+			buddy_free(mempool, new_blk);
+
+			nr_pages += (blk_sz / min_pgsz);
+		}
+	}
+
+	/*Now remaining memory ignore*/
+
+	mempool->base_addr = start_addr;
+	mempool->total_pages = nr_pages;
+	mempool->small_page_used = 0;
+	mempool->huge_page_used = 0;
+
+	VEOS_DEBUG("memory pool base address(0%lx), first mem node (%d), unit number(%d)",
+			mempool->base_addr, numa_sys_info.first_mem_node, unit_num);
+	VEOS_DEBUG("total number of pages(%ld)", mempool->total_pages);
+
+	VEOS_TRACE("returned");
+	return mempool;
+}
+
 /**
 * @brief Initializes a buddy system memory allocator object.
 *
@@ -1018,7 +1120,8 @@ buddy_dump_mempool(struct buddy_mempool *mp)
 */
 void veos_dump_ve_pages(void)
 {
-	int pg_idx = 0;
+	int pg_idx = 0, idx = 0;
+	uint64_t total_pages = 0;
 	struct ve_node_struct *vnode_info = VE_NODE(0);
 	struct ve_page **ve_pages = vnode_info->ve_pages;
 
@@ -1027,11 +1130,13 @@ void veos_dump_ve_pages(void)
 		return;
 	}
 
+	for (idx = 0; idx < vnode_info->numa_count; idx++)
+		total_pages += vnode_info->numa[idx].mp->total_pages;
+
 	VEOS_DEBUG("================================== NODE VE PAGES DUMP ================================");
 	VEOS_DEBUG("PAGE NO	PAGE START	AMM_COUNT      DMA_COUNT	BUDDY_ORDER	PG MODE");
 	VEOS_DEBUG("--------------------------------------------------------------------------------------");
-	for (pg_idx = 0; pg_idx < vnode_info->
-				mp->total_pages; pg_idx++) {
+	for (pg_idx = 0; pg_idx < total_pages; pg_idx++) {
 		if ((ve_pages[pg_idx] != NULL) &&
 				(ve_pages[pg_idx] != (struct ve_page *)-1)) {
 				VEOS_DEBUG("%5d%15lx%15ld%15ld%15d%15s",
@@ -1041,7 +1146,7 @@ void veos_dump_ve_pages(void)
 					ve_pages[pg_idx]->buddy_order,
 				(ve_pages[pg_idx]->
 					pgsz == PAGE_SIZE_2MB)
-				? "SMALL":"HUGE");
+				? "SMALL" : "HUGE");
 		}
 	}
 	VEOS_DEBUG("--------------------------------------------------------------------------------------");
@@ -1054,6 +1159,7 @@ void veos_dump_ve_pages(void)
  * @param[in] pgmod page mode.
  *
  * @return return total size of free block.
+ *		even if mp is NULL,return 0.
  */
 size_t calc_free_sz(struct buddy_mempool *mp, int pgmod)
 {
@@ -1063,6 +1169,7 @@ size_t calc_free_sz(struct buddy_mempool *mp, int pgmod)
 	struct list_head *list = NULL;
 	struct block *curr_blk = NULL, *tmp_blk = NULL;
 
+	/* Even if mp is NULL, retrun 0 */
 	if (mp == NULL) {
 		VEOS_DEBUG("Invalid mempool.");
 		return 0;
@@ -1081,6 +1188,31 @@ size_t calc_free_sz(struct buddy_mempool *mp, int pgmod)
 		list_for_each_entry_safe(curr_blk, tmp_blk, list, link) {
 			sz += (1UL << curr_blk->order);
 		}
+	}
+	return sz;
+}
+
+/**
+ * @brief This function will calculate total size of alloc_req_list.
+ *
+ * @param[in] mp VE Buddy mempool.
+ *
+ * @return return total size of allocated block.
+ *		even if mp is NULL,return 0.
+ */
+size_t calc_allocated_sz(struct buddy_mempool *mp)
+{
+	size_t sz = 0;
+	struct block *curr_blk = NULL, *tmp_blk = NULL;
+
+	/* Even if mp is NULL, retrun 0 */
+	if (mp == NULL) {
+		VEOS_DEBUG("Invalid mempool.");
+		return 0;
+	}
+
+	list_for_each_entry_safe(curr_blk, tmp_blk, mp->alloc_req_list, link) {
+		sz += (1UL << curr_blk->order);
 	}
 	return sz;
 }

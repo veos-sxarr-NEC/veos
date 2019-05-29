@@ -31,6 +31,8 @@ long sys_vhcall_invoke(veos_handle *, int64_t, uintptr_t, size_t, uintptr_t,
 		       size_t);
 int sys_vhcall_uninstall(veos_handle *, vhcall_handle);
 int sys_system(veos_handle *, uintptr_t, size_t);
+int sys_vhcall_invoke_with_args(veos_handle *, int64_t, uintptr_t, size_t,
+				uintptr_t);
 #endif
 
 /* Used for log4c logging in veos module */

@@ -243,11 +243,10 @@ int psm_rpm_handle_pidstat_req(int pid, struct velib_pidstat *pidstat)
 		break;
 	}
 
-	/* Fields of struct velib_pidstat like ppid, processor,
+	/* Fields of struct velib_pidstat like processor,
 	 * priority, nice, policy are obtained directly from VE task
 	 * struct.
 	 */
-	pidstat->ppid = tsk->parent->pid;
 	pidstat->processor = tsk->p_ve_core->core_num;
 	pidstat->priority = tsk->priority + PRIO_MASK;
 	pidstat->nice = tsk->priority;
@@ -356,14 +355,14 @@ int psm_rpm_handle_get_rusage_req(int pid, struct velib_get_rusage_info *ve_ru)
 
 	VEOS_TRACE("Entering");
 	if (!ve_ru)
-		goto hndl_return;
+		goto hndl_return1;
 
 	/* Find the pointer of VE task struct from given pid */
 	tsk = find_ve_task_struct(pid);
 	if (NULL == tsk) {
 		VEOS_ERROR("PID: %d not found", pid);
 		retval = -ESRCH;
-		goto hndl_return;
+		goto hndl_return1;
 	}
 
 	retval = psm_handle_get_rusage_request(tsk, RUSAGE_CHILDREN, &ve_r_child);

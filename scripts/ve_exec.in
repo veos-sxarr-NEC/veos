@@ -19,6 +19,9 @@
 # 4. "-h" and "--help" optional argument to display the help information of
 #	wrapper.
 # 5. "--traceme" for internal use only
+# 6. "--cpunodebind" optional argument specify NUMA node ID on which VE program
+#        to be executed.
+# 7. "--localmembind" optional argument set memory policy to MPOL_BIND.
 
 
 #update PATH_VE_EXEC with the path of ve_exec of your system.
@@ -36,28 +39,77 @@ flag_traceme=0
 
 VE_NODE=0
 VE_CORE=-1
+ve_core_given=0
+NUMA_NODE_ID=-1
+flag_membind=0
 node_given=0
+numa_node_id_given=0
 
 if [ ! -x "$PATH_VE_EXEC" ] ; then
 	echo "ERROR: acutal ve_exec is not found in path: ${PATH_VE_EXEC}"
 	exit 1
 fi
 
-#to display wrapper script usage
-usage() {
+normal_help_message() {
 echo "Usage: ${0} [options] binary [arguments]
 Options:
-  -V, --version			output version information and exit
-  -h, --help			display this help and exit
-  -N node, --node=<node>	where node is the VE Node number
-				on which VE program belongs
-  -c core, --core=<core>	where core is the VE core number on
-				which VE program to be executed
-  --				End of options (Requires if binary name
-				starts with ‘-’)
+  -V, --version                 output version information and exit
+  -h, --help                    display this help and exit
+  -N node, --node=<node>        where node is the VE Node number
+                                on which VE program belongs
+  -c core, --core=<core>        where core is the VE core number on
+                                which VE program to be executed
+  --                            End of options (Requires if binary name
+                                starts with ‘-’)
 ENVIRONMENT VARIABLE
-  VE_NODE_NUMBER		provides the VE node number
+  VE_NODE_NUMBER                provides the VE node number
   If -N option is specified, this environment variable is ignored."
+}
+
+partitioning_help_message() {
+echo "Usage: ${0} [options] binary [arguments]
+Options:
+  -V, --version                 output version information and exit
+  -h, --help                    display this help and exit
+  -N node, --node=<node>        where node is the VE Node number
+                                on which VE program belongs
+  -c core, --core=<core>        where core is the VE core number on
+                                which VE program to be executed
+                                Can't specify both '-c' and '--cpunodebind'
+  --cpunodebind=<NUMA node ID>  Specify NUMA node ID on which VE program
+                                to be executed
+  --localmembind                Memory policy is set to MPOL_BIND
+  --                            End of options (Requires if binary name
+                                starts with ‘-’)
+ENVIRONMENT VARIABLE
+  VE_NODE_NUMBER                provides the VE node number
+  If -N option is specified, this environment variable is ignored.
+
+  VE_NUMA_OPT                   provide NUMA node ID, set memory policy too
+  If NUMA node ID  or memory policy are specified as command line argument
+  then the values passed in this environment variable will be ignored."
+}
+
+#to display wrapper script usage
+usage() {
+        if [[ ${node_given} -eq 0 && -n ${VE_NODE_NUMBER} ]]; then
+                VE_NODE=${VE_NODE_NUMBER};
+        fi
+
+        sysfs_path=/sys`/usr/bin/udevadm info -q path \
+				/dev/veslot$VE_NODE 2> /dev/null`
+        retval=$?
+        if [ $retval -ne 0 ]; then
+                normal_help_message;
+                return;
+        fi
+
+        ve_mode=`cat $sysfs_path/partitioning_mode`
+        if [ $ve_mode -ne 0 ]; then
+                partitioning_help_message;
+        else
+                normal_help_message;
+        fi
 }
 
 if [ "$#" -lt 1 ]; then
@@ -67,7 +119,9 @@ if [ "$#" -lt 1 ]; then
 fi
 
 #read the options
-TEMP=`getopt -o "+VhN:c:" --long version,help,traceme,node:,core: -- "$@"`
+TEMP=`getopt -o "+VhN:c:" \
+	--long version,help,traceme,localmembind,node:,core:,cpunodebind: \
+	-- "$@"`
 retval=$?
 if [ $retval -ne 0 ]; then
 	usage;
@@ -96,9 +150,20 @@ while true ; do
 			case "$2" in
 				"") shift 2 ;;
 				*) VE_CORE=$2;
+				ve_core_given=1;
 				shift 2 ;
 			esac ;;
-		--traceme)
+	    --cpunodebind)
+			case "$2" in
+				"") shift 2 ;;
+				*) NUMA_NODE_ID=$2;
+				numa_node_id_given=1;
+				shift 2 ;
+			esac ;;
+	    --localmembind)
+                       flag_membind=1;
+                       shift ;;
+		 --traceme)
 			flag_traceme=1;
 			shift;;
 		--)
@@ -115,11 +180,45 @@ while true ; do
 	esac
 done
 
+if [[ ${node_given} -eq 0 && -n ${VE_NODE_NUMBER} ]]; then
+	VE_NODE=${VE_NODE_NUMBER};
+fi
+
+#parsing VE_NUMA_OPT environment variable and checking combination
+#for VE_NUMA_OPT
+if [[ ${numa_node_id_given} -eq 0 || ${flag_membind} -eq 0
+	&& -n $VE_NUMA_OPT ]]; then
+	for num_opt_var in $(echo $VE_NUMA_OPT | sed "s/' '//g")
+	do
+		if [[ $num_opt_var == "--localmembind" ]]
+		then
+			flag_membind=1;
+                elif [[ $num_opt_var =~ '--cpunodebind=' ]]
+                then
+			if [[ ${numa_node_id_given} -eq 0 ]]; then
+				NUMA_NODE_ID=$(echo $num_opt_var |\
+						 sed 's/--cpunodebind=//g')
+				numa_node_id_given=1;
+			fi
+		else
+			echo “ERROR: Invalid argument passed to VE_NUMA_OPT”
+			exit 1;
+		fi
+	done
+fi
+
+if [[ ${numa_node_id_given} -eq 1 && ${ve_core_given} -eq 1 ]]; then
+        echo "ERROR: 'Core id' and 'NUMA node ID' cannot be passed together"
+        exit 1;
+fi
+
+
 re='^[0-9]+$'
 if ! [[ ${VE_NODE} =~ $re ]] ; then
 	echo "ERROR: '$VE_NODE' is not a valid node number"
 	exit 1;
 fi
+
 
 if  [[ ${VE_CORE} == -1 ]] ; then
         :
@@ -128,6 +227,14 @@ elif ! [[ ${VE_CORE} =~ $re ]] ; then
         exit 1;
 
 fi
+
+if  [[ ${NUMA_NODE_ID} == -1 ]] ; then
+        :
+elif ! [[ ${NUMA_NODE_ID} =~ $re ]] ; then
+	echo "ERROR: '$NUMA_NODE_ID' is not a valid numa node id"
+	exit 1;
+fi
+
 
 ve_arg=( $@ )
 if ! [ -e "$ve_arg" ]; then
@@ -138,10 +245,6 @@ fi
 if ! [ -x "$ve_arg" ]; then
 	echo "ERROR: '$ve_arg' is not a valid executable"
 	exit 1;
-fi
-
-if [[ ${node_given} -eq 0 && -n ${VE_NODE_NUMBER} ]]; then
-	VE_NODE=${VE_NODE_NUMBER};
 fi
 
 export VE_NODE_NUMBER=$VE_NODE
@@ -155,6 +258,10 @@ if [ ${flag_traceme} -eq 1 ]; then
 	PATH_VE_EXEC=$(printf '%s --traceme' "${PATH_VE_EXEC}");
 fi
 
+if [ ${flag_membind} -eq 1 ]; then
+	PATH_VE_EXEC=$(printf '%s --localmembind' "${PATH_VE_EXEC}");
+fi
+
 if ! [ -L $sock_driver ]; then
 	echo "Node '$VE_NODE' is Offline"
 	exit 1;
@@ -165,8 +272,8 @@ if ! [ -e $sock_veos ]; then
 	exit 1;
 fi
 
-PATH_VE_EXEC="${PATH_VE_EXEC} -d ${sock_driver} -s ${sock_veos} -c ${VE_CORE}";
-
+PATH_VE_EXEC="${PATH_VE_EXEC} -d ${sock_driver} -s ${sock_veos} -c ${VE_CORE}
+		--cpunodebind=${NUMA_NODE_ID}";
 #executes the actual ve_exec binary
 	exec $PATH_VE_EXEC -- "${@}"
 exit 0

@@ -277,9 +277,13 @@ int psm_restore_ve_context(struct ve_task_struct *ve_task_curr)
 	pthread_mutex_lock_unlock(&(ve_task_curr->ve_task_lock), UNLOCK,
 				"failed to release task lock");
 	if (p_ve_sigframe.flag == SYNCHRONOUS_SIGNAL) {
-		VEOS_DEBUG("Signal: %d sent to %d", p_ve_sigframe.signum
-				, ve_task_curr->pid);
-		kill(ve_task_curr->pid, p_ve_sigframe.signum);
+		VEOS_DEBUG("Signal: %d sent to pid[%d] namespace pid[%d]",
+			p_ve_sigframe.signum, ve_task_curr->pid,
+				ve_task_curr->namespace_pid);
+		if (1 == ve_task_curr->namespace_pid)
+			kill(ve_task_curr->pid, SIGKILL);
+		else
+			kill(ve_task_curr->pid, p_ve_sigframe.signum);
 		retval = -1;
 		return retval;
 	}
@@ -1095,7 +1099,7 @@ int ve_getframe(struct ve_task_struct *p_ve_task,
 	}
 	frame_vir_addrs = ALIGN_RD(frame_vir_addrs, 8);
 	frame_phy_addrs[0] = __veos_virt_to_phy(frame_vir_addrs,
-			&(p_ve_task->p_ve_mm->atb), NULL, &pgmod);
+			&(p_ve_task->p_ve_mm->atb[0]), NULL, &pgmod);
 	if (0 > frame_phy_addrs[0]) {
 		ret = -1;
 		goto error_return;
@@ -1105,7 +1109,7 @@ int ve_getframe(struct ve_task_struct *p_ve_task,
 
 	if (aligned_addr - frame_vir_addrs < sizeof(struct sigframe)) {
 		frame_phy_addrs[1] = __veos_virt_to_phy(aligned_addr,
-				&(p_ve_task->p_ve_mm->atb), NULL, &pgmod);
+				&(p_ve_task->p_ve_mm->atb[0]), NULL, &pgmod);
 		if (0 > frame_phy_addrs[1]) {
 			ret = -1;
 			goto error_return;
@@ -1561,7 +1565,9 @@ int ve_format_core_filename(struct ve_corename *ve_corefname,
 				/* pid */
 			case 'p':
 				retval = ve_vsnprintf(ve_corefname,
-						"%d", p_ve_task->tgid);
+						"%d",
+						p_ve_task->group_leader->
+						namespace_pid);
 				pid_in_pattern = 1;
 				break;
 				/* hostname */
@@ -1624,20 +1630,20 @@ out:
 		else
 			retval = ve_vsnprintf(ve_corefname, "%s%s",
 					p_ve_task->ve_exec_path
-					, ve_corefname->corename);
+					, ve_corefname->core_pattern);
 		ve_corefname->use_all = 0;
 		if (retval)
 			goto free_pattern;
 	} else {
 		VEOS_DEBUG("ve_exec path is not appended, core file will"
-				" form according core pattern format");
+				" form according to core pattern format");
 	}
 
 append_pid:
 	/* append PID and "ve" to filename by default */
 	if (!pid_in_pattern) {
 		retval = ve_vsnprintf(ve_corefname, ".%d.ve"
-						, p_ve_task->tgid);
+				, p_ve_task->group_leader->namespace_pid);
 	} else {
 		retval = ve_vsnprintf(ve_corefname, ".%s"
 						, "ve");
@@ -1742,6 +1748,9 @@ void *do_ve_coredump(void *ve_dump_info)
 	int retval = -1;
 	int needed;
 	char *sockfd = NULL;
+	char *str_pid = NULL;
+	char *str_gid = NULL;
+	char *str_uid = NULL;
 	int signum = -1;
 	struct ve_task_struct *p_ve_task
 		= ((struct dump_info *)ve_dump_info)->ve_task;
@@ -1765,8 +1774,10 @@ void *do_ve_coredump(void *ve_dump_info)
 
 
 	VEOS_DEBUG("Coredumper thread[%ld] Initiating Coredump for PID"
-			" %d, TGID: %d", syscall(186), p_ve_task->pid,
-			p_ve_task->tgid);
+			" %d, TGID: %d TGID(namespace): %d", syscall(186),
+			p_ve_task->pid,
+			p_ve_task->group_leader->pid,
+			p_ve_task->group_leader->namespace_pid);
 
 	pthread_mutex_lock_unlock(&(p_ve_task->sighand->del_lock), LOCK,
 			"Failed to acquire thread group delete lock");
@@ -1827,27 +1838,51 @@ void *do_ve_coredump(void *ve_dump_info)
 	memset(sockfd, '\0', needed + 1);
 	snprintf(sockfd, needed + 1, "%d", socket_fd[0]);
 
+	needed = snprintf(NULL, 0, "%d", p_ve_task->pid);
+	str_pid = (char *)malloc(needed + 1);
+	if (NULL == str_pid) {
+		VEOS_CRIT("[%d] Failed to allocate buffer to store"
+				" pid", p_ve_task->pid);
+		close(socket_fd[0]);
+		goto free_sock;
+	}
+	memset(str_pid, '\0', needed + 1);
+	snprintf(str_pid, needed + 1, "%d", p_ve_task->pid);
+
+	needed = snprintf(NULL, 0, "%ld", p_ve_task->gid);
+	str_gid = (char *)malloc(needed + 1);
+	if (NULL == str_gid) {
+		VEOS_CRIT("[%d] Failed to allocate buffer to store"
+				" gid", p_ve_task->pid);
+		close(socket_fd[0]);
+		goto free_str_pid;
+	}
+	memset(str_gid, '\0', needed + 1);
+	snprintf(str_gid, needed + 1, "%ld", p_ve_task->gid);
+
+	needed = snprintf(NULL, 0, "%ld", p_ve_task->uid);
+	str_uid = (char *)malloc(needed + 1);
+	if (NULL == str_uid) {
+		VEOS_CRIT("[%d] Failed to allocate buffer to store"
+				" uid", p_ve_task->pid);
+		close(socket_fd[0]);
+		goto free_str_gid;
+	}
+	memset(str_uid, '\0', needed + 1);
+	snprintf(str_uid, needed + 1, "%ld", p_ve_task->uid);
+
 	helper_pid = fork();
 	if (-1 == helper_pid) {
 		VEOS_ERROR("[%d] Failed to create coredump helper process",
 				p_ve_task->pid);
 		close(socket_fd[0]);
-		goto free_sock;
+		goto free_str_uid;
 	} else if (0 == helper_pid) {
-		if (-1 == setgid(p_ve_task->gid)) {
-			close(socket_fd[0]);
-			close(socket_fd[1]);
-			_exit(1);
-		}
-		if (-1 == setuid(p_ve_task->uid)) {
-			close(socket_fd[0]);
-			close(socket_fd[1]);
-			_exit(1);
-		}
 		close(socket_fd[1]);
 		execle(HELPER_PATH, "ve_coredump_helper",
-			ve_corefname.corename, sockfd, (char *)NULL,
-			(char *)NULL);
+			ve_corefname.corename, sockfd,
+			str_pid, str_gid, str_uid,
+			(char *)NULL, (char *)NULL);
 		close(socket_fd[0]);
 		_exit(1);
 	}
@@ -1858,7 +1893,7 @@ void *do_ve_coredump(void *ve_dump_info)
 	if (-1 == ve_cprm.fd) {
 		VEOS_ERROR("[%d] Failed to receive ve core file"
 				" descriptor", p_ve_task->pid);
-		goto free_sock;
+		goto free_str_uid;
 	}
 
 	/* Perform ELF dump(take care of the following points).
@@ -1872,6 +1907,12 @@ void *do_ve_coredump(void *ve_dump_info)
 
 close_fd:
 	close(ve_cprm.fd);
+free_str_uid:
+	free(str_uid);
+free_str_gid:
+	free(str_gid);
+free_str_pid:
+	free(str_pid);
 free_sock:
 	free(sockfd);
 free_corefname:
@@ -1883,8 +1924,13 @@ hndl_err:
 	p_ve_task->sighand->signal_flag = VE_SIGNAL_GROUP_EXIT;
 
 	if (SYNCHRONOUS_SIGNAL == ((struct dump_info *)ve_dump_info)->flag) {
-		VEOS_DEBUG("Signal %d sent to %d", signum, p_ve_task->pid);
-		kill(p_ve_task->pid, signum);
+		VEOS_DEBUG("Signal: %d sent to pid[%d] namespace pid[%d]",
+					signum, p_ve_task->pid,
+					p_ve_task->namespace_pid);
+		if (1 == p_ve_task->namespace_pid)
+			kill(p_ve_task->pid, SIGKILL);
+		else
+			kill(p_ve_task->pid, signum);
 	} else {
 		/* Terminating signals
 		 * */
@@ -2080,8 +2126,13 @@ hndl_terminate:
 		if (SYNCHRONOUS_SIGNAL == *flag) {
 			/* updating process flag when terminated by signal */
 			p_ve_task->flags |= PF_SIGNALED;
-			VEOS_DEBUG("Signal: %d sent to %d", signum, p_ve_task->pid);
-			kill(p_ve_task->pid, signum);
+			VEOS_DEBUG("Signal: %d sent to pid[%d] namespace pid[%d]",
+						signum, p_ve_task->pid,
+						p_ve_task->namespace_pid);
+			if (1 == p_ve_task->namespace_pid)
+				kill(p_ve_task->pid, SIGKILL);
+			else
+				kill(p_ve_task->pid, signum);
 		} else {
 			VEOS_DEBUG("%d signal: %d action is terminate",
 					p_ve_task->pid ,signum);
@@ -2353,7 +2404,7 @@ int psm_setnew_sas(struct ve_task_struct *ve_task_curr, stack_t *new_sas)
 	/* Verify the new stack pointer is valid or not
 	 * */
 	if (-1 == __veos_virt_to_phy((uint64_t)new_sas->ss_sp,
-			&(ve_task_curr->p_ve_mm->atb), NULL, NULL)) {
+			&(ve_task_curr->p_ve_mm->atb[0]), NULL, NULL)) {
 		VEOS_DEBUG("new_sas->ss_sp : %p", new_sas->ss_sp);
 		VEOS_ERROR("[%d] Invalid Alternate stack address",
 				ve_task_curr->pid);

@@ -53,14 +53,6 @@ Summary:	Headers for VEOS
 This package contains the header files of definitions of VEOS.
 VE programs or libraries include them if required.
 
-%package	musl-headers
-License:	MIT
-Summary:	Headers for VEOS
-
-%description	musl-headers
-This package contains the header files of definitions of VEOS.
-VE programs or libraries include them if required.
-
 %package	libvepseudo-headers
 License:	LGPLv2+ and BSD
 Summary:	Headers for libvepseudo
@@ -80,7 +72,7 @@ include them.
 %setup -q
 
 %build
-%configure --with-ve-musl-includedir=@ve_musl_includedir@ \
+%configure \
   --with-vemm-agent-includedir=@VEMM_AGENT_INCLUDEDIR@ \
   --with-binfmtdir=@binfmtdir@ \
   --with-limitsdir=@limitsdir@ \
@@ -117,6 +109,9 @@ fi
 if [ $1 -eq 1 ] ; then
     /usr/bin/systemctl restart systemd-binfmt
 fi
+for no in `seq 0 7`; do
+    mkdir --mode=ugo+rwxt -p %{_localstatedir}/veos${no}-tmp
+done
 
 %preun
 for dev in /dev/veslot*; do
@@ -133,6 +128,13 @@ done
 
 %postun
 /sbin/ldconfig
+# During uninstall argument is received 0, so deleting the directories
+# During upgrade argument is received 1
+if [ $1 == 0 ]; then
+    for no in `seq 0 7`; do
+	rm -r %{_localstatedir}/veos${no}-tmp
+    done
+fi
 
 %files
 %config %{_sysconfdir}/log4crc
@@ -166,9 +168,6 @@ done
 
 %files headers
 @ve_includedir@/*.h
-
-%files musl-headers
-@ve_musl_includedir@/*.h
 
 %files libvepseudo-headers
 # LGPLv2+

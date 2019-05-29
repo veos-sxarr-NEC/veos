@@ -37,11 +37,13 @@ int veos_pidstatm_info(int, struct velib_pidstatm *);
 int veos_meminfo(struct velib_meminfo *);
 int veos_getrusage(int who, struct ve_rusage *ve_r,
 		struct ve_task_struct *tsk);
-int veos_pmap(int pid, struct ve_mapheader *);
-int change_owner_shm(int, int);
+int veos_pmap(int pid, uid_t, uid_t, struct ve_mapheader *);
 uint64_t get_vm_size(struct ve_mm_struct *);
 size_t get_map_attr(vemva_t, size_t, struct ve_mm_struct *, char *);
 void parse_vmflags(char *, char *);
 bool check_flag(vemva_t, uint64_t, struct ve_mm_struct *);
+int veos_numa_meminfo(struct velib_meminfo *, size_t);
+int veos_get_mempolicy(struct ve_task_struct *);
+int veos_set_mempolicy(struct ve_task_struct *, int);
 
 #endif

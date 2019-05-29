@@ -1416,6 +1416,10 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 	case VE_SYSVE_VHCALL_UNINSTALL:
 		retval = sys_vhcall_uninstall(handle, args[1]);
 		break;
+	case VE_SYSVE_VHCALL_INVOKE_WITH_ARGS:
+		retval = sys_vhcall_invoke_with_args(handle, args[1], args[2],
+						args[3], args[4]);
+		break;
 	case VE_SYSVE_VESHM_CTL:
 		retval = ve_veshm(handle, &args[1]);
 		break;

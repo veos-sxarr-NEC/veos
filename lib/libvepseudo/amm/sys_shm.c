@@ -43,6 +43,68 @@
 #include "ve_memory.h"
 
 /**
+ * @brief This function read the shm stat from file /proc/sysvipc/shm.
+ *
+ * @param[in] shmid SHM unique id.
+ * @param[in] key SHM unique key.
+ * @param[out] buf reference to 'struct shmid_ds' to store shm stat.
+ *
+ * @return On success return 0, returns -1 on failures.
+ */
+int get_shm_stat_proc(int shmid, key_t key, struct shmid_ds *buf)
+{
+	char t_buf[BUF_SIZ];
+	int proc_shmid = 0;
+
+	FILE *f = NULL;
+
+	PSEUDO_TRACE("invoked");
+
+	f = fopen(SYSVIPC_FILE, "r");
+	if (!f) {
+		PSEUDO_DEBUG("Error(%s) opening file[%s]", strerror(errno), SYSVIPC_FILE);
+		return -1;
+	}
+	/*skiping header from file SYSVIPC_FILE*/
+	while (fgetc(f) != '\n');
+
+	/*Reading information related shm segment*/
+	while (fgets(t_buf, sizeof(t_buf), f) != NULL) {
+		if (sscanf(t_buf,
+		"%d %d  %ho %"SCNu64 " %u %u  "
+		"%"SCNu64 " %u %u %u %u %"SCNi64 " %"SCNi64 " %"SCNi64" \n",
+		&buf->shm_perm.__key,
+		&proc_shmid,
+		&buf->shm_perm.mode,
+		&buf->shm_segsz,
+		&buf->shm_cpid,
+		&buf->shm_lpid,
+		&buf->shm_nattch,
+		&buf->shm_perm.uid,
+		&buf->shm_perm.gid,
+		&buf->shm_perm.cuid,
+		&buf->shm_perm.cgid,
+		&buf->shm_atime,
+		&buf->shm_dtime,
+		&buf->shm_ctime) < 14)
+			continue; /* invalid line, skipped*/
+
+		/* ID specified */
+		if ((shmid == proc_shmid) && (key == buf->shm_perm.__key)) {
+			PSEUDO_DEBUG("shmid %d stat found in file[%s]", shmid, SYSVIPC_FILE);
+			fclose(f);
+			return 0;
+		} else
+			continue;
+	}
+
+	PSEUDO_DEBUG("shmid %d stat not found in file[%s]", shmid, SYSVIPC_FILE);
+	fclose(f);
+	PSEUDO_TRACE("returned");
+	return -1;
+}
+
+/**
  * @brief This function to handle shmget system call
  *
  * @param[in] syscall_num syscall_num System call number
@@ -122,6 +184,7 @@ ret_t ve_shmget(int syscall_num, char *syscall_name, veos_handle *handle)
 		ret = -errno;
 		PSEUDO_DEBUG("Error (%s) while getting shm segment from VEOS",
 			strerror(-ret));
+		shmctl(shmid, IPC_RMID, NULL);
 		goto shmget_ret;
 	}
 
@@ -161,6 +224,24 @@ struct shm_seginfo *amm_request_shmget(veos_handle *handle, key_t key,
 	if (NULL == shm_info) {
 		PSEUDO_DEBUG("failed to allocate shm info");
 		return NULL;
+	}
+
+	/* get the stat of shared memory */
+	ret = shmctl(shmid, IPC_STAT, &req.shm_stat);
+	if ((-1 == ret) && (errno == EACCES)) {
+		PSEUDO_DEBUG("fail to get stat of id: %lx using shmclt", shmid);
+		PSEUDO_DEBUG("Lets try by reading /proc/sysvipc/shm");
+		ret = get_shm_stat_proc(shmid, key, &req.shm_stat);
+		if (-1 == ret) {
+			errno = EACCES;
+			PSEUDO_DEBUG("fail to get stat of id: %lx from proc", shmid);
+			return NULL;
+		}
+		PSEUDO_DEBUG("SHMID[%ld] STAT shmkey %d shm size:%lx shm mode%hu",
+		shmid,
+		req.shm_stat.shm_perm.__key,
+		req.shm_stat.shm_segsz,
+		req.shm_stat.shm_perm.mode);
 	}
 
 	/* Generate IPC Command */
@@ -213,6 +294,13 @@ struct shm_seginfo *ve_get_shm_seg_pgmode(veos_handle *handle, int64_t shmid)
 	/* Generate IPC Command */
 	req.shmid = shmid;
 	req.create = false;
+
+	/* get the stat of shared memory */
+	ret = shmctl(shmid, IPC_STAT, &req.shm_stat);
+	if (-1 == ret) {
+		PSEUDO_DEBUG("fail to get stat of shmid: %lx", shmid);
+		return NULL;
+	}
 
 	PSEUDO_DEBUG("shm req params: id(%lx), creat(%x)",
 			req.shmid, req.create);
@@ -568,6 +656,14 @@ ret_t amm_request_shmat(veos_handle *handle, int64_t shmid,
 	req.shmid = shmid;
 	req.shmperm = shmperm;
 
+	/* get the stat of shared memory */
+	ret = shmctl(shmid, IPC_STAT, &req.shm_stat);
+	if (-1 == ret) {
+		ret = -errno;
+		PSEUDO_DEBUG("fail to get stat of id: %lx", shmid);
+		return ret;
+	}
+
 	PSEUDO_DEBUG("vaddr(0x%lx), size(0x%lx), shmid(0x%lx)"
 			"shmperm(%lx)", req.vaddr, req.size, req.shmid,
 			req.shmperm);
@@ -648,6 +744,7 @@ int64_t __ve_shmctl(veos_handle *handle, int64_t shmid,
 {
 	int ret = 0;
 	struct shmid_ds *buf = NULL;
+	struct shm_seginfo *shm_seg_info = NULL;
 
 	PSEUDO_TRACE("invoked");
 	buf = (struct shmid_ds *)calloc(1, sizeof(struct shmid_ds));
@@ -716,6 +813,12 @@ int64_t __ve_shmctl(veos_handle *handle, int64_t shmid,
 				"for shmid(0x%lx)", strerror(-ret), shmid);
 			goto shmctl_err;
 		}
+
+		/* Update the SHM stat at veos */
+		shm_seg_info = ve_get_shm_seg_pgmode(handle, shmid);
+		if (!shm_seg_info)
+			PSEUDO_DEBUG("Failed to update shm stat at veos");
+		free(shm_seg_info);
 		break;
 	case SHM_LOCK:
 	case SHM_UNLOCK:
@@ -745,6 +848,15 @@ int64_t amm_request_shmctl_rmid(veos_handle *handle, int64_t shmid)
 
 	PSEUDO_TRACE("invoked");
 	memcpy(&(req.shmid), &shmid, sizeof(shmid));
+
+	/* get the stat of shared memory */
+	ret = shmctl(shmid, IPC_STAT, &req.shm_stat);
+	if (-1 == ret) {
+		ret = -errno;
+		PSEUDO_DEBUG("fail to get stat of id: %lx", shmid);
+		goto hndl_error;
+	}
+
 	ret = ve_shm_request(&req, handle->veos_sock_fd, CMD_SHMCTL, NULL);
 	if (0 > ret) {
 		PSEUDO_DEBUG("Error (%s) while getting ack from veos",
@@ -849,6 +961,7 @@ int64_t __ve_shmdt(veos_handle *handle, vemva_t shmaddr)
 	ret_t ret = 0;
 	struct ve_shm_cmd req = {0};
 	struct shm_seginfo shm_info = {0};
+	struct shm_seginfo *shm_seg_info = NULL;
 	uint64_t i = 0, count = 0, word = 0, bit = 0;
 
 	PSEUDO_TRACE("invoked");
@@ -898,6 +1011,12 @@ int64_t __ve_shmdt(veos_handle *handle, vemva_t shmaddr)
 				shmaddr);
 	}
 	PSEUDO_TRACE("iteration to detach vemva for shmdt() ends");
+
+	/* Update the SHM stat at veos */
+	shm_seg_info = ve_get_shm_seg_pgmode(handle, shm_info.shmid);
+	if (!shm_seg_info)
+		PSEUDO_DEBUG("Failed to update shm stat at veos");
+	free(shm_seg_info);
 send_error:
 	PSEUDO_TRACE("returned");
 	return ret;

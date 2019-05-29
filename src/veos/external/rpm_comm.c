@@ -39,6 +39,7 @@
 #include "proto_buff_schema.pb-c.h"
 #include "velayout.h"
 #include "ptrace_req.h"
+#include "ve_shm.h"
 
 /**
  * @brief Write the buffer on the file descriptor.
@@ -150,6 +151,7 @@ int rpm_handle_getpriority_req(struct veos_thread_arg *pti)
 	int retval = -1;
 	struct ve_priorityinfo prio_req = {0};
 	ProtobufCBinaryData rpm_pseudo_msg = {0};
+	pid_t host_pid = -1;
 
 	VEOS_TRACE("Entering");
 
@@ -159,7 +161,27 @@ int rpm_handle_getpriority_req(struct veos_thread_arg *pti)
 	/* Fetch the struct ve_priorityinfo from pti */
 	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 		pseudo_msg;
+	if (sizeof prio_req != rpm_pseudo_msg.len) {
+		VEOS_ERROR("Expected request message len: [%lu] Got: [%lu]",
+			sizeof prio_req, rpm_pseudo_msg.len);
+		goto hndl_return1;
+	}
 	memcpy(&prio_req, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
+
+	/* Convert namespace pid to host pid */
+	host_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, prio_req.who);
+	if (host_pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				prio_req.who,
+				strerror(errno));
+		retval = -errno;
+		goto hndl_return;
+	}
+	prio_req.who = host_pid;
 
 	retval = psm_rpm_handle_getpriority_req(&prio_req);
 	if (0 > retval) {
@@ -189,6 +211,7 @@ int rpm_handle_setpriority_req(struct veos_thread_arg *pti)
 	int retval = -1;
 	struct ve_priorityinfo prio_req = {0};
 	ProtobufCBinaryData rpm_pseudo_msg = {0};
+	pid_t host_pid = -1;
 
 	VEOS_TRACE("Entering");
 
@@ -198,7 +221,27 @@ int rpm_handle_setpriority_req(struct veos_thread_arg *pti)
 	/* Fetch the struct ve_priorityinfo from pti */
 	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 		pseudo_msg;
+	if (sizeof prio_req != rpm_pseudo_msg.len) {
+		VEOS_ERROR("Expected request message len: [%lu] Got: [%lu]",
+			sizeof prio_req, rpm_pseudo_msg.len);
+		goto hndl_return1;
+	}
 	memcpy(&prio_req, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
+
+	/* Convert namespace pid to host pid */
+	host_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, prio_req.who);
+	if (host_pid <= 0) {
+		VEOS_ERROR("Conversion of namespace to host pid fails");
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				prio_req.who,
+				strerror(errno));
+		retval = -errno;
+		goto hndl_return;
+	}
+	prio_req.who = host_pid;
 
 	retval = psm_rpm_handle_setpriority_req(&prio_req);
 	if (0 > retval) {
@@ -301,6 +344,7 @@ int rpm_handle_map_info_req(struct veos_thread_arg *pti)
 	pid_t pid = -1;
 	pid_t caller_pid = -1;
 	proc_t ve_proc_info = {0};
+	ProtobufCBinaryData rpm_pseudo_msg = {0};
 
 	VEOS_TRACE("Entering");
 
@@ -311,6 +355,14 @@ int rpm_handle_map_info_req(struct veos_thread_arg *pti)
 
 	pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->ve_pid;
 	caller_pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
+	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
+		pseudo_msg;
+	if (sizeof header != rpm_pseudo_msg.len) {
+		VEOS_ERROR("Expected request message len: [%lu] Got: [%lu]",
+			sizeof header, rpm_pseudo_msg.len);
+		goto hndl_return1;
+	}
+	memcpy(&header, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
 
 	retval = psm_get_ve_proc_info(pid, &ve_proc_info);
 	if (-1 == retval) {
@@ -338,20 +390,11 @@ int rpm_handle_map_info_req(struct veos_thread_arg *pti)
 	}
 
 get_pmap:
-	retval = veos_pmap(pid, &header);
+	retval = veos_pmap(pid, pti->cred.gid, pti->cred.uid, &header);
 	if (0 > retval) {
 		VEOS_ERROR("Populating information failed for PID: %d",
 				pid);
 		VEOS_DEBUG("VEOS populate mapheader struct returned %d", retval);
-	} else {
-		/*Change the owner of shared memory segment*/
-		if (header.shmid) {
-			retval = change_owner_shm(pti->cred.uid, header.shmid);
-			if (retval < 0) {
-				header.shmid = 0;
-				VEOS_DEBUG("can't change shm segment owner");
-			}
-		}
 	}
 hndl_return:
 	retval = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&header,
@@ -383,6 +426,11 @@ int rpm_handle_pidstat_info_req(struct veos_thread_arg *pti)
 	pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->ve_pid;
 	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 		pseudo_msg;
+	if (sizeof pidstat != rpm_pseudo_msg.len) {
+		VEOS_ERROR("Expected request message len: [%lu] Got: [%lu]",
+			sizeof pidstat, rpm_pseudo_msg.len);
+		goto hndl_return1;
+	}
 	memcpy(&pidstat, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
 
 	/* PSM will populate its corresponding fields of
@@ -437,6 +485,9 @@ int rpm_handle_get_regvals_req(struct veos_thread_arg *pti)
 
 	VEOS_TRACE("Entering");
 
+	if (!pti)
+		goto hndl_return1;
+
 	pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->ve_pid;
 
 	/* allow only root or own user to retrieve registers
@@ -484,6 +535,7 @@ hndl_return:
 				       (uint8_t *)&regvals,
 				       sizeof(uint64_t) * numregs,
 				       retval);
+hndl_return1:
 	VEOS_TRACE("Exiting");
 	return retval;
 }
@@ -744,6 +796,11 @@ int rpm_handle_sched_set_scheduler_req(struct veos_thread_arg *pti)
 	/* Fetch the struct velib_setscheduler from pti */
 	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 		pseudo_msg;
+	if (sizeof sched_param != rpm_pseudo_msg.len) {
+		VEOS_ERROR("Expected request message len: [%lu] Got: [%lu]",
+			sizeof sched_param, rpm_pseudo_msg.len);
+		goto hndl_return1;
+	}
 	memcpy(&sched_param, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
 
 	pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->ve_pid;
@@ -825,6 +882,11 @@ int rpm_handle_get_priority_max_req(struct veos_thread_arg *pti)
 	/* Fetch the struct ve_sched_limit_request from pti */
 	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 		pseudo_msg;
+	if (sizeof sched_limit != rpm_pseudo_msg.len) {
+		VEOS_ERROR("Expected request message len: [%lu] Got: [%lu]",
+			sizeof sched_limit, rpm_pseudo_msg.len);
+		goto hndl_return1;
+	}
 	memcpy(&sched_limit, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
 
 	/* VE only supports SCHED_OTHER scheduling policy */
@@ -866,6 +928,11 @@ int rpm_handle_get_priority_min_req(struct veos_thread_arg *pti)
 	/* Fetch the struct ve_sched_limit_request from pti */
 	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 		pseudo_msg;
+	if (sizeof sched_limit != rpm_pseudo_msg.len) {
+		VEOS_ERROR("Expected request message len: [%lu] Got: [%lu]",
+			sizeof sched_limit, rpm_pseudo_msg.len);
+		goto hndl_return1;
+	}
 	memcpy(&sched_limit, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
 
 	/* VE only supports SCHED_OTHER scheduling policy */
@@ -911,6 +978,11 @@ int rpm_handle_set_affinity_req(struct veos_thread_arg *pti)
 	/* Fetch the struct velib_affinity from pti */
 	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 		pseudo_msg;
+	if (sizeof sched_affinity != rpm_pseudo_msg.len) {
+		VEOS_ERROR("Expected request message len: [%lu] Got: [%lu]",
+			sizeof sched_affinity, rpm_pseudo_msg.len);
+		goto hndl_return1;
+	}
 	memcpy(&sched_affinity, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
 
 	retval = psm_handle_setaffinity_request(caller_pid, ve_pid,
@@ -958,6 +1030,11 @@ int rpm_handle_get_affinity_req(struct veos_thread_arg *pti)
 	/* Fetch the struct velib_affinity from pti */
 	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 		pseudo_msg;
+	if (sizeof sched_affinity != rpm_pseudo_msg.len) {
+		VEOS_ERROR("Expected request message len: [%lu] Got: [%lu]",
+			sizeof sched_affinity, rpm_pseudo_msg.len);
+		goto hndl_return1;
+	}
 	memcpy(&sched_affinity, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
 
 	retval = psm_handle_getaffinity_request(pid, sched_affinity.cpusetsize,
@@ -1005,6 +1082,11 @@ int rpm_handle_prlimit_req(struct veos_thread_arg *pti)
 	/* Fetch the struct velib_prlimit from pti */
 	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 		pseudo_msg;
+	if (sizeof prlimit != rpm_pseudo_msg.len) {
+		VEOS_ERROR("Expected request message len: [%lu] Got: [%lu]",
+			sizeof prlimit, rpm_pseudo_msg.len);
+		goto hndl_return1;
+	}
 	memcpy(&prlimit, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
 
 	retval = psm_rpm_handle_prlimit(caller_pid, pid, &prlimit, pti);
@@ -1094,16 +1176,19 @@ hndl_return1:
  *
  * @param[in] pti Contains the request message received from RPM command
  *
- * @return 0 on success, -1 on failure.
+ * @return PID on success, -1 on failure.
  */
 int rpm_handle_create_process_req(struct veos_thread_arg *pti)
 {
 	int retval = -1;
 	int pid = -1;
-	int node_id = -1, core_id = -1;
+	int node_id = -1, core_id = -1, numa_node = -1;
 	struct ve_task_struct *tsk = NULL;
 	ProtobufCBinaryData rpm_pseudo_msg = {0};
 	struct velib_create_process create_proc = {0};
+	struct ve_core_struct *p_ve_core = NULL;
+	cpu_set_t cpu_mask;
+	int core_loop = 0;
 
 	VEOS_TRACE("Entering");
 
@@ -1115,11 +1200,61 @@ int rpm_handle_create_process_req(struct veos_thread_arg *pti)
 	/* Fetch the flag rpm_preserve_task data from pti */
 	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 		pseudo_msg;
+	if (sizeof create_proc != rpm_pseudo_msg.len) {
+		VEOS_ERROR("Expected request message len: [%lu] Got: [%lu]",
+			sizeof create_proc, rpm_pseudo_msg.len);
+		goto hndl_return1;
+	}
 	memcpy(&create_proc, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
+	numa_node = create_proc.numa_num;
+	cpu_mask = create_proc.mask;
 
+
+	if (!((numa_node >= -1) &&
+				(numa_node < VE_NODE(0)->numa_count))) {
+		VEOS_DEBUG("PID : %d Numa node id :"
+				" %d", pid, numa_node);
+		retval = -VE_EINVAL_NUMAID;
+		goto hndl_return;
+	}
+
+	if (create_proc.taskset_flag == false)
+		goto skip_affinity_mask_check;
+
+	for (; core_loop < VE_NODE(0)->nr_avail_cores;
+			core_loop++) {
+		if (!CPU_ISSET(core_loop, &cpu_mask))
+			continue;
+		p_ve_core = VE_CORE(0, core_loop);
+		if (numa_node == -1)
+			numa_node = p_ve_core->numa_node;
+
+		if (numa_node != p_ve_core->numa_node) {
+			VEOS_DEBUG("CPU %d mask belongs "
+					"to another NUMA node",
+					core_loop);
+			retval = -VE_EINVAL_COREID;
+			goto hndl_return;
+		}
+		if (core_id == -1)
+			core_id = core_loop;
+	}
+
+	if (core_id == -1) {
+		VEOS_DEBUG("Invalid CPU");
+		retval = -VE_EINVAL_COREID;
+		goto hndl_return;
+	}
+
+	/* AS numa_node and core_id can't send together,
+	 * we are updating numa node with -1*/
+	numa_node = -1;
+
+skip_affinity_mask_check:
 	retval = psm_handle_exec_ve_process(pti, &core_id, &node_id,
-			pid, "Dummy_task", false, 0, (uint64_t)0,
-			0, NULL, 0, 0, true, "Dummy path");
+			pid, 0, "Dummy_task", false, 0, (uint64_t)0,
+			NULL, NULL, 0, 0, true, "Dummy path", &numa_node,
+			create_proc.policy_flag);
 	if (0 > retval) {
 		VEOS_ERROR("Creating VE process failed");
 		VEOS_DEBUG("Creating VE process from RPM command returned: %d",
@@ -1142,13 +1277,15 @@ int rpm_handle_create_process_req(struct veos_thread_arg *pti)
 	tsk->execed_proc = true;
 	tsk->rpm_preserve_task = create_proc.flag;
 	tsk->pseudo_vefd = create_proc.vedl_fd;
-	retval = 0;
+	if (create_proc.taskset_flag == true)
+		tsk->cpus_allowed = cpu_mask;
+	retval = pid;
 hndl_return:
 	/* Send the response back to RPM command */
 	retval = veos_rpm_send_cmd_ack(pti->socket_descriptor, NULL, 0, retval);
-hndl_return1:
 	if (tsk)
 		put_ve_task_struct(tsk);
+hndl_return1:
 	VEOS_TRACE("Exiting");
 	return retval;
 }
@@ -1166,85 +1303,119 @@ int rpm_handle_ipc_rmls_req(struct veos_thread_arg *pti)
 	struct ve_shm_info shm_info = {0};
 	struct ve_mapheader header = {0};
 	struct shm_summary s_summary = {0};
+	proc_t proc_info = {0};
+	sdata_t shm_id_info = {0};
 	size_t len = 0;
+	bool if_yes = false;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		ret = -1;
+		goto hndl_return;
+	}
 
 	pid_t pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
 	len = (((PseudoVeosMessage *)(pti->pseudo_proc_msg))->pseudo_msg).len;
 
+	if (sizeof shm_info != len) {
+		VEOS_ERROR("Expected request message len: [%lu] Got: [%lu]",
+			sizeof shm_info, len);
+		ret = -1;
+		goto hndl_return;
+	}
 	memcpy(&shm_info, (((PseudoVeosMessage *)(pti->pseudo_proc_msg))->
 				pseudo_msg).data, len);
 
+	/*Get proc info for given pid*/
+	if (0 > psm_get_ve_proc_info(pid, &proc_info)) {
+		ret = -EFAULT;
+		VEOS_DEBUG("pid(%d) error unable to get proc info", pid);
+		veos_rpm_send_cmd_ack(pti->socket_descriptor, NULL, 0, ret);
+		goto hndl_return;
+	}
+
 	switch (shm_info.mode) {
 	case SHMKEY:
+		if_yes =  true;
 	case SHMID:
-		ret = veos_ipc_op(pid, &shm_info, NULL, NULL);
+		VEOS_DEBUG("PID[%d] Request for IPCRM -m/IPCRM -M SHMID[%d]",
+				pid, shm_info.key_id);
+		ret = is_capable(&proc_info, &shm_info.key_id, if_yes);
 		if (ret < 0) {
-			VEOS_ERROR("error while deleting shm segment with %s : %d",
-					(shm_info.mode == SHMKEY) ? "SHMKEY" : "SHMID",
+			VEOS_DEBUG("Caller: %d doesnot have access to "
+					"remove segment : %d",
+					pid, shm_info.key_id);
+			ret = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+					(uint8_t *)&shm_info,
+					sizeof(struct ve_shm_info), ret);
+			goto hndl_return;
+		}
+
+		/* Deleting segment from VE*/
+		ret = amm_do_shmctl(shm_info.key_id, proc_info.ns[IPCNS]);
+		if (ret < 0)
+			VEOS_DEBUG("error while deleting shm segment with %s : %d",
+					(shm_info.mode == SHMKEY) ?
+					"SHMKEY" : "SHMID",
 					shm_info.key_id);
 
-			VEOS_DEBUG("error while deleting shm segment with %s : %d",
-					(shm_info.mode == SHMKEY) ? "SHMKEY" : "SHMID",
-					shm_info.key_id);
-		}
-		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&shm_info,
-			sizeof(struct ve_shm_info), ret);
+		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+				(uint8_t *)&shm_info,
+				sizeof(struct ve_shm_info), ret);
 		break;
-	case SHM_ALL:
 	case SHM_LS:
-		ret = veos_ipc_op(pid, &shm_info, &header, NULL);
+		if_yes =  true;
+	case SHM_ALL:
+		header.node_id = shm_info.node_id;
+		VEOS_DEBUG("PID[%d] Request for IPCRM -a/IPCS", pid);
+		ret = rm_or_ls_segment(&proc_info, if_yes, &header);
 		if (ret < 0) {
-			VEOS_ERROR("error while %s all shm segments from veos",
-			(shm_info.mode == SHM_ALL) ? "deleting" : "listing");
+			VEOS_DEBUG("pid(%d) error(%s) %s", pid, strerror(-ret),
+					if_yes ? "ipcs" : "ipcrm -a");
 			VEOS_DEBUG("error while %s all shm segments from veos",
 			(shm_info.mode == SHM_ALL) ? "deleting" : "listing");
-		} else {
-			if (header.shmid) {
-				ret = change_owner_shm(pti->cred.uid, header.shmid);
-				if (ret < 0) {
-					header.shmid = 0;
-					VEOS_DEBUG("can't change owner of shm segment");
-				}
-			}
 		}
-		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&header,
-			sizeof(struct ve_mapheader), ret);
+
+		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+				(uint8_t *)&header,
+				sizeof(struct ve_mapheader), ret);
 		break;
 	case SHMID_INFO:
-		ret = veos_ipc_op(pid, &shm_info, &header, NULL);
-		if (ret < 0) {
-			VEOS_ERROR("error while %s getting info for shm segments shmid(%d)",
-				strerror(-ret), shm_info.key_id);
-			VEOS_DEBUG("error while %s getting info for shm segments shmid(%d)",
-				strerror(-ret), shm_info.key_id);
-		} else {
-			if (header.shmid) {
-				ret = change_owner_shm(pti->cred.uid, header.shmid);
-				if (ret < 0) {
-					header.shmid = 0;
-					VEOS_DEBUG("can't change owner of shm segment");
-				}
-			}
-		}
-		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&header,
-			sizeof(struct ve_mapheader), ret);
+		VEOS_DEBUG("PID[%d] Request for IPCS -i SHMID[%d]",
+				shm_info.key_id, pid);
+		ret = get_shm_info(shm_info.key_id, &shm_id_info,
+				proc_info.ns[IPCNS]);
+		if (ret < 0)
+			VEOS_DEBUG("error(%s) while getting info for shmid(%d)",
+					strerror(-ret), shm_info.key_id);
+
+		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+				(uint8_t *)&shm_id_info,
+				sizeof(sdata_t), ret);
 		break;
 	case SHM_SUMMARY:
-		veos_ipc_op(pid, &shm_info, NULL, &s_summary);
-		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&s_summary,
-			sizeof(struct shm_summary), ret);
+		VEOS_DEBUG("PID[%d] Request for IPCS -u", pid);
+		ve_shm_summary(&s_summary, proc_info.ns[IPCNS]);
+		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+				(uint8_t *)&s_summary,
+				sizeof(struct shm_summary), ret);
 		break;
 	case SHMID_QUERY:
 		VEOS_DEBUG("shmid(%d) query", shm_info.key_id);
-		veos_key_id_query(shm_info.key_id, &key_id_valid, false);
-		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&key_id_valid,
-			sizeof(key_id_valid), ret);
+		veos_key_id_query(shm_info.key_id,
+				&key_id_valid, false, proc_info.ns[IPCNS]);
+		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+				(uint8_t *)&key_id_valid,
+				sizeof(key_id_valid), ret);
 		break;
 	case SHMKEY_QUERY:
 		VEOS_DEBUG("shmkey(%d) query", shm_info.key_id);
-		veos_key_id_query(shm_info.key_id, &key_id_valid, true);
-		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&key_id_valid,
-			sizeof(key_id_valid), ret);
+		veos_key_id_query(shm_info.key_id,
+				&key_id_valid, true, proc_info.ns[IPCNS]);
+		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+				(uint8_t *)&key_id_valid,
+				sizeof(key_id_valid), ret);
 		break;
 	default:
 		ret = -EINVAL;
@@ -1252,9 +1423,134 @@ int rpm_handle_ipc_rmls_req(struct veos_thread_arg *pti)
 		ret = veos_rpm_send_cmd_ack(pti->socket_descriptor, NULL, 0, ret);
 	}
 
+hndl_return:
 	VEOS_TRACE("Exiting");
 	return ret;
 }
+
+/**
+ * @brief Handles the VE_DEL_DUMMY_TASK request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_delete_dummy_task_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	pid_t pid = -1;
+	struct ve_task_struct *del_dummy_tsk = NULL;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument "
+				"received from pseudo process");
+		goto hndl_return1;
+	}
+
+	pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->ve_pid;
+	del_dummy_tsk = find_ve_task_struct(pid);
+	if (del_dummy_tsk == NULL) {
+		VEOS_ERROR("Failed to find task structure");
+		VEOS_DEBUG("Failed to fetch task structure for PID %d", pid);
+		retval = -ESRCH;
+		goto hndl_return;
+	}
+	/* Set "dummy_task" flag in VE task struct so that accounting
+	 * information is not dumped while VE task cleanup
+	 * */
+	del_dummy_tsk->dummy_task = true;
+	set_state(del_dummy_tsk);
+	put_ve_task_struct(del_dummy_tsk);
+
+	retval = 0;
+hndl_return:
+	/* Send the response back to RPM command */
+	retval = veos_rpm_send_cmd_ack(pti->socket_descriptor, NULL, 0,
+			retval);
+hndl_return1:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Handles the VE_NUMA_INFO request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_numa_info_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	int core_loop = 0, numa_loop = 0, core_list = 0;
+	struct ve_numa_stat ve_numa = {0};
+	struct ve_core_struct *p_ve_core = NULL;
+	struct ve_node_struct *vnode = VE_NODE(0);
+	struct velib_meminfo mem_info[VE_MAX_NUMA_NODE] = { {0} };
+	size_t size = 0;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument "
+				"received from pseudo process");
+		goto hndl_return1;
+	}
+
+	size = (sizeof(struct velib_meminfo) * vnode->numa_count);
+
+	if (VE_NODE(0)->partitioning_mode) {
+		retval = veos_numa_meminfo(mem_info, size);
+		if (0 > retval) {
+			VEOS_ERROR("veos_numa_meminfo request failed");
+			goto hndl_return;
+		}
+
+		ve_numa.tot_numa_nodes = vnode->numa_count;
+		for (; numa_loop < vnode->numa_count; numa_loop++) {
+			core_list = 0;
+			for (core_loop = 0; core_loop < vnode->nr_avail_cores;
+					core_loop++) {
+				p_ve_core = VE_CORE(0, core_loop);
+				if (p_ve_core->numa_node == numa_loop)
+					core_list |= (1 << core_loop);
+			}
+			sprintf(ve_numa.ve_cores[numa_loop], "%x", core_list);
+			ve_numa.mem_size[numa_loop] =
+				(uint64_t)mem_info[numa_loop].kb_main_total;
+			ve_numa.mem_free[numa_loop] =
+				(uint64_t)mem_info[numa_loop].kb_main_free;
+
+		}
+	} else {
+		retval = veos_meminfo(mem_info);
+		if (0 > retval) {
+			VEOS_ERROR("veos_meminfo request failed");
+			goto hndl_return;
+		}
+		for (; core_loop < vnode->nr_avail_cores; core_loop++)
+			core_list |= (1 << core_loop);
+
+		ve_numa.tot_numa_nodes = vnode->numa_count;
+		sprintf(ve_numa.ve_cores[0], "%x", core_list);
+		ve_numa.mem_size[0] = (uint64_t)mem_info[0].kb_main_total;
+		ve_numa.mem_free[0] = (uint64_t)mem_info[0].kb_main_free;
+	}
+
+	retval = 0;
+hndl_return:
+	/* Send the response back to RPM command */
+	retval = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+			(uint8_t *)&ve_numa,
+			sizeof(struct ve_numa_stat),
+			retval);
+hndl_return1:
+	VEOS_TRACE("Entering");
+	return retval;
+}
+
 /**
  * @brief Handles "RPM Query" request from RPM commmand.
  *
@@ -1266,6 +1562,7 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 {
 	int retval = -1;
 	int rpm_subcmd = -1;
+	pid_t host_pid = -1, namespace_pid = -1;
 
 	VEOS_TRACE("Entering");
 
@@ -1275,7 +1572,35 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 	/* Fetch the RPM sub command ID */
 	rpm_subcmd = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 		veos_sub_cmd_id;
+	namespace_pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->ve_pid;
 
+	/* Convert namespace pid to host pid */
+	if ((rpm_subcmd != VE_GET_RUSAGE) &&
+		((PseudoVeosMessage *)pti->pseudo_proc_msg)->has_ve_pid &&
+		namespace_pid > 0) {
+		host_pid = vedl_host_pid(VE_HANDLE(0),
+				pti->cred.pid, namespace_pid);
+		if (host_pid <= 0) {
+			VEOS_ERROR("Conversion of namespace to host"
+					" pid fails");
+			VEOS_DEBUG("PID conversion failed, host: %d"
+					" namespace: %d"
+					" error: %s",
+					pti->cred.pid,
+					namespace_pid,
+					strerror(errno));
+			retval = -errno;
+
+			/* Send the failure response back to RPM command */
+			retval = veos_rpm_send_cmd_ack(
+					pti->socket_descriptor,
+					NULL, 0, retval);
+			goto hndl_return;
+		}
+		((PseudoVeosMessage *)pti->pseudo_proc_msg)->ve_pid = host_pid;
+	}
+
+	/* Invoke the command specific function */
 	switch (rpm_subcmd) {
 	case VE_GETPRIORITY:
 		VEOS_DEBUG("RPM request: GETPRIORITY");
@@ -1456,6 +1781,22 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 	case VE_GET_REGVALS:
 		VEOS_DEBUG("RPM request : GET_REGVALS");
 		retval = rpm_handle_get_regvals_req(pti);
+		if (0 > retval) {
+			VEOS_ERROR("Query request failed");
+			goto hndl_return;
+		}
+		break;
+	case VE_NUMA_INFO:
+		VEOS_DEBUG("RPM request : VE_NUMA_INFO");
+		retval = rpm_handle_numa_info_req(pti);
+		if (0 > retval) {
+			VEOS_ERROR("Query request failed");
+			goto hndl_return;
+		}
+		break;
+	case VE_DEL_DUMMY_TASK:
+		VEOS_DEBUG("RPM request : VE_DEL_DUMMY_TASK");
+		retval = rpm_handle_delete_dummy_task_req(pti);
 		if (0 > retval) {
 			VEOS_ERROR("Query request failed");
 			goto hndl_return;

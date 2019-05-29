@@ -1436,8 +1436,6 @@ int pseudo_psm_recv_fork_ack(int veos_sock_fd)
  * of load VE binary from PSM.
  *
  * @param veos_sock_fd: Descriptor used to communicate with PSM
- * @param ve_core_id: Core num on which the VE process is to be scheduled
- * @param ve_node_id: Node num on which the VE process is to be scheduled
  *
  * @return:  On failure, returns negative errno and on success, returns any
  * positive value.
@@ -1447,7 +1445,8 @@ int pseudo_psm_recv_fork_ack(int veos_sock_fd)
  */
 int pseudo_psm_recv_load_binary_req(int veos_sock_fd,
 		int *ve_core_id,
-		int *ve_node_id)
+		int *ve_node_id,
+		int *ve_numa_node_id)
 {
 	ssize_t retval = -1;
 	PseudoVeosMessage *ld_binary_req = NULL;
@@ -1485,8 +1484,9 @@ int pseudo_psm_recv_load_binary_req(int veos_sock_fd,
 					(ld_binary_req->pseudo_msg).len);
 				*ve_core_id = new_ve_proc.core_id;
 				*ve_node_id = new_ve_proc.node_id;
+				*ve_numa_node_id = new_ve_proc.numa_node;
 			} else {
-				PSEUDO_ERROR("Received negative acknowledgement"
+				PSEUDO_DEBUG("Received negative acknowledgement"
 						" for LOAD BINARY, "
 						"return value %ld",
 						ld_binary_req->syscall_retval);
@@ -2848,7 +2848,6 @@ ret_t pseudo_psm_send_vefd_req(int veos_sock_fd)
 	pseudo_msg_len = pseudo_veos_message__get_packed_size(&vefd_req);
 	buf = malloc(pseudo_msg_len);
 	if (NULL == buf) {
-		retval = -errno;
 		PSEUDO_ERROR("malloc for message buffer failed.");
 		goto malloc_error;
 	}
@@ -3031,6 +3030,128 @@ int pseudo_psm_recv_setuidgid_ack(int veos_sock_fd)
 		retval = -1;
 
 	pseudo_veos_message__free_unpacked(pseudo_msg, NULL);
+hndl_return:
+	PSEUDO_TRACE("Exiting");
+	return retval;
+}
+
+
+/* @brief This function will send request to veos to get memory policy
+ * 	of VE process
+ *
+ * @param[in] veos_sock_fd Descriptor used to communicate with veos.
+ *
+ * @return 0 on success, negative value on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+ * */
+int pseudo_psm_send_get_mempolicy_req(int veos_sock_fd)
+{
+	ssize_t retval = -1;
+	PseudoVeosMessage ve_get_mempolicy_req = PSEUDO_VEOS_MESSAGE__INIT;
+	void *buf = NULL;
+	ssize_t pseudo_msg_len = 0, msg_len = 0;
+
+	PSEUDO_TRACE("Entering");
+
+	if (veos_sock_fd < 0) {
+		PSEUDO_ERROR("Invalid(NULL) argument received");
+		PSEUDO_DEBUG("Invalid veos_sock_fd argument received");
+		goto malloc_error;
+	}
+
+	/* prepare request to be sent to PSM */
+	ve_get_mempolicy_req.pseudo_veos_cmd_id = GET_MEMPOLICY;
+
+	ve_get_mempolicy_req.has_pseudo_pid = true;
+	ve_get_mempolicy_req.pseudo_pid = syscall(SYS_gettid);
+
+	/* Pack ve_get_mempolicy_req before sending */
+	pseudo_msg_len = pseudo_veos_message__get_packed_size(
+			&ve_get_mempolicy_req);
+	buf = malloc(pseudo_msg_len);
+	if (NULL == buf) {
+		retval = -errno;
+		PSEUDO_ERROR("Failed to allocate memory for message buffer, "
+				"return value %d", -errno);
+		goto malloc_error;
+	}
+	memset(buf, '\0', pseudo_msg_len);
+
+	msg_len = pseudo_veos_message__pack(&ve_get_mempolicy_req, buf);
+	if (msg_len != pseudo_msg_len) {
+		PSEUDO_ERROR("Packing message protocol buffer error");
+		PSEUDO_DEBUG("Expected length: %ld, Returned length: %ld",
+				pseudo_msg_len, msg_len);
+		fprintf(stderr, "Internal message protocol buffer error\n");
+		/* FATAL ERROR: abort current process */
+		pseudo_abort();
+	}
+
+	retval = pseudo_veos_send_cmd(veos_sock_fd, buf,
+			pseudo_msg_len);
+	if (retval < pseudo_msg_len) {
+		PSEUDO_ERROR("Failed to send request to VEOS");
+		PSEUDO_DEBUG("Expected bytes: %ld, Transferred bytes: %ld",
+				pseudo_msg_len, retval);
+		retval = -EFAULT;
+	}
+
+	free(buf);
+malloc_error:
+	PSEUDO_TRACE("Exiting");
+	return retval;
+}
+
+/* @brief This function will wait for acknowledgement from VEOS
+ * 	corresponding to request of GET_MEMPOLICY
+ *
+ * @param[in] veos_sock_fd Descriptor used to communicate with veos.
+ *
+ * @return 0 on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+*/
+int pseudo_psm_recv_get_mempolicy_ack(int veos_sock_fd)
+{
+	ret_t retval = -1;
+	char buf[MAX_PROTO_MSG_SIZE] = {0};
+	PseudoVeosMessage *pseudo_msg = NULL;
+
+	PSEUDO_TRACE("Entering");
+
+	retval = pseudo_veos_recv_cmd(veos_sock_fd,
+			(void *)&buf, MAX_PROTO_MSG_SIZE);
+	if (-1 == retval) {
+		PSEUDO_ERROR("Failed to receive acknowledgment from VEOS");
+		goto hndl_return;
+	}
+
+	pseudo_msg = pseudo_veos_message__unpack(NULL,
+			retval, (const uint8_t *)(&buf));
+	if (NULL == pseudo_msg) {
+		PSEUDO_DEBUG("pseudo_veos_message__unpack failed read len :%ld",
+				retval);
+		PSEUDO_ERROR("Protocol Buffers Internal Error");
+		fprintf(stderr, "Protocol Buffers Internal Error\n");
+		pseudo_abort();
+	}
+	/* Check message for PSM   */
+	if (pseudo_msg->has_syscall_retval) {
+		if (pseudo_msg->syscall_retval < 0) {
+			PSEUDO_ERROR("Failure received from VEOS: %ld",
+					pseudo_msg->syscall_retval);
+			retval = pseudo_msg->syscall_retval;
+		} else {
+			retval = pseudo_msg->syscall_retval;
+			PSEUDO_DEBUG("Received success ack for "
+					"GET_MEMPOLICY_REQ");
+		}
+	}
+	pseudo_veos_message__free_unpacked(pseudo_msg, NULL);
+
 hndl_return:
 	PSEUDO_TRACE("Exiting");
 	return retval;

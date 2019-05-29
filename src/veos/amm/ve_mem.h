@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2019 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -113,14 +113,13 @@
 		VE_DMA_VHVA, dst, dpid, len, 0)
 #define memcpy_petoe(src, dst, len) amm_dma_xfer(VE_DMA_VEMAA, src, 0,\
 		VE_DMA_VEMAA, dst, 0, len, 0)
-
-#define invalidate_vemva(vaddr, pdt) __invalidate_pte(vaddr, pdt, -1)
-#define invalidate_vehva(vaddr, pdt, jid) __invalidate_pte(vaddr, pdt, jid)
-#define validate_vemva(vemva, rw, pgno, pdt, pgmod)  __validate_pte(vemva,\
-		rw, pgno, pdt, pgmod, VE_ADDR_VEMAA, -1, 0)
-#define validate_vehva(vehva, rw, pgno, pdt, pgmod, type, jid, flag)\
-		__validate_pte(vehva, rw, pgno, pdt, pgmod,\
-		type, jid, flag)
+/**
+ * Macro for Physical address to array number of ve_numa_struct(mempool number)
+ * paddr2mpnum : physical address to array number of ve_numa_struct(mempool
+ *		number)
+ **/
+#define paddr2mpnum(paddr, blksz, fma) \
+		(((uint64_t)paddr / blksz + fma) % VE_NODE(0)->numa_count)
 
 #define VE_DMA_NUM_DESC (128)
 
@@ -143,6 +142,8 @@ struct file_desc {
 	uint64_t pgsz;          	/*!< information of page size*/
 	uint64_t in_mem_pages;		/*!< Number of pages in memory*/
 	pthread_mutex_t f_desc_lock; 	/*!< mutex lock*/
+	int numa_num;                   /*!< numa node number*/
+	flag_t flags;                   /*!< mapping flag*/
 };
 
 /**
@@ -218,12 +219,26 @@ struct ve_page {
 	pthread_mutex_t ve_page_lock; /*!< mutex lock*/
 };
 
+/* for NUMA */
+/**
+ * @brief contain numa sysfs informations
+ */
+struct numa_sysfs_info {
+	size_t numa_mem_blk_sz;	/*!< memory block size of divided physical memory*/
+	int first_mem_node;	/*!< NUMA node of first physical memory unit*/
+};
+
+extern struct numa_sysfs_info numa_sys_info;
+/* ATB update API*/
+int amm_update_atb_dir(vedl_handle *, int,
+			struct ve_task_struct *, int);
+
 /*File Backed Handling Related APIs*/
 ret_t amm_do_file_back_handling(vemva_t, struct file_desc *,
 		off_t, off_t, int, struct ve_task_struct *,
 		pgno_t *);
 struct file_desc *init_file_desc(struct file_stat *);
-struct file_desc *scan_global_list(struct file_stat *file, flag_t);
+struct file_desc *scan_global_list(struct file_stat *file, flag_t, int);
 struct mapping_desc *init_mapping_desc(struct mapping_attri *);
 void init_page_array(struct mapping_desc *, struct mapping_attri *);
 ret_t update_mapping_desc(vemva_t, pgno_t *,
@@ -232,7 +247,7 @@ ret_t update_mapping_desc(vemva_t, pgno_t *,
 struct list_head *free_redundant_list(struct list_head *,
 		struct list_head *);
 void dump_mapping_desc(struct mapping_desc *);
-int stat_cmp(struct file_desc *, struct file_stat *, flag_t);
+int stat_cmp(struct file_desc *, struct file_stat *, flag_t, int);
 struct mapping_attri *collect_map_attri(struct file_desc *, int64_t,
 		int64_t);
 void add_mapping_desc(struct file_desc *,
@@ -240,7 +255,7 @@ void add_mapping_desc(struct file_desc *,
 void set_bit(uint64_t *, uint64_t);
 void set_bits(uint64_t *, uint64_t, uint16_t);
 int check_bits_set(uint64_t *, uint64_t, uint64_t);
-int send_file_data(vemva_t , off_t, size_t,
+int send_file_data(vemva_t, off_t, size_t,
 		struct ve_task_struct *, size_t, size_t, pgno_t *);
 int64_t extract_file_pgoff(vemva_t, struct ve_task_struct *,
 			size_t *, struct mapping_desc **);
@@ -262,13 +277,15 @@ int amm_rw_check_permission(struct ve_task_struct *tsk,
 		struct ve_rw_check_iovec rw_agrs);
 int ve_node_page_free_count(int);
 uint64_t ve_node_page_used_count(int);
-int alloc_ve_pages(uint64_t, pgno_t *, int);
+int alloc_ve_pages(uint64_t, pgno_t *, int, int, int, int *);
 int calc_usable_dirty_page(struct ve_node_struct *vnode,
-			   size_t mem_sz, int pgmod);
+			   size_t mem_sz, int pgmod,
+			   int mempolicy, int numa_node);
 void amm_wake_alloc_page(void);
 void invalidate_atb(atb_reg_t *atb);
 void invalidate_dmaatb(dmaatb_reg_t *atb);
-int amm_copy_atb_private(atb_reg_t *, atb_reg_t *, struct veshm_struct *);
+int amm_copy_atb_private(atb_reg_t *, atb_reg_t *,
+			 struct veshm_struct *i, int, int);
 void amm_copy_atb_vfork(atb_reg_t *, atb_reg_t *, struct veshm_struct *);
 int amm_copy_phy_page(uint64_t, uint64_t, uint64_t);
 ret_t amm_clear_page(uint64_t, size_t);
@@ -306,10 +323,12 @@ int veos_unshare_vemva_region(pid_t, vemva_t, size_t);
 
 void invalidate_veshm_pte(atb_reg_t *, struct veshm_struct *);
 
-dir_t __validate_pte(vemva_t, int, pgno_t, void *, int,
-		uint8_t, jid_t, uint16_t);
+dir_t validate_vehva(vemva_t, int, pgno_t, void *, int,
+		uint8_t, jid_t, uint16_t, int);
 
-dir_t __invalidate_pte(vemva_t, void *, jid_t);
+dir_t invalidate_vehva(vemva_t, void *, jid_t);
+dir_t validate_vemva(vemva_t, int, pgno_t, void *, int);
+dir_t invalidate_vemva(vemva_t, void *);
 
 void __validate_pgd(void *, dir_t, int, int, int);
 void validate_pgd(atb_reg_t *, dir_t, int, int);
@@ -332,10 +351,11 @@ uint64_t *amm_get_pgmod_info(vemva_t, struct ve_task_struct *,
 void amm_dump_atb(struct ve_task_struct *);
 int amm_do_set_tproc(struct ve_jid_cmd cmd, struct ve_task_struct *tsk);
 int veos_handle_ptrace_poke_req(struct ve_task_struct *, vemva_t);
-int copy_entry(atb_entry_t *, atb_entry_t *, int );
-pgno_t __replace_page(atb_entry_t *);
+int copy_entry(atb_entry_t *, atb_entry_t *, int, int, int);
+pgno_t __replace_page(atb_entry_t *, int, int);
 int64_t replace_page(vemva_t, struct ve_task_struct *);
 
 ret_t amm_mem_clear(size_t);
 ret_t dma_clear_page(uint64_t);
+int amm_update_atb_dir(vedl_handle *, int, struct ve_task_struct *, int);
 #endif

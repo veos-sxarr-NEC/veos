@@ -558,16 +558,17 @@ static int64_t veos_cr_release_local(uint64_t crd_number, struct ucred *cred,
 /**
  * @brief Handles CR_ATTACH_LOCAL sub-command of CR_CMD command.
  *
- * @param [in] pid		A process ID.
+ * @param [in] req_pid		A process ID.
  * @param [in] crd_number	CR directory number
  * @param [in] cred		A credential of pseudo process
  * @param [in] tsk		Task structure
  *
  * @return CR directory number on success, -errno on failure
  */
-static int64_t veos_cr_attach_local(pid_t pid, uint64_t crd_number,
+static int64_t veos_cr_attach_local(pid_t req_pid, uint64_t crd_number,
 			struct ucred *cred, struct ve_task_struct *tsk)
 {
+	pid_t pid;
 	struct ived_shared_resource_data *resource;
 	struct proc_cr_page *cr_page;
 	int cr_page_num;
@@ -584,6 +585,9 @@ static int64_t veos_cr_attach_local(pid_t pid, uint64_t crd_number,
 	if (crd_number >= MAX_CRD_PER_CORE)
 		return -EINVAL;
 
+	/* Convert the requested pid to host pid. */
+	pid = vedl_host_pid(VE_HANDLE(0), cred->pid, req_pid);
+
 	if (pid == cred->pid)
 		return -EINVAL;
 
@@ -592,8 +596,8 @@ static int64_t veos_cr_attach_local(pid_t pid, uint64_t crd_number,
 		return -EINVAL;
 
 	IVED_DEBUG(log4cat_veos_ived,
-		"Attaching the local CR page referenced by pid:%d crd:%#"PRIx64" to pid:%d",
-		 pid, crd_number, cred->pid);
+		"Attaching the local CR page referenced by pid:%d(host pid:%d) crd:%#"PRIx64" to pid:%d",
+		 req_pid, pid, crd_number, cred->pid);
 	ret = veos_cr_rpc_attach(cred->pid, cred->uid, pid, crd_number,
 							&ived_retval);
 	if (ret != 0)
@@ -696,15 +700,16 @@ err_cancel:
 /**
  * @brief Handles CR_ATTACH_REMOTE sub-command of CR_CMD command.
  *
- * @param [in] pid		A process ID.
+ * @param [in] req_pid		A process ID.
  * @param [in] crd_number	An index of CRD entry
  * @param [in] cred		A credential of pseudo process
  *
  * @return VEHVA on success, -errno on failure
  */
-static int64_t veos_cr_attach_remote(pid_t pid, uint64_t crd_number,
+static int64_t veos_cr_attach_remote(pid_t req_pid, uint64_t crd_number,
 						struct ucred *cred)
 {
+	pid_t pid;
 	uint64_t remote_cr_page_vhsaa;
 	uint64_t vhsaa[3];
 	int64_t vehva;
@@ -720,9 +725,12 @@ static int64_t veos_cr_attach_remote(pid_t pid, uint64_t crd_number,
 	if (crd_number >= MAX_CRD_PER_CORE)
 		return -EINVAL;
 
+	/* Convert the requested pid to host pid. */
+	pid = vedl_host_pid(VE_HANDLE(0), cred->pid, req_pid);
+
 	IVED_DEBUG(log4cat_veos_ived,
-		"Attaching the remote CR page referenced by pid:%d crd:%#"PRIx64" to pid:%d",
-		 pid, crd_number, cred->pid);
+		"Attaching the remote CR page referenced by pid:%d(host pid:%d) crd:%#"PRIx64" to pid:%d",
+		 req_pid, pid, crd_number, cred->pid);
 
 	ret = veos_cr_rpc_attach(cred->pid, cred->uid, pid, crd_number,
 							&ived_retval);

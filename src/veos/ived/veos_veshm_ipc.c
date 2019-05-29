@@ -648,8 +648,12 @@ conv_modeflag_prot(uint64_t mode_flag)
 /*
  * @brief Sub function for VESHM attach (Get DMAATB entries)
  *
- * @param [in]    request_attach Request data
- * @param [in]    reply		 Reply message (Initialized)
+ * @param [in]    user_pid	PID of DMAATB's owner. (Host PID)
+ * @param [in]    target_addr	Array of VE_ADDR_VERAA, VE_ADDR_VECRAA and
+ * VE_ADDR_VHSAA.
+ * @param [in]    entries	DMAATB entries
+ * @param [in]    pci_pgsize	PCIATB page size
+ * @param [in]    permission	Access permission set to DMAATB
  *
  * @return VEHVA on success, -errno on failure
  */
@@ -683,7 +687,7 @@ get_dmaatb_for_attaching(int user_pid, uint64_t *target_addr, size_t entries,
  * A caller needs to know uuid_veshm and uuid_proc to use 
  * this function.
  *
- * @param [in]    pid		  PID of a requester
+ * @param [in]    pid		  PID of a requester (Host PID)
  * @param [in]    uuid_proc	  UUID of an owner process
  * @param [in]    uuid_veshm	  UUID of a target veshm
  *

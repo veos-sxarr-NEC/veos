@@ -54,6 +54,9 @@
 /* Defines number of pairs of PCISYARs and PCISYMRs. */
 #define VE_PCI_SYNC_PAR_NUM 4
 
+/* Define numbers of NUMA nodes. */
+#define VE_MAX_NUMA_NODE 2
+
 /*Defines number of cr page per node*/
 #define MAX_CR_PAGE_PER_NODE 32
 
@@ -128,6 +131,17 @@ struct ve_acct_struct {
 	pthread_mutex_t ve_acct_lock; /*!< Mutex lock for syncronization */
 } veos_acct;
 
+/* *
+ * @brief VE NUMA Node Struct
+ */
+struct ve_numa_struct {
+	int node_number; /* !< NUMA node number */
+	int num_ve_proc; 	/* !< Number of VE process executing on
+					VE core belonging to this NUMA node */
+	struct ve_core_struct *cores[VE_MAX_CORE_PER_NODE]; /* !< Pointers of ve_core_struct belonging to NUMA node*/
+	struct buddy_mempool *mp; /* !< Pointer of memory pool of NUMA node */
+};
+
 /**
  * @brief VE Node Struct
  */
@@ -137,7 +151,6 @@ struct ve_node_struct {
 	struct list_head shm_head; /*!< Global shm descriptor */
 	volatile int num_ve_proc; /*!< Number of VE processes on this node*/
 	int node_num; /*!< Node Id of this VE Node */
-	struct buddy_mempool *mp; /*!<*VE memory pool address*/
 	struct ve_page **ve_pages; /*!< GLOBAL PAGE ARRAY structure */
 	uint64_t nr_pages; /*!< Total Number of pages */
 	pciatb_entry_t pciatb[PCIATB_VLD_SIZE]; /*!< PCIATB for access
@@ -155,8 +168,8 @@ struct ve_node_struct {
 	pthread_rwlock_t ve_relocate_lock; /*! Global lock for synchronizing task relocation */
 	pthread_cond_t stop_cond;/*!< Conditional lock for SIGSTOP signal */
 	pthread_cond_t pg_allc_cond;/*!< Conditional lock for allocating ve pages protected by ve_node_lock*/
-	uint64_t dirty_pg_num_2M;
-	uint64_t dirty_pg_num_64M;
+	uint64_t dirty_pg_num_2M[VE_MAX_NUMA_NODE];
+	uint64_t dirty_pg_num_64M[VE_MAX_NUMA_NODE];
 	struct ve_mem_info mem; /*!< VE memory data , mem START and its SIZE */
 	vemaa_t zeroed_page_address; /*!< VE Memory Zeroed Page address */
 	vedl_handle *handle; /*!< VEDL handle */
@@ -195,6 +208,9 @@ struct ve_node_struct {
 	uint64_t vdso_pcientry; /*! Allocated pci enrty for vdso*/
 	char cr_dump_fname[FILENAME_MAX];
 	sem_t node_sem; /* Semaphore for performing scheduling on node */
+	int partitioning_mode; /* !< An indicator of partitioning mode */
+	int numa_count; /* !< The number of NUMA nodes */
+	struct ve_numa_struct numa[VE_MAX_NUMA_NODE]; /* !< Data structures to store NUMA information */
 };
 
 /**
@@ -230,7 +246,8 @@ struct ve_sys_load {
 struct ve_mm_struct *find_ve_mm_struct(int, int, int, int, int);
 int veos_init(void);
 int init_ve_node_struct(struct ve_node_struct *, int, char *);
-int init_ve_core_struct(struct ve_core_struct *, struct ve_node_struct *, int);
+int init_ve_core_struct(struct ve_core_struct *,
+					struct ve_node_struct *, int, int);
 int veos_init_ve_node(void);
 int veos_cleanup_pseudo(struct ve_node_struct *);
 int veos_terminate_dma(void *);
@@ -287,6 +304,7 @@ extern const log4c_location_info_t locinfo;
 #define VE_INIT_TASK(ve_tsk) \
 {									\
 	.pid			= 1,					\
+	.namespace_pid		= 1,					\
 	.ptraced		= false,					\
 	.priority		= 0,					\
 	.sched_class		= 0,					\
@@ -304,7 +322,6 @@ extern const log4c_location_info_t locinfo;
 	.tasks			= LIST_HEAD_INIT(ve_tsk.tasks),		\
 	.block_status		= 0,					\
 	.group_leader		= &ve_tsk,				\
-	.tgid			= 1,					\
 	.exit_signal		= 0,					\
 	.clear_child_tid	= NULL,					\
 	.offset			= 0,					\

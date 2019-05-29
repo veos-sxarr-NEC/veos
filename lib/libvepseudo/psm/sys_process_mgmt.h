@@ -38,7 +38,7 @@
 #define ERRNO_MASK 255
 
 #define VE_EXEC_PATH getenv("VE_EXEC_PATH")
-#define VE_EXECVE_ARGS 5
+#define VE_EXECVE_ARGS 6
 
 #define ADDR_MASK 0XFFFFFFFFFFFFF000
 

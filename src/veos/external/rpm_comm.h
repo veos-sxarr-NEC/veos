@@ -31,6 +31,10 @@
 #include "veos.h"
 #define VMFLAGS_LENGTH  81
 #define VE_MAX_REGVALS  64
+#define MAX_CORE_IN_HEX  4
+#define VE_EINVAL_COREID 514
+#define VE_EINVAL_NUMAID 515
+
 /**
  * @brief RPM sub commands
  */
@@ -58,7 +62,9 @@ enum veos_rpm_subcmd {
 	VE_CREATE_PROCESS,
 	VE_SHM_RMLS,
 	VE_GET_REGVALS,
-	VE_RPM_INVALID = -1
+	VE_NUMA_INFO,
+	VE_DEL_DUMMY_TASK,
+	VE_RPM_INVALID = -1,
 };
 
 /**
@@ -118,7 +124,7 @@ typedef struct ipcrm_info {
 * @brief Structure to provide info to remove shared memory from VEOS.
 */
 struct ve_shm_info {
-       int mode;
+	int mode;
 	/*!< SHMKEY = 0,	-Delete shm segment having this key*/
 	/*!< SHMID,		-Delete shm segment having this shmid */
 	/*!< SHM_ALL,		-Delete all shm segment*/
@@ -128,7 +134,8 @@ struct ve_shm_info {
 	/*!< SHMID_QUERY,	-Query whether shmid is valid or not*/
 	/*!< SHMKEY_QUERY,	-Query whether shmkey is valid or not*/
 
-       int key_id; /*shmkey or shmid of segment to be delete*/
+	int key_id;	/*!< shmkey or shmid of segment to be delete*/
+	int node_id;	/*!< Node id of veos */
 };
 
 /**
@@ -158,7 +165,8 @@ struct velib_meminfo {
  */
 struct ve_mapheader {
 	unsigned int length;	/*!< Shared memory segment length */
-	int shmid;		/*!< Shared memory identifier */
+	int node_id;		/* Node id */
+	char filename[S_FILE_LEN]; /*!< File name contains data */
 };
 
 /**
@@ -233,7 +241,6 @@ struct velib_pidstat {
 					 * Process state
 					 * (running, sleeping, stopped, zombie)
 					 */
-	int ppid;			/*!< Parent Process ID  */
 	int processor;			/*!< Core on which task is scheduled on */
 	long priority;			/*!< Scheduling priority */
 	long nice;			/*!< Nice level */
@@ -374,6 +381,7 @@ struct velib_affinity {
 	size_t cpusetsize;	/*!< Specifies the size (in bytes) of mask */
 	cpu_set_t  mask;		/*!< Affinity mask */
 };
+
 /**
  * @brief Data structure used to get/set the resource limit (hard and soft) of VE process
  */
@@ -390,8 +398,32 @@ struct velib_prlimit {
 struct velib_create_process {
 	int flag;      /*!< Flag to preserve the task struct for resource usage */
 	int vedl_fd;    /*!< FD from VE Driver */
-	struct rlimit ve_rlim[RLIM_NLIMITS];
+	struct rlimit ve_rlim[RLIM_NLIMITS];	/*!<
+						 * To store the process limit
+						 * as per flag value */
+	int numa_num;           /*! <NUMA node number */
+	int policy_flag;       /*! <memory policy is retrieved or not. */
+	cpu_set_t mask;        /*!< Affinity mask */
+	bool taskset_flag;          /*!<
+				 *This flag will decide the CPU mask
+				 *is set or not
+				 */
 };
+
+
+/**
+ * * @brief Structure to get the NUMA information for given VE node
+ * */
+struct ve_numa_stat {
+	int tot_numa_nodes;		/*!< NUMA node count */
+	char ve_cores[VE_MAX_NUMA_NODE][MAX_CORE_IN_HEX];/*!< list of cores in
+							 *each NUMA node */
+	unsigned long long mem_size[VE_MAX_NUMA_NODE];	/*!< Memory size of each
+							 *NUMA node */
+	unsigned long long mem_free[VE_MAX_NUMA_NODE];	/*!< Free memory in each
+							 *NUMA node */
+};
+
 
 int veos_write_buf(int, void *, int);
 int veos_rpm_send_cmd_ack(int, uint8_t *, int64_t, int64_t);
@@ -418,4 +450,6 @@ int rpm_handle_prlimit_req(struct veos_thread_arg *);
 int rpm_handle_acctinfo_req(struct veos_thread_arg *);
 int rpm_handle_ipc_ls_rm_req(struct veos_thread_arg *);
 int rpm_handle_get_regvals_req(struct veos_thread_arg *pti);
+int rpm_handle_delete_dummy_task_req(struct veos_thread_arg *pti);
+int rpm_handle_numa_info_req(struct veos_thread_arg *pti);
 #endif

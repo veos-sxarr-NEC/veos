@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2019 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -72,6 +72,7 @@ static void ve_dma_intr__finish_descriptor(ve_dma_hdl *dh, int entry,
 		 * The waiter checks the status with
 		 * ve_dma_reqlist_test().
 		 */
+		VE_DMA_TRACE("pthread_cond_signal");
 		pthread_cond_signal(&r->cond);
 	} else {
 		VE_DMA_TRACE("descriptor #%d has been already finished.",
