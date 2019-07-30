@@ -1934,7 +1934,10 @@ void veos_acct_ve_proc(struct ve_task_struct *tsk)
 	acct_info.ac_pid = tsk->pid;
 
 	/* Parent process ID*/
-	acct_info.ac_ppid = tsk->parent->pid;
+	if(1 == tsk->parent->pid)
+		acct_info.ac_ppid = tsk->real_parent_pid;
+	else
+		acct_info.ac_ppid = tsk->parent->pid;
 
 	/* process creation time */
 	acct_info.ac_btime = tsk->start_time.tv_sec +
@@ -2056,7 +2059,8 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 				bool rpm_task_create,
 				char *exe_path,
 				int *numa_node,
-				int mem_policy)
+				int mem_policy,
+				pid_t real_parent_pid)
 {
 	pid_t host_pid = -1;
 	int retval = -1, ret = -1;
@@ -2166,6 +2170,7 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	tsk->thread_execed = false;
 	tsk->assign_task_flag = TSK_UNASSIGN;
 	tsk->dummy_task = false;
+	tsk->real_parent_pid = real_parent_pid;
 	/* Allocate time slice to VE task, however when scheduled
 	 * this value will be initialised again. We are initializing it
 	 * so that it does not contain any junk value. */
@@ -2442,6 +2447,7 @@ int psm_handle_start_ve_request(struct veos_thread_arg *pti, int pid)
 	int retval = -1;
 	struct ve_start_ve_req_cmd start_ve_req = { {0} };
 	struct ve_task_struct *tsk = NULL;
+	bool invoke_scheduler = false;
 
 	VEOS_TRACE("Entering");
 
@@ -2514,9 +2520,13 @@ int psm_handle_start_ve_request(struct veos_thread_arg *pti, int pid)
 		tsk->ve_task_state = STOP;
 		VEOS_DEBUG("Set state STOP for pid: %d, tracer will"
 				" start this process", tsk->pid);
-	} else
+	} else {
 		psm_set_task_state(tsk, RUNNING);
+		if (tsk->p_ve_core->nr_active == 1)
+			invoke_scheduler = true;
+	}
 	retval = 0;
+
 hndl_return1:
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
 		"Failed to release task lock");
@@ -2524,6 +2534,9 @@ hndl_return1:
 			(&(tsk->p_ve_core->ve_core_lock),
 			UNLOCK,	"Failed to release core lock");
 
+	if (invoke_scheduler)
+		psm_find_sched_new_task_on_core(tsk->p_ve_core,
+				false, false);
 	put_ve_task_struct(tsk);
 hndl_return:
 	VEOS_TRACE("Exiting");

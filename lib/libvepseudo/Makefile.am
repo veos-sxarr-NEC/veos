@@ -17,6 +17,8 @@ nobase_libvepseudo_headers_HEADERS = \
 nobase_nodist_libvepseudo_headers_HEADERS = \
 	common/ve_syscall_no.h
 
+dist_noinst_DATA = libvepseudo.map
+
 libvepseudo_la_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE \
 	-fPIC -std=gnu99 \
@@ -32,7 +34,8 @@ libvepseudo_la_CFLAGS = \
 	-I$(top_srcdir)/include \
 	-I@prefix@/include
 
-libvepseudo_la_LDFLAGS = -version-info 1:0:0
+libvepseudo_la_LDFLAGS = -version-info 1:0:0 \
+	-Wl,--version-script=$(srcdir)/libvepseudo.map
 
 libvepseudo_la_LIBADD = \
 	./common/libpseudocommon.la \

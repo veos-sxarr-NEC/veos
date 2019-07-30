@@ -408,6 +408,7 @@ struct velib_create_process {
 				 *This flag will decide the CPU mask
 				 *is set or not
 				 */
+	int ppid;	/* To store parent process id */
 };
 
 

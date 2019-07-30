@@ -2205,11 +2205,13 @@ ret_t ve_gettimeofday(int syscall_num, char *syscall_name, veos_handle *handle)
 				syscall_name, (int)retval);
 	}
 	/* send the timeval values to VE */
-	if (0 > ve_send_data(handle, args[0],
-				sizeof(struct timeval), (uint64_t *)(&tval))) {
-		PSEUDO_DEBUG("retval: %d, mapped value: %d", -errno, -EFAULT);
-		retval = -EFAULT;
-		goto hndl_return;
+	if (0 != args[0]) {
+		if (0 > ve_send_data(handle, args[0],
+					sizeof(struct timeval), (uint64_t *)(&tval))) {
+			PSEUDO_DEBUG("retval: %d, mapped value: %d", -errno, -EFAULT);
+			retval = -EFAULT;
+			goto hndl_return;
+		}
 	}
 
 	PSEUDO_DEBUG("Timeval returned values = tval.tv_sec = %ld "

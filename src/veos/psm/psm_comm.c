@@ -674,6 +674,7 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 	char exe_name[ACCT_COMM+1] = {0};
 	char exe_path[PATH_MAX] = {0};
 	int numa_node = -1;
+	pid_t real_parent_pid = -1;
 	int mem_policy = MPOL_DEFAULT;
 
 	VEOS_TRACE("Entering");
@@ -710,6 +711,7 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 	node_id = ve_proc.node_id;
 	numa_node = ve_proc.numa_node;
 	mem_policy = ve_proc.mem_policy;
+	real_parent_pid = ve_proc.real_parent_pid;
 
 	retval = amm_dma_xfer(VE_DMA_VHVA, ve_proc.exec_path, pid, VE_DMA_VHVA,
 				(uint64_t)exe_path, getpid(), PATH_MAX, 0);
@@ -806,7 +808,7 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 			ve_proc.shm_lhm_addr,
 			ve_proc.sfile_name,
 			ve_proc.lim, gid, uid, false, exe_path,
-			&numa_node, mem_policy);
+			&numa_node, mem_policy, real_parent_pid);
 	if (0 > retval) {
 		VEOS_ERROR("Failed to create new process");
 		VEOS_DEBUG("Creation of new process(PID: %d) failed", pid);
@@ -2733,14 +2735,14 @@ int psm_handle_clk_cputime_req(struct veos_thread_arg *pti)
 				clk_type = 1;
 		}
 		if (clk_type == -1) {
-			VEOS_ERROR("Invalid clock_gettime() request\n");
+			VEOS_DEBUG("Invalid clock_gettime() request\n");
 			retval = -EINVAL;
 			goto send_ack;
 		}
 		VEOS_DEBUG("clock type: %d", clk_type);
 		switch (CPUCLOCK_WHICH(clockinfo.clockid)) {
 			default:
-				VEOS_ERROR("Invalid clock %d",
+				VEOS_DEBUG("Invalid clock %d",
 						clockinfo.clockid);
 				retval = -EINVAL;
 				break;

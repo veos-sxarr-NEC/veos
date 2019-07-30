@@ -4122,6 +4122,7 @@ ret_t ve_setitimer(int syscall_num, char *syscall_name, veos_handle *handle)
 	struct itimerval *vh_new_value = NULL;
 	struct itimerval *vh_old_value = NULL;
 	uint64_t args[3] = {0};
+	sigset_t signal_mask = { {0} };
 
 	PSEUDO_TRACE("Entering");
 
@@ -4185,9 +4186,14 @@ ret_t ve_setitimer(int syscall_num, char *syscall_name, veos_handle *handle)
 			}
 		}
 
+		PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+		sigfillset(&signal_mask);
+		pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 		/* call VH system call */
 		retval = syscall(syscall_num, args[0],
 			vh_new_value, vh_old_value);
+		pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+
 		if (-1 == retval) {
 			retval = -errno;
 			PSEUDO_ERROR("syscall %s failed %s",

@@ -49,6 +49,8 @@
 #include "velayout.h"
 #include "libvepseudo.h"
 
+/* A lock to avoid sending data unexpected change */
+pthread_mutex_t ve_send_data_lock=PTHREAD_MUTEX_INITIALIZER;
 
 /* NOTE: The below wrapper functions are designed same way as
  * defined in libved.c file
@@ -250,6 +252,10 @@ int ve_send_data_tid(veos_handle *handle, uint64_t address,
 		goto exit_func1;
 	}
 
+	/* If dst or size are not align then acquire lock */
+	if (as->top_offset || as->bottom_offset)
+		pthread_mutex_lock(&ve_send_data_lock);
+
 	/* If top offset, then allocate top buffer and receive data. */
 	if (as->top_offset != 0) {
 		t_buf = (uint64_t *)malloc(ALIGN_BUFF_SIZE);
@@ -346,6 +352,8 @@ exit_func3:
 	if (b_buf) free(b_buf);
 exit_func2:
 	if (buf) free(buf);
+	if (as->top_offset || as->bottom_offset)
+		pthread_mutex_unlock(&ve_send_data_lock);
 exit_func1:
 	if (as) free(as);
 	PSEUDO_DEBUG("returned with %d", ret);

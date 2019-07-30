@@ -219,6 +219,7 @@ struct new_ve_proc {
 	uint64_t uid;		/*!< VE process user ID*/
 	int numa_node;		/*!< NUMA node ID */
 	int mem_policy;		/*!< memory policy for VE process*/
+	pid_t real_parent_pid;  /*!< Parent Process ID of VE Process*/
 };
 
 

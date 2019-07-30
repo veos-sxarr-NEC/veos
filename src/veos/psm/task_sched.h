@@ -33,7 +33,7 @@
 #include "task_mgmt.h"
 
 #define ASSIGN_RETRY_CNT	8
-#define ASSIGN_RETRY_DELAY	1
+#define ASSIGN_RETRY_DELAY	1000	/* Retry interval in nanoseconds */
 #define VE_UDMA_OFFSET_OF_DMACTL(i) (offsetof(core_system_reg_t, dmactl[(i)]))
 #define VE_UDMA_OFFSET_OF_DMADESC(i) (offsetof(core_system_reg_t, dmades[(i)]))
 #define VE_CORE_OFFSET_OF_JIDR (offsetof(core_system_reg_t, JIDR))

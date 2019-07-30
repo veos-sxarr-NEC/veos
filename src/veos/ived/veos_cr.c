@@ -377,7 +377,7 @@ static int64_t veos_cr_alloc(uint64_t mode_flag, struct ucred *cred,
 	IVED_DEBUG(log4cat_veos_ived,
 		"Allocating a CR page with mode %#"PRIx64" to pid:%d",
 		mode_flag, cred->pid);
-	crd_number = veos_allocate_cr_page(mode_flag, cred->pid);
+	crd_number = veos_allocate_cr_page(mode_flag, tsk->group_leader->pid);
 	if (crd_number < 0) {
 		IVED_ERROR(log4cat_veos_ived,
 			"Failed to allocate a CR page with mode %#"PRIx64" to pid:%d: %s",
@@ -466,7 +466,7 @@ static int64_t veos_cr_alloc(uint64_t mode_flag, struct ucred *cred,
 err_put_cr_page:
 	veos_put_cr_page(cr_page_num);
 err_release_cr:
-	veos_detach_cr_page(crd_number, cred->pid);
+	veos_detach_cr_page(crd_number, tsk->group_leader->pid);
 	veos_sync_r_bar2();
 	return veos_retval;
 }
@@ -521,7 +521,7 @@ static int64_t veos_cr_release_local(uint64_t crd_number, struct ucred *cred,
 		PRIx64,	cred->pid, crd_number);
 
 	veos_sync_r_bar01_bar3();
-	ret = veos_detach_cr_page(crd_number, cred->pid);
+	ret = veos_detach_cr_page(crd_number, tsk->group_leader->pid);
 	if (ret) {
 		IVED_ERROR(log4cat_veos_ived,
 			"Failed to release the local CR page referenced by pid:%d crd:%#"PRIx64": %s",
@@ -853,6 +853,7 @@ int veos_shared_cr_crctl(veos_thread_arg_t *pti)
 	struct cr_args *cr_args;
 	int64_t veos_retval;
 	int ret;
+	pid_t pid;
 
 	assert(pti);
 
@@ -884,10 +885,11 @@ int veos_shared_cr_crctl(veos_thread_arg_t *pti)
 		goto err_ret;
 	}
 	cr_args = (struct cr_args *)bin_data->data;
+	pid = (((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid);
 	IVED_DEBUG(log4cat_veos_ived, "Request from pid:%d, Sub command:%#x",
 		cred.pid, cr_args->subcmd);
 
-	tsk = find_ve_task_struct(cred.pid);
+	tsk = find_ve_task_struct(pid);
 	if (tsk == NULL) {
 		IVED_ERROR(log4cat_veos_ived,
 			"Failed to get the task struct of pid:%d", cred.pid);

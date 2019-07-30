@@ -105,13 +105,14 @@ bool psm_unassign_assign_task(struct ve_task_struct *tsk, bool retry_assign)
 	bool ret = false;
 	int retval = -1;
 	int retry = 0;
-	int delay = 0;
+	struct timespec retry_delay = {};
 
 	VEOS_TRACE("Entering");
 
 	if (retry_assign)  {
 		retry = ASSIGN_RETRY_CNT;	/* number of retries when EAGAIN */
-		delay = ASSIGN_RETRY_DELAY;	/* start delay, doubles every retry */
+		retry_delay.tv_sec = 0;		/* start delay, doubles every retry */
+	        retry_delay.tv_nsec = ASSIGN_RETRY_DELAY;
 	}
 
 	/* Unassign task from core */
@@ -141,8 +142,8 @@ bool psm_unassign_assign_task(struct ve_task_struct *tsk, bool retry_assign)
 						tsk->pid);
 				if (retry && retry_assign) {
 					retry--;
-					usleep(delay);
-					delay *= 2;
+					nanosleep(&retry_delay, NULL);
+					retry_delay.tv_nsec *= 2;
 				} else
 					return false;
 			} else {

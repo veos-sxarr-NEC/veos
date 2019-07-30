@@ -454,11 +454,9 @@ int init_stack(veos_handle *handle, int argc,
 	int ret = 0;
 	char *ret_addr = NULL;
 	char *stackbottom = NULL;
-	int indx = 0;
-	uint64_t l_argc = 0;
-	uint64_t p = 0;
 	uint64_t vdso = 0;
 	int cnt_env = 0;
+	int cnt_auxv = 0;
 	reg_t *sp = NULL;
 	reg_t *sz = NULL;
 
@@ -743,6 +741,7 @@ int init_stack(veos_handle *handle, int argc,
 		default:
 			break;
 		}
+		cnt_auxv++;
 		arg_p += AUX_BYTE;
 	} while (AT_NULL != ((Elf64_auxv_t *)arg_p)->a_type);
 	*areap_8b++ = (long long)NULL;
@@ -755,7 +754,7 @@ int init_stack(veos_handle *handle, int argc,
 	PSEUDO_DEBUG("Aligned VE stack address (mmap_addr) %p",
 			(void *)mmap_addr);
 	ret_addr = __ve_mmap(handle, mmap_addr, img_size,
-			PROT_WRITE,
+			PROT_WRITE|PROT_READ,
 			MAP_ADDR_SPACE | MAP_ANON | MAP_PRIVATE |
 			MAP_STACK | MAP_FIXED,
 			-1, 0);
@@ -785,7 +784,18 @@ int init_stack(veos_handle *handle, int argc,
 
 	PSEUDO_DEBUG("heap_start %p", (void *)ALIGN(ve_info.heap_start,
 				load_elf.pagesize));
+	start_ve_req->argv_size = argc;
+	start_ve_req->auxv_size = cnt_auxv;
+	start_ve_req->argv_addr = ve_stack_addr + sizeof(uint64_t);
+	start_ve_req->auxv_addr = start_ve_req->argv_addr + ((argc+cnt_env +2) * sizeof(uint64_t));
 
+	PSEUDO_DEBUG(" ARGC: %lu, ARGV_ADDR: %lx, AUXV_COUNT: %lu, AUXV_ADDR: %lx",
+			start_ve_req->argv_size, start_ve_req->argv_addr,
+			start_ve_req->auxv_size, start_ve_req->auxv_addr);
+#if __DEBUG
+	int indx = 0;
+	uint64_t l_argc = 0;
+	uint64_t p = 0;
 	PSEUDO_DEBUG("STACK VE DUMP");
 	areap_8b = NULL;
 	areap_8b = (long long *)ve_stack_addr;
@@ -802,8 +812,6 @@ int init_stack(veos_handle *handle, int argc,
 	PSEUDO_DEBUG("ARGC_ADDR: %p ARGC: %ld", (void *)areap_8b,  l_argc);
 
 	areap_8b++;
-	start_ve_req->argv_addr = (uint64_t)areap_8b;
-	start_ve_req->argv_size = (uint64_t)argc;
 	indx = (int)l_argc;
 	while (indx--) {
 		if (NULL != (void *)areap_8b) {
@@ -845,7 +853,6 @@ int init_stack(veos_handle *handle, int argc,
 		areap_8b++;
 	}
 
-	start_ve_req->auxv_addr = (uint64_t)areap_8b;
 	PSEUDO_DEBUG("AUXV_ADDR(start addr): %p",
 			(void *)start_ve_req->auxv_addr);
 	arg_p = NULL;
@@ -864,15 +871,15 @@ int init_stack(veos_handle *handle, int argc,
 					strerror(errno));
 				goto stack_err_ret;
 			}
+		indx++;
 		}
 		PSEUDO_DEBUG("AUXV_ADDR: %p, %p",
 				(void *)areap_8b, (void *)arg_p);
 		areap_8b++;
-		indx++;
+		areap_8b++;
 	} while (NULL != (void *)arg_p);
-	PSEUDO_DEBUG("TOTAL AUXV: %d", indx-1);
-	start_ve_req->auxv_size = (uint64_t)(indx-1);
-
+	PSEUDO_DEBUG("TOTAL AUXV: %d", indx);
+#endif
 	ve_info.stack_pointer_aligned = mmap_addr;
 
 	/* set registers for stack */

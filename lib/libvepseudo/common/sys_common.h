@@ -102,7 +102,7 @@
 
 extern log4c_category_t *cat_pseudo_core;
 extern const log4c_location_info_t locinfo;
-
+extern char **environ; /*environment variable*/
 #define VE_ATOMIC_IO ve_atomic_io
 extern bool ve_atomic_io;
 #define MAX_IO_PER_CYCLES (64*1024*1024) /* 64 MB in Bytes*/

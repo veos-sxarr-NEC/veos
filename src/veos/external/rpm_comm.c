@@ -1254,7 +1254,7 @@ skip_affinity_mask_check:
 	retval = psm_handle_exec_ve_process(pti, &core_id, &node_id,
 			pid, 0, "Dummy_task", false, 0, (uint64_t)0,
 			NULL, NULL, 0, 0, true, "Dummy path", &numa_node,
-			create_proc.policy_flag);
+			create_proc.policy_flag, create_proc.ppid);
 	if (0 > retval) {
 		VEOS_ERROR("Creating VE process failed");
 		VEOS_DEBUG("Creating VE process from RPM command returned: %d",

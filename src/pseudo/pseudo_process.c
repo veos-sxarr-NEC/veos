@@ -823,6 +823,8 @@ int main(int argc, char *argv[], char *envp[])
 	ve_proc.exec_path = (uint64_t)&exec_path[0];
 	ve_proc.numa_node = numa_node;
 	ve_proc.mem_policy = mem_policy;
+	ve_proc.real_parent_pid = getppid();
+
 	file_name = basename(sfile_name);
 	memset(&(ve_proc.exe_name), '\0', ACCT_COMM + 1);
 	strncpy(ve_proc.exe_name, exe_base_name, ACCT_COMM);

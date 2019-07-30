@@ -450,6 +450,7 @@ struct ve_task_struct {
 	bool dummy_task;	/*!< RPM dummy task identifier, to disable accounting
 				* information in case RPM sends delete dummy
 				* task request */
+	pid_t real_parent_pid;  /*!< VE Parent proces PID */
 };
 
 
@@ -520,7 +521,7 @@ int64_t psm_handle_schedule_ve_process(pid_t);
 int psm_handle_exec_ve_process(struct veos_thread_arg *, int *,
                 int *, int, int, char *, bool, pid_t,  uint64_t, char *,
                 struct rlimit *, uint64_t, uint64_t, bool, char *, int *,
-                int);
+                int, pid_t);
 int psm_pseudo_send_load_binary_req(struct veos_thread_arg *, int, int, int, int);
 int psm_handle_delete_ve_process(struct ve_task_struct *);
 void delete_entries(struct ve_task_struct *);

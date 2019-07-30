@@ -27,12 +27,16 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <limits.h>
-
+#include <unistd.h>
 #include <libved.h>
 #include "mm_transfer.h"
 #include <vhcall.h>
 #include "vhcall_os.h"
 #include "velayout.h"
+
+
+#define SH_PATH      "/bin/sh"		/* Shell Path */
+#define SHELL        "sh"		/* Shell Name */
 
 /**
  * @brief Type of a function called by VH call on VH
@@ -481,7 +485,6 @@ int sys_vhcall_uninstall(veos_handle *handle, vhcall_handle vh)
 	}
 	return retval;
 }
-
 /**
  * @brief Handler of SYSVE_SYSTEM:
  *
@@ -507,7 +510,69 @@ int sys_system(veos_handle *handle, uintptr_t line,
 
 	/* allocate buffer */
 	if (line != 0L && size != 0) {
-		command = calloc(1, size);
+		command = calloc(1, size+1);
+		if (NULL == command) {
+			PSEUDO_ERROR("calloc failed: %s\n",
+					strerror(errno));
+			retval = -1;
+			goto err_alloc_command;
+		}
+	}
+	/* copy in */
+	if (command != NULL) {
+		recv_data_status = ve_recv_data(handle, line, size,
+				command);
+		if (recv_data_status < 0) {
+			PSEUDO_ERROR("ve_recv_data returned %d\n",
+					recv_data_status);
+			retval = -1;
+			goto err_recv_data;
+		}
+	}
+	retval = system(command);
+	PSEUDO_DEBUG("(command:%s), status[%d]", (char *)command,
+			retval);
+
+err_recv_data:
+	free(command);
+err_alloc_command:
+	return retval;
+}
+
+/**
+ * @brief Handler of SYSVE_SYSTEM2:
+ *
+ * Whenever VE_SYSVE_SYSTEM2 command received from library side.
+ * @param[in] handle : VEOS handle
+ * @param[in] line : Input buffer on VE side to receive command.
+ *          [If line is not NULL, data is copied in to VH]
+ * @param size : size of input buffer
+ * @param oldmask : old signal set
+ *
+ * @return 0 on success. -1 on error.
+ */
+
+int sys_system2(veos_handle *handle, uintptr_t line,
+		size_t size, uint64_t oldmask)
+{
+
+	int retval = 0, recv_data_status = 0, status = 0;
+	void *command = NULL;
+	struct sigaction sig_intr, sig_quit;
+	pid_t pid = -1;
+	PSEUDO_DEBUG("sys_system2 is called\n");
+
+	/* allocate buffer */
+	if (line != 0L && size != 0) {
+		command = calloc(1, size+1);
+		if (NULL == command) {
+			PSEUDO_ERROR("calloc failed: %s\n",
+					strerror(errno));
+			retval = -1;
+			goto err_alloc_command;
+		}
+	} else if (size == 0) {
+		command = calloc(1, 1);
 		if (NULL == command) {
 			PSEUDO_ERROR("calloc failed: %s\n",
 					strerror(errno));
@@ -526,9 +591,39 @@ int sys_system(veos_handle *handle, uintptr_t line,
 			goto err_recv_data;
 		}
 	}
-	retval = system(command);
-	PSEUDO_DEBUG("(command:%s), status[%d]", (char *)command,
-					retval);
+	/* Instead of offlaoding, implemented system()
+	 * For more refer #1651*/
+	pid = fork();
+	if (pid == -1) {
+		PSEUDO_ERROR("fork in system () failed : %s\n",
+				strerror(errno));
+		retval = -errno;
+	} else if (pid == (pid_t) 0) {
+		const char *exec_argv[4];
+		exec_argv[0] = SHELL;
+		exec_argv[1] = "-c";
+		exec_argv[2] = command;
+		exec_argv[3] = NULL;
+
+		/* close VEDL handle */
+		veos_handle_free(handle);
+
+		sigaction(SIGINT, &sig_intr, (struct sigaction *) NULL);
+		sigaction(SIGQUIT, &sig_quit, (struct sigaction *) NULL);
+		sigprocmask(SIG_SETMASK, (sigset_t *)&oldmask,
+				(sigset_t *) NULL);
+
+		execve(SH_PATH, (char *const *) exec_argv, environ);
+		PSEUDO_DEBUG("execve failed: %s\n", strerror(errno));
+		exit(127);
+	} else {
+		if (TEMP_FAILURE_RETRY(waitpid(pid, &status, 0)) != pid)
+			retval = -1;
+		else
+			retval = status;
+	}
+
+	PSEUDO_DEBUG("(command:%s), status[%d]", (char *)command, retval);
 
 err_recv_data:
 	free(command);
