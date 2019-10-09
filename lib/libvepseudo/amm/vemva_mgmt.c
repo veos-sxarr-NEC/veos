@@ -28,8 +28,204 @@
 #include "sys_common.h"
 #include "sys_mm.h"
 
+as_attr_t as_attributes;
+
 /**
- * @brief This function is used to obtain virtual memory for VE on VH side.
+ * @brief This function scan the vemva dir bitmap
+ * to find out number of free vemva.
+ *
+ * @param[in] vemva_dir vemva directory structure.
+ * @param[in] entry from where free vemva is required.
+ * @param[out] count number of free vemva
+ *
+ */
+void continous_free(struct vemva_struct *vemva_dir,
+		int64_t entry, int64_t *count)
+{
+	int64_t word = 0, bit = 0;
+	uint64_t *bitmap = NULL;
+	int idx = 0;
+	PSEUDO_TRACE("invoked");
+	PSEUDO_DEBUG("invoked with count %ld func entry %ld", *count, entry);
+
+	word = entry / BITS_PER_WORD;
+	bit = entry % BITS_PER_WORD;
+	bitmap = vemva_dir->bitmap;
+
+	for (idx = entry; idx < ENTRIES_PER_DIR; idx++) {
+		PSEUDO_DEBUG("checking bit %ld word %ld", bit, word);
+
+		if (!(bitmap[word] & ((uint64_t)1 << bit)))
+			break;
+		else
+			--(*count);
+
+		bit++;
+
+		if (bit >= BITS_PER_WORD) {
+			word++;
+			bit = 0;
+		}
+
+	}
+}
+
+/**
+ * @brief This function is used to obtain virtual memory for
+ * 	  VE on VH side within first 64GB of address space.
+ *
+ * @param[in] handle handle veos_handle
+ * @param[out] addr Memory address for mapping
+ * @param[in] size Memory length to map
+ * @param[in] flag flag to control memory mapping
+ * @param[in] prot Memory protection flag
+ * @param[in] fd File descriptor for file backed mapping
+ * @param[in] offset Offset to file
+ *
+ * @return Return virtual address on success, (void *)-1 on error and set
+ * errno.
+ */
+void *ve_get_vemva_under_64GB(veos_handle *handle, vemva_t addr,
+		uint64_t size, uint64_t flag, int prot, int fd, uint64_t offset)
+{
+	void *vemva  = MAP_FAILED;
+	bool is_holes = false;
+
+	PSEUDO_TRACE("Invoked");
+
+	pthread_mutex_lock(&as_attributes.as_attr_lock);
+	/*Initialize the mapping attributes*/
+	if (!as_attributes.addr_space_2mb_next &&
+			!as_attributes.addr_space_64mb_next) {
+		if (default_page_size == PAGE_SIZE_2MB) {
+			PSEUDO_DEBUG("Initializing attr for %lx align binary",
+					default_page_size);
+			as_attributes.addr_space_2mb_next
+						= ADDR_SPACE_2MB_START;
+			as_attributes.addr_space_64mb_next
+						= ADDR_SPACE_2MB_END;
+		} else {
+			PSEUDO_DEBUG("Initializing attr for %lx align binary",
+					default_page_size);
+			as_attributes.addr_space_64mb_next
+						= ADDR_SPACE_64MB_START;
+			as_attributes.addr_space_2mb_next
+						=  ADDR_SPACE_64MB_END;
+		}
+	}
+
+	/* specify from where to map requested memory  within first 64GB of
+	 * address space. We are not allowing mapping at user specified address
+	 * to avoid scattered mapping as we have limited address space*/
+	if (default_page_size == PAGE_SIZE_2MB) {
+		if (ve_page_info.page_size == PAGE_SIZE_2MB) {
+			if (!(flag & MAP_ADDR_64GB_FIXED)
+					&& (addr != TRAMP_2MB)) {
+				addr =	as_attributes.addr_space_2mb_next;
+				PSEUDO_DEBUG("Next addr for 2MB-2MB"
+						" page size %lx", addr);
+			}
+			/*verify that current mapping not beyond the limit*/
+			if ((addr + size) > ADDR_SPACE_2MB_END) {
+				PSEUDO_DEBUG("Max address space limit reached"
+						" for 2MB page size");
+				is_holes = true;
+				goto use_holes;
+			}
+		} else {
+			if (!(flag & MAP_ADDR_64GB_FIXED)) {
+				addr = as_attributes.addr_space_64mb_next;
+				PSEUDO_DEBUG("Next addr for 2MB-64MB page"
+						" size %lx", addr);
+			}
+			/*verify that current mapping not beyond the limit*/
+			if ((addr + size) > HEAP_START) {
+				PSEUDO_DEBUG("Max address space limit reached"
+						" for 64MB page size");
+				is_holes = true;
+				goto use_holes;
+			}
+		}
+	} else {
+		if (ve_page_info.page_size == PAGE_SIZE_64MB) {
+			if (!(flag & MAP_ADDR_64GB_FIXED)) {
+				addr = as_attributes.addr_space_64mb_next;
+				PSEUDO_DEBUG("Next addr for 64MB-64MB"
+						" page size %lx", addr);
+			}
+			/*verify that current mapping not beyond the limit*/
+			if ((addr + size) > ADDR_SPACE_64MB_END) {
+				PSEUDO_DEBUG("Max address space limite "
+						"reached for 2MB page size");
+				is_holes = true;
+				goto use_holes;
+			}
+		} else {
+			/*verify that current mapping not beyond the limit*/
+			if (!(flag & MAP_ADDR_64GB_FIXED)
+					&& (addr != TRAMP_64MB)) {
+				addr =	as_attributes.addr_space_2mb_next;
+				PSEUDO_DEBUG("Next addr for 2MB-64MB"
+						" page size %lx", addr);
+			}
+			if ((addr + size) > HEAP_START) {
+				PSEUDO_DEBUG("Max address space limit"
+						" reached for 64MB page size");
+				is_holes = true;
+				goto use_holes;
+			}
+		}
+	}
+
+	flag |= MAP_FIXED;
+
+	vemva = ve_get_vemva(handle, addr, size, flag, prot, fd, offset);
+	if (vemva == MAP_FAILED) {
+		PSEUDO_DEBUG("free vemva is not found at address 0x%lx", addr);
+
+		/* Let's try to allocate memory at holes created within first
+		 * 64GB address space. dlopen() and dlclose() function can
+		 * create holes in 64GB of address space */
+use_holes:
+		flag &= ~MAP_FIXED;
+		vemva = ve_get_vemva(handle, 0, size, flag, prot, fd, offset);
+		if (vemva == MAP_FAILED) {
+			PSEUDO_DEBUG("No free vemva within "
+					"64GB address space");
+			pthread_mutex_unlock(&as_attributes.as_attr_lock);
+			return vemva;
+		} else {
+			/*first check is new vemva is valid or not*/
+			if (((uint64_t)vemva) > HEAP_START) {
+				PSEUDO_DEBUG("Invalid vemva %p", vemva);
+				ve_free_vemva(vemva, size);
+				vemva = MAP_FAILED;
+				pthread_mutex_unlock(&as_attributes.as_attr_lock);
+				return vemva;
+			}
+		}
+	}
+
+	/* Update next addresses into mapping attributes*/
+	if (!(flag & MAP_ADDR_64GB_FIXED) && (addr != TRAMP_2MB)
+			&& (addr != TRAMP_64MB) && !is_holes) {
+		if (ve_page_info.page_size == PAGE_SIZE_2MB)
+			as_attributes.addr_space_2mb_next
+				= (vemva_t)(addr + size);
+		else
+			as_attributes.addr_space_64mb_next
+				= (vemva_t)(addr + size);
+	}
+
+	pthread_mutex_unlock(&as_attributes.as_attr_lock);
+	PSEUDO_DEBUG("returned with : vemva %p", vemva);
+	PSEUDO_TRACE("returned");
+	return vemva;
+}
+
+/**
+ * @brief This function is used
+ * to obtain virtual memory for VE on VH side.
  *
  * @param[in] handle handle veos_handle
  * @param[out] addr Memory address for mapping
@@ -192,6 +388,7 @@ void *ve_get_fixed_vemva(veos_handle *handle, struct vemva_struct *vemva_tmp,
 		uint64_t vaddr, int64_t entry, int64_t count, uint64_t flag)
 {
 	void *vemva = (void *)-1;
+	int64_t free_count = count;
 
 	PSEUDO_DEBUG("invoked");
 	PSEUDO_DEBUG("invoked to get vemva %p", (void *)vaddr);
@@ -207,11 +404,16 @@ void *ve_get_fixed_vemva(veos_handle *handle, struct vemva_struct *vemva_tmp,
 			ve_page_info.page_size;
 		if ((entry+count) > ENTRIES_PER_DIR &&
 				(vemva_tmp->consec_dir == 1)) {
+			/* Before expanding checking total free vemva in
+			 * current directory*/
+			continous_free(vemva_tmp, entry, &free_count);
+			PSEUDO_DEBUG("vemva count %ld will expanded with dir %p",
+					free_count, vemva_tmp->vemva_base);
 			/*
 			 * try expanding
 			 */
-			vemva_tmp = alloc_vemva_dir(handle, vemva_tmp, vaddr,
-					count, flag | MAP_FIXED);
+			vemva_tmp = alloc_vemva_dir(handle, vemva_tmp,
+					vaddr, free_count, flag | MAP_FIXED);
 			if (NULL == vemva_tmp)
 				goto err_exit;
 		}
@@ -311,6 +513,9 @@ void *avail_vemva(veos_handle *handle, uint64_t vaddr,
 	if (flag & MAP_ADDR_SPACE)
 		required_type = (uint8_t)((flag & MAP_64MB) ?
 			ADDR_SPACE_64MB : ADDR_SPACE_2MB);
+	else if (flag & MAP_ADDR_64GB_SPACE)
+		required_type = (uint8_t)((flag & MAP_64MB) ?
+			AS_WITHIN_64GB_64MB : AS_WITHIN_64GB_2MB);
 	else
 		required_type = (uint8_t)((flag & MAP_64MB) ?
 			ANON_SPACE_64MB : ANON_SPACE_2MB);
@@ -391,10 +596,6 @@ void *avail_vemva(veos_handle *handle, uint64_t vaddr,
 					}
 				}
 			}
-		} else if (flag & MAP_FIXED) {
-			if (dealloc_vemva_dir(vemva_tmp))
-				PSEUDO_DEBUG("error while deallocating vemva directory.");
-			goto err_exit;
 		} else
 			/*Serve the request from this chunk*/
 			vemva = ve_get_free_vemva(handle, vemva_tmp, 0, count);
@@ -497,6 +698,13 @@ out:
 	 */
 	vemva = vemva_dir->vemva_base + (ve_page_info.page_size *
 			((word*BITS_PER_WORD) + entry));
+
+	/* Updating used dir count for directory allocated for 64GB of
+	 * address space*/
+	if ((vemva_dir->type == AS_WITHIN_64GB_2MB) ||
+				(vemva_dir->type == AS_WITHIN_64GB_64MB))
+		if ((vemva_dir->used_count - count) == 0)
+			vemva_header.vemva_count++;
 
 	PSEUDO_DEBUG("returned with vemva: %p", vemva);
 	PSEUDO_TRACE("returned");
@@ -615,10 +823,18 @@ int __ve_free_vemva(void *vemva_addr, size_t size, bool del_dir)
 			 * del dir if yes
 			 */
 			if ((vemva_del->used_count == 0) && del_dir) {
-				if (dealloc_vemva_dir(vemva_del)) {
-					PSEUDO_DEBUG("dealloc_vemva_dir \
-							failed.");
-					goto err_exit;
+				if ((vemva_del->type == AS_WITHIN_64GB_2MB) ||
+					(vemva_del->type == AS_WITHIN_64GB_64MB)) {
+					if (vemva_header.vemva_count)
+						vemva_header.vemva_count--;
+				} else {
+					PSEUDO_DEBUG("deleting vemva dir %p",
+							vemva_del->vemva_base);
+					if (dealloc_vemva_dir(vemva_del)) {
+						PSEUDO_DEBUG("dealloc_vemva_dir \
+								failed.");
+						goto err_exit;
+					}
 				}
 			}
 		}
@@ -677,6 +893,7 @@ int free_vemva(veos_handle *handle, struct vemva_struct *vemva_tmp,
 					ve_page_info.page_size, false);
 			if (0 > ret) {
 				PSEUDO_DEBUG("unable to UNMAP memory region");
+				goto err_out;
 			}
 		}
 		entry++;
@@ -902,6 +1119,9 @@ void *scan_vemva_dir_list(veos_handle *handle, uint64_t count, uint64_t flag)
 	if (flag & MAP_ADDR_SPACE)
 		required_type = (uint8_t)((flag & MAP_64MB) ?
 			ADDR_SPACE_64MB : ADDR_SPACE_2MB);
+	else if (flag & MAP_ADDR_64GB_SPACE)
+		required_type = (uint8_t)((flag & MAP_64MB) ?
+			AS_WITHIN_64GB_64MB : AS_WITHIN_64GB_2MB);
 	else
 		required_type = (uint8_t)((flag & MAP_64MB) ?
 			ANON_SPACE_64MB : ANON_SPACE_2MB);
@@ -915,7 +1135,12 @@ void *scan_vemva_dir_list(veos_handle *handle, uint64_t count, uint64_t flag)
 	list_for_each(temp_list_head, &vemva_header.vemva_list) {
 		vemva_tmp = list_entry(temp_list_head,
 				struct vemva_struct, list);
-
+		PSEUDO_DEBUG("scanning vemva dir %p used count %ld"
+					" req type %d vemva_tmp->type %d",
+						vemva_tmp->vemva_base,
+						vemva_tmp->used_count,
+						required_type,
+						vemva_tmp->type);
 		if (vemva_tmp->type != required_type)
 			continue;
 
@@ -926,10 +1151,8 @@ void *scan_vemva_dir_list(veos_handle *handle, uint64_t count, uint64_t flag)
 			break;
 	}
 
-	if (vemva != (void *)-1)
-		PSEUDO_DEBUG("returned with vemva %p\n", vemva);
-	else
-		PSEUDO_DEBUG("returned with vemva %p\n", vemva);
+
+	PSEUDO_DEBUG("returned with vemva %p\n", vemva);
 
 	PSEUDO_TRACE("returned");
 	return vemva;
@@ -950,9 +1173,27 @@ int init_vemva_header(void)
 		return -1;
 	}
 
+	/*Initialize the mapping attributes*/
+	init_as_attr();
+
 	PSEUDO_DEBUG("Return: Success");
 	PSEUDO_TRACE("returned");
 	return 0;
+}
+
+/**
+ * @brief This function initializes the aaddress space mapping attributes
+ * for first 64GB of address space.
+ */
+void init_as_attr(void)
+{
+	PSEUDO_DEBUG("Intializing mapping atttributes");
+	/*init as_attr_lock */
+	if (0 != pthread_mutex_init(&as_attributes.as_attr_lock, NULL)) {
+		PSEUDO_ERROR("failed to initialize as_attr_lock");
+                fprintf(stderr, "VE process setup failed\n");
+                pseudo_abort();
+	}
 }
 
 /**
@@ -1044,6 +1285,7 @@ void *get_aligned_chunk(uint64_t vaddr_req, uint8_t required_chunks,
 
 	lflag = MAP_PRIVATE | MAP_ANON;
 	lflag |= (flag & MAP_ADDR_SPACE) ? MAP_FIXED : 0;
+	lflag |= (flag & MAP_ADDR_64GB_SPACE) ? MAP_FIXED : 0;
 
 	PSEUDO_TRACE("invoked");
 	PSEUDO_DEBUG("invoked with flag 0x%lx lflag 0x%lx",
@@ -1207,6 +1449,7 @@ uint64_t __get_page_size(vemva_t vaddr)
 			return 0;
 		}
 
+
 		if (vemva_req->type == ANON_SPACE_2MB) {
 			PSEUDO_DEBUG("vaddr %lx lies in ANON_SPACE_2MB",
 					vaddr);
@@ -1221,6 +1464,14 @@ uint64_t __get_page_size(vemva_t vaddr)
 			page_size = PAGE_SIZE_2MB;
 		} else if (vemva_req->type == ADDR_SPACE_64MB) {
 			PSEUDO_DEBUG("vaddr %lx lies in ADDR_SPACE_64MB",
+					vaddr);
+			page_size = PAGE_SIZE_64MB;
+		} else if (vemva_req->type == AS_WITHIN_64GB_2MB) {
+			PSEUDO_DEBUG("vaddr %lx lies in AS_WITHIN_64GB_2MB",
+					vaddr);
+			page_size = PAGE_SIZE_2MB;
+		} else if (vemva_req->type == AS_WITHIN_64GB_64MB){
+			PSEUDO_DEBUG("vaddr %lx lies in AS_WITHIN_64GB_64MB",
 					vaddr);
 			page_size = PAGE_SIZE_64MB;
 		} else {
@@ -1295,7 +1546,7 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *v
 	}
 
 	vemva_base = get_aligned_chunk(required_base, req_dir_count, flag);
-	if (NULL == vemva_base) {
+	if (MAP_FAILED == vemva_base) {
 		PSEUDO_DEBUG("Can't get 512Mb Chunk.");
 		vemva_ret = NULL;
 		goto err_exit;
@@ -1321,10 +1572,8 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *v
 		vemva_tmp = (struct vemva_struct *)malloc(sizeof
 				(struct vemva_struct));
 		if (vemva_tmp == NULL) {
-			/*
-			 * Here is a possible memory leak for
-			 * priviously allocated dir
-			 */
+			munmap(vemva_base, ve_page_info.chunk_size*
+					req_dir_count);
 			PSEUDO_DEBUG("malloc in alloc_vemva FAILED");
 			return NULL;
 		}
@@ -1353,6 +1602,10 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *v
 			vemva_tmp->type = (uint8_t)((ve_page_info.page_size ==
 				PAGE_SIZE_2MB) ?
 				ADDR_SPACE_2MB : ADDR_SPACE_64MB);
+		else if (flag & MAP_ADDR_64GB_SPACE)
+			vemva_tmp->type = (uint8_t)((ve_page_info.page_size ==
+				PAGE_SIZE_2MB) ?
+				AS_WITHIN_64GB_2MB : AS_WITHIN_64GB_64MB);
 		else
 			vemva_tmp->type = (uint8_t)((ve_page_info.page_size ==
 				PAGE_SIZE_2MB) ?
@@ -1372,6 +1625,9 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *v
 					ve_page_info.page_size);
 			if (retval == -1) {
 				PSEUDO_DEBUG("new_vemva_chunk_atn_init failed");
+				munmap(vemva_base, ve_page_info.chunk_size*
+					req_dir_count);
+				vemva_ret = NULL;
 				free(vemva_tmp);
 				errno = ENOMEM;
 				goto err_exit;
@@ -1515,8 +1771,8 @@ int dealloc_vemva_dir(struct vemva_struct *vemva_del)
 	struct vemva_struct *vemva_prev = NULL;
 
 	PSEUDO_TRACE("invoked");
-	PSEUDO_DEBUG("invoked with vemva_del: %p",
-			vemva_del);
+	PSEUDO_DEBUG("invoked with vemva_del:%p base %p",
+			vemva_del, vemva_del->vemva_base);
 
 	vemva_current = list_prev_entry(vemva_del, list);
 	vemva_current->consec_dir = 1;

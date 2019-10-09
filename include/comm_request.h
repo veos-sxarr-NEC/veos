@@ -496,7 +496,7 @@ struct ve_clockinfo {
  * @brief mprotect request structure received by AMM from pseudo process.
  */
 struct pseudo_mprotect_req {
-	uint64_t ret_addr;	/*!< Mapped virtual address. */
+	vemva_t ret_addr;	/*!< Mapped virtual address. */
 	uint64_t size;		/*!< Size of the memory to map. */
 	int prot;		/*!< Protection control bits. */
 	int atb_flag;		/*!< Determines ATB to update or not. */

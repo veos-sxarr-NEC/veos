@@ -1,1 +1,1 @@
-SUBDIRS = pseudo veos ived
+SUBDIRS = pseudo veos ived ve_validate_bin

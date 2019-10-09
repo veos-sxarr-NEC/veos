@@ -72,13 +72,27 @@
 #define ANON_SPACE_64MB		((uint8_t)1 << 2)
 #define ADDR_SPACE_64MB		((uint8_t)1 << 3)
 
+#define AS_WITHIN_64GB_2MB	((uint8_t)1 << 4)
+#define AS_WITHIN_64GB_64MB	((uint8_t)1 << 5)
 
-/* Mapping control flags */
+/* Mapping control flags
+ * Note : MAP_2MB, MAP_64MB, MAP_ADDR_SPACE, MAP_VDSO flags are also
+ * defined in file 've_mem.h'. There puropose is same in noth file.
+ * please take care while modifying these flag value.
+ *
+ * Note : MAP_ADDR_64GB_FIXED and MAP_ADDR_64GB_SPACE these both
+ * flags are also defined in file 'loader.c' and glibc please take
+ * before modifying the value of these flag
+ * */
+
 #define MAP_VESHM		((uint64_t)1<<21)
 #define MAP_2MB			((uint64_t)1<<22)
 #define MAP_64MB		((uint64_t)1<<23)
+#define MAP_ADDR_64GB_FIXED     ((uint64_t)1<<36)
+#define MAP_ADDR_64GB_SPACE     ((uint64_t)1<<35)
 #define MAP_ADDR_SPACE		((uint64_t)1<<34)
 #define MAP_VDSO		((uint64_t)1<<32)
+
 
 /**
 * @brief This flag is used to specify,
@@ -89,6 +103,19 @@
 #define ALL_CONSEC		(((uint8_t)1)<<3)
 #define MARK_VESHM		(((uint8_t)1)<<4)
 #define MARK_FILE		(((uint8_t)1)<<5)
+
+
+/**
+* @brief These macro are related to mapping that comes under first 64GB
+*        of process address space.
+*/
+#define HEAP_START			0x601000000000
+#define ADDR_SPACE_2MB_START		0x600000000000
+#define ADDR_SPACE_64MB_START		0x600000000000
+#define ADDR_SPACE_2MB_END		0x600400000000
+#define ADDR_SPACE_64MB_END		0x600c00000000
+#define TRAMP_2MB                       0x6003ffe00000
+#define TRAMP_64MB                      0x600fffe00000
 
 extern uint64_t default_page_size;
 /**
@@ -117,23 +144,48 @@ struct vemva_header {
 extern struct vemva_header vemva_header;
 
 /**
+ * * @brief structure to specify executable and shared libraries address
+ *          mapping withing first 64GB of total address space.
+ * */
+typedef struct addr_space_attribute {
+	vemva_t addr_space_2mb_next;	/*!< starting address for 2MB
+					 * page aligned mapping*/
+	vemva_t addr_space_64mb_next;	/*!< starting address for 64MB
+					 * page aligned mapping */
+	union trampoline {
+		vemva_t tramp_2MB;
+		vemva_t tramp_64MB;
+	}tramp;
+	pthread_mutex_t as_attr_lock; /*!< pthread_mutex lock to access
+                                           address space mapping attributes*/
+} as_attr_t;
+
+extern as_attr_t as_attributes;
+
+/**
  * @brief Data Structure for VEMVA List
  */
 struct vemva_struct {
-	struct list_head list;			/*!< structure to contain list entry*/
-	void *vemva_base;			/*!< pointer to vemva base address */
+	struct list_head list;			/*!< structure to contain
+						 * list entry*/
+	void *vemva_base;			/*!< pointer to vemva base
+						 *  address */
 	uint64_t bitmap[WORDS_PER_BITMAP];	/*!< bitmap which is used*/
 	uint64_t veshm_bitmap[WORDS_PER_BITMAP];/*!< bitmap which is VESHM */
-	uint64_t file_bitmap[WORDS_PER_BITMAP];	/*!< bitmap which is fileback or not*/
+	uint64_t file_bitmap[WORDS_PER_BITMAP];	/*!< bitmap which is fileback
+						 * or not*/
 	uint8_t type;				/*!< dir type (2MB or 64MB)*/
 	uint64_t dir_size;			/*!< dir size*/
 	uint64_t used_count;			/*!< Number of used pages*/
 	uint8_t consec_dir;			/*!< consective dir count*/
-	pthread_mutex_t vemva_bitmap_lock;	/*!< pthread_mutex lock for VEMVA*/
+	pthread_mutex_t vemva_bitmap_lock;	/*!< pthread_mutex lock for
+						 * VEMVA*/
 };
 
 /* VEMVA supported functions prototypes */
 void *ve_get_vemva(veos_handle *, uint64_t, uint64_t,
+		uint64_t, int, int, uint64_t);
+void *ve_get_vemva_under_64GB(veos_handle *, vemva_t, uint64_t,
 		uint64_t, int, int, uint64_t);
 void *ve_get_nearby_vemva(veos_handle *, struct vemva_struct *,
 		uint64_t, int64_t, int64_t, uint64_t);
@@ -153,14 +205,12 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *, struct vemva_struct *,
 		uint64_t, uint16_t, int64_t);
 int dealloc_vemva_dir(struct vemva_struct *);
 void add_vemva_dir_in_list(struct vemva_struct *);
-
 int mark_vemva(uint64_t, uint64_t, int);
 int check_bits(struct vemva_struct *, int64_t, int64_t, uint8_t);
 void mark_bits(struct vemva_struct *, int64_t, int64_t, uint8_t);
-
-int init_vemva_addr_space(void);
 int init_vemva_header(void);
-
+void init_as_attr(void);
+void continous_free(struct vemva_struct *, int64_t, int64_t *);
 int get_page_size(vemva_t);
 uint64_t __get_page_size(vemva_t vaddr);
 

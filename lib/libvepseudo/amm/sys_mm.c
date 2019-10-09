@@ -26,7 +26,6 @@
  * @internal
  * @author AMM
  */
-
 #include <sys/shm.h>
 #include "sys_common.h"
 #include "libved.h"
@@ -44,6 +43,79 @@
 #include "velayout.h"
 #include "sys_process_mgmt.h"
 #include "exception.h"
+
+
+
+/**
+ * @brief This interface will reserve the space for "signal trampoline' code and
+ *        store the trampoline code at reserve space.There will be different
+ *        location for 2MB or 64MB compiled binary.
+ *        2MB VE page : signal trampoline at location TRAMP_2MB.
+ *        64MB VE page : signal trampoline at location TRAMP_64MB.
+ *
+ * @param[in] handle VEOS handle.
+ *
+ * @return This interface will return 0 on success and negative of
+ * errno on failure.
+ */
+
+int reserve_signal_trampoline(veos_handle *handle)
+{
+	int ret = 0;
+	const uint64_t flags = MAP_2MB|MAP_ANON|MAP_PRIVATE
+					|MAP_FIXED|MAP_ADDR_64GB_SPACE;
+	vemva_t tramp = (default_page_size == PAGE_SIZE_2MB) ?
+						TRAMP_2MB : TRAMP_64MB;
+	uint64_t tramp_buf[5];
+
+	/*copy trampoline code*/
+	tramp_buf[0] = 0x462eaeae00000000;
+	tramp_buf[1] = 0x012e008e00000018;
+	tramp_buf[2] = 0x45000f0000000000;
+	tramp_buf[3] = 0x310003ae00000000;
+	tramp_buf[4] = 0x3f00000000000000;
+
+
+	/*Reserve VE page for signal trampoline code*/
+	PSEUDO_DEBUG("Signal Trampoline address 0x%lx", tramp);
+	if (MAP_FAILED == __ve_mmap(handle, tramp, PAGE_SIZE_2MB,
+				PROT_WRITE|PROT_READ, flags, -1, 0)) {
+		ret = -errno;
+		PSEUDO_DEBUG("Error(%s) while mapping trampoline code",
+							 strerror(errno));
+		return ret;
+	} else
+		PSEUDO_DEBUG("Signal Trampoline mapped at 0x%lx", tramp);
+
+	if (default_page_size == PAGE_SIZE_2MB)
+		as_attributes.tramp.tramp_2MB = tramp;
+	else
+		as_attributes.tramp.tramp_64MB = tramp;
+
+	/*Copy the trampoline code to VE memory*/
+	ret = ve_send_data(handle, tramp, sizeof(tramp_buf), tramp_buf);
+	if (ret < 0) {
+		ret = -EFAULT;
+		PSEUDO_DEBUG("Failed to write data to VE memory");
+		return ret;
+	}
+	/*Change the access permission of reserved memory for trampoline*/
+	/* Call VH mprotect system call */
+	ret = syscall(SYS_mprotect, tramp, PAGE_SIZE_2MB, PROT_READ);
+	if (0 > ret) {
+		ret = -errno;
+		PSEUDO_DEBUG("Error(%s) while off loading syscall on VH",
+				strerror(-ret));
+		return ret;
+	}
+
+	/*sending request*/
+	ret = amm_request_mprotect(handle, tramp, PAGE_SIZE_2MB, PROT_READ);
+	if (0 > ret)
+		PSEUDO_DEBUG("Error(%s) for syscall", strerror(-ret));
+
+	return ret;
+}
 
 /**
  * @brief This interface will send request to veos to sync vhva.
@@ -93,7 +165,8 @@ int ve_sync_vhva(veos_handle *handle)
 	}
 
 	/* Receiving ACK for command ATB init*/
-	ret = pseudo_veos_recv_cmd(handle->veos_sock_fd, cmd_buf_ack, MAX_PROTO_MSG_SIZE);
+	ret = pseudo_veos_recv_cmd(handle->veos_sock_fd, cmd_buf_ack,
+							MAX_PROTO_MSG_SIZE);
 	if (0 > ret) {
 		PSEUDO_DEBUG("Error(%s) while receiving ACK for VHVA_SYNC\
 				 from VE OS", strerror(-ret));
@@ -140,7 +213,8 @@ error_return:
  * @return This interface will return 0 on success and negative of errno
  * value on failure.
  */
-int new_vemva_chunk_atb_init(veos_handle *handle, vemva_t vemva, size_t page_size)
+int new_vemva_chunk_atb_init(veos_handle *handle, vemva_t vemva,
+							size_t page_size)
 {
 	int ret = 0;
 	char cmd_buf_req[MAX_PROTO_MSG_SIZE] = {0};
@@ -153,12 +227,15 @@ int new_vemva_chunk_atb_init(veos_handle *handle, vemva_t vemva, size_t page_siz
 	PseudoVeosMessage vemva_init_atb = PSEUDO_VEOS_MESSAGE__INIT;
 	ProtobufCBinaryData vemva_init_atb_msg = {0};
 
-	PSEUDO_TRACE("invoked with vaddr(0x%lx) and size(0x%lx)", vemva, page_size);
+	PSEUDO_TRACE("invoked with vaddr(0x%lx) and size(0x%lx)",
+							vemva, page_size);
 
-	cmd = (struct vemva_init_atb_cmd *)calloc(1, sizeof(struct vemva_init_atb_cmd));
+	cmd = (struct vemva_init_atb_cmd *)calloc(1,
+					sizeof(struct vemva_init_atb_cmd));
 	if (NULL == cmd) {
 		ret = -errno;
-		PSEUDO_DEBUG("Error(%s) while allocating mem for vemva_init_atb_cmd",
+		PSEUDO_DEBUG("Error(%s) while allocating mem"\
+			" for vemva_init_atb_cmd",
 				strerror(-ret));
 		goto error_return;
 	}
@@ -498,8 +575,14 @@ void *__ve_mmap(veos_handle *handle, vemva_t addr, size_t size,
 		return MAP_FAILED;
 	}
 
-	ret_addr = ve_get_vemva(handle, addr, aligned_sz,
-			flag, prot, filedes, offset);
+	if (flag & MAP_ADDR_64GB_SPACE)
+		/*Get vemva within first 64GB of process address space*/
+		ret_addr = ve_get_vemva_under_64GB(handle, addr, aligned_sz,
+				flag, prot, filedes, offset);
+	else
+		ret_addr = ve_get_vemva(handle, addr, aligned_sz,
+				flag, prot, filedes, offset);
+
 	if (MAP_FAILED == ret_addr) {
 		ret = errno;
 		PSEUDO_DEBUG("Error(%s) while getting free vemva", strerror(ret));
@@ -516,6 +599,10 @@ void *__ve_mmap(veos_handle *handle, vemva_t addr, size_t size,
 	prot = ve_prot;
 	if (!(flag & MAP_STACK) ||
 			((flag & MAP_STACK) && (flag & MAP_FIXED))) {
+
+		/* Removing the fixed 64GB address space related flag*/
+		flag &= ~(MAP_ADDR_64GB_SPACE|MAP_ADDR_64GB_FIXED);
+
 		/* AMM communication */
 		ret = amm_request_mmap(handle, (uint64_t)ret_addr,
 				aligned_sz, prot, flag, f_stat);
@@ -563,7 +650,7 @@ void *__ve_mmap(veos_handle *handle, vemva_t addr, size_t size,
 			PSEUDO_DEBUG("offset %ld f_stat->stat.st_size  %ld",
 					offset, align_fsz);
 			mmap_flag = (flag | MAP_FIXED | MAP_ANON) &
-				(~(MAP_2MB | MAP_64MB | MAP_VESHM | MAP_ADDR_SPACE));
+				(~(MAP_2MB | MAP_64MB | MAP_VESHM | MAP_ADDR_SPACE | MAP_ADDR_64GB_SPACE));
 			if (MAP_FAILED == mmap((void*)((uint64_t)ret_addr + align_fsz),
 						aligned_sz - align_fsz,
 						ve_prot,
@@ -763,7 +850,7 @@ int64_t __ve_munmap(veos_handle *handle, vemva_t vemva,
 
 	/* Check is size is aligned to pagesize or not*/
 	if (!IS_ALIGNED(size, pg_size)) {
-		size = ALIGN((uint64_t)size, PAGE_SIZE_2MB);
+		size = ALIGN((uint64_t)size, pg_size);
 		PSEUDO_DEBUG("Aligned size (0x%lx) with page size", size);
 	}
 
@@ -1501,6 +1588,7 @@ ret_t ve_mprotect(int syscall_num, char *syscall_name, veos_handle *handle)
 		ret = get_page_size(vemva);
 		if (0 > ret) {
 			PSEUDO_DEBUG("Error(%s) while getting page size", strerror(-ret));
+			ret = -ENOMEM;
 			goto error_return;
 		}
 	} else {
@@ -1624,6 +1712,7 @@ ret_t ve_msync(int syscall_num, char *syscall_name, veos_handle *handle)
 		ret = get_page_size(vemva);
 		if (0 > ret) {
 			PSEUDO_DEBUG("Error(%s) while getting page size", strerror(-ret));
+			ret = -ENOMEM;
 			goto error_return;
 		}
 	} else {

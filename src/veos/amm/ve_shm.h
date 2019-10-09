@@ -41,13 +41,18 @@
 
 #define	PG_SHM		(0x200000000)	/*!< Flag represent Shared memory page*/
 /* Flag represent VE Anonymous page */
-#define PG_VE		(0x400000000|MAP_ANON)	/*!< Flag represent VE Anonymous page*/
-#define PG_PTRACE	(0x800000000)	/*!< Flag represent VE Anonymous page*/
+#define PG_VE		(0x4000000000|MAP_ANON)	/*!< Flag represent VE Anonymous page*/
+#define PG_PTRACE	((uint64_t)1<<37)	/*!< Flag represent VE Anonymous page*/
 
 #define SHM_DEL		(0x1)		/*!< SHM Segemnt Destroy Flag*/
 /* SHM Segment Available Flag */
 #define	SHM_AVL				(0x0)	/*!< SHM Segment Available
 						 * Flag*/
+
+/* Note : These both flags are also defined in file 'sys_shm.h'.
+ * and there purpose is same at both place. Please take care
+ * while modifying the flags value */
+
 #define SHM_2MB         ((uint32_t)1 << 22)
 #define SHM_64MB        ((uint32_t)1 << 23)
 

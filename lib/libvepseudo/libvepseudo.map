@@ -19,6 +19,8 @@ LIBVEPSEUDO_1.0 {
     tid_counter;
     un_block_and_retval_req;
     __ve_mmap;
+    init_as_attr;
+    reserve_signal_trampoline; 	
     ve__do_clone;
     ve_atomic_io;
     ve_recv_data;

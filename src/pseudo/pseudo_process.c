@@ -79,7 +79,6 @@ uint64_t default_page_size;
 struct ve_load_data load_elf;
 struct vemva_header vemva_header;
 
-
 /**
  * @brief Fetches the node number from VEOS socket file.
  *
@@ -909,6 +908,14 @@ int main(int argc, char *argv[], char *envp[])
 	free(exe_name);
 
 	PSEUDO_DEBUG("LOADING SEGMENTS IS END.");
+	ret = reserve_signal_trampoline(handle);
+	if (ret) {
+		PSEUDO_ERROR("Failed to reserve trampoline");
+		fprintf(stderr, "Failed to reserve trampoline\n");
+		process_thread_cleanup(handle, -1);
+		pseudo_abort();
+	}
+	PSEUDO_DEBUG("RESERVED TRAMPOLINE");
 
 	/* init stack */
 	ret = init_stack(handle, ve_argc, ve_argv,
@@ -927,6 +934,8 @@ int main(int argc, char *argv[], char *envp[])
 		sizeof(struct ve_address_space_info_cmd));
 
 	PSEUDO_DEBUG("MAKING A STACK IS END.");
+
+
 
 	/* free ve_argv */
 	for (i = 0; i < ve_argc; i++)

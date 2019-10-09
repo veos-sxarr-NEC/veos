@@ -31,5 +31,7 @@ libvecommon_a_SOURCES = \
 libvecommon_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 \
 	-I$(srcdir)/../dma \
+	-I$(srcdir)/../amm \
+	-I$(srcdir)/../psm \
 	-I$(top_srcdir)/include \
 	-I@prefix@/include

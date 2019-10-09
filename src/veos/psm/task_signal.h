@@ -105,6 +105,10 @@
 #define DUMMY_READ 10
 
 #define SST_SIZE (_NSIG/8/sizeof(long))
+
+#define TRAMP_2MB    0x6003ffe00000
+#define TRAMP_64MB   0x600fffe00000
+
 /**
  * @brief  deletes the common signals from given signal set
  *
@@ -141,10 +145,12 @@ struct ve_ucontext {
 *
 *	Signal handler frame will be written on VE task stack for saving
 *	the current execution context of the VE task and executing the
-*	signal handler routine.
+*	signal handler routine. Struct member 'tramp[5]' is currently not
+*	in use and this member should not be removed from this struct to
+*	avoid regression issues.
 */
 struct sigframe {
-	uint64_t tramp[5];	/*!< Stores the trampoline for sigreturn() */
+	uint64_t tramp[5];	/*!< Member 'tramp[5]' is currently not in use */
 	char pad[256];          /*!< Pad of 256bytes for SPU coherrency */
 	siginfo_t ve_siginfo;	/*!< Signal information */
 	struct ve_ucontext uc;	/*!< Process context information*/
@@ -238,14 +244,14 @@ int ve_group_action(struct ve_task_struct *, int, int, int *);
 void ve_do_group_action(struct ve_task_struct *, int, int);
 int psm_send_ve_signal(struct ve_task_struct *,
 		siginfo_t *, int, int);
-void psm_prepare_trampoline_ve(struct sigframe *);
 int psm_get_next_ve_signal(struct ve_sigpending *, sigset_t *);
 void ve_collect_signal(siginfo_t *, struct ve_sigpending *, int, int *,
 			struct ve_task_struct *);
 int psm_dequeue_ve_signal(siginfo_t *, struct ve_sigpending *,  sigset_t *,
 			int *, struct ve_task_struct *);
 int on_sig_stack(struct ve_task_struct *);
-int ve_getframe(struct ve_task_struct *, int, vemaa_t *, vemaa_t *, uint64_t *, int *);
+int ve_getframe(struct ve_task_struct *, int, vemaa_t *, vemaa_t *,
+						uint64_t *, int *, int *);
 void ve_force_sigsegv(int, struct ve_task_struct *);
 int ve_format_core_filename(struct ve_corename *, struct ve_task_struct *);
 int ve_get_signal(struct ve_task_struct *, int *, siginfo_t *);

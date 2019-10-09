@@ -158,6 +158,7 @@ bool psm_unassign_assign_task(struct ve_task_struct *tsk, bool retry_assign)
 		} else
 			break;
 	} while(1);
+
 	tsk->assign_task_flag = TSK_ASSIGN;
 	VEOS_TRACE("Exiting");
 	return true;
@@ -1734,6 +1735,30 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *curr_ve_task,
 				goto abort;
 			}
 		}
+		/*
+		* Do not invalidate ranch history if task to schedule is the
+		* current task on core and branch history has been invalidated
+		* already
+		*/
+		if ((curr_ve_task != task_to_schedule) &&
+				task_to_schedule->invalidate_branch_history) {
+			/* invalidate branch history as new task is assigned on core
+			 */
+			VEOS_DEBUG("Invoked veos_invalidate_branch_history"
+					" for tsk(%d) on core(%d)",
+					task_to_schedule->pid,
+					task_to_schedule->core_id);
+			ret = veos_invalidate_branch_history(
+						task_to_schedule->core_id);
+			if (ret) {
+				VEOS_ERROR("Error while invalidating the"
+							" branch history");
+				veos_abort("Failed to invalidate the"
+							" branch history");
+			}
+
+			task_to_schedule->invalidate_branch_history = false;
+		}
 		/* Update core->curr_ve_task */
 		task_to_schedule->p_ve_core->curr_ve_task = task_to_schedule;
 		task_to_schedule->assign_task_flag = TSK_ASSIGN;
@@ -1803,9 +1828,9 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *curr_ve_task,
 	 * belong to same thread group and DMA descriptor is not mapped to any
 	 * core then restore context
 	 * */
-	if ((-1 == *(task_to_schedule->core_dma_desc)) &&
+	if ((-1 == *(task_to_schedule->core_dma_desc)) && (curr_ve_task &&
 			(curr_ve_task->group_leader ==
-			 task_to_schedule->group_leader)) {
+			 task_to_schedule->group_leader))) {
 		VEOS_DEBUG("Restore context for new thread");
 		ret = psm_restore_context_for_new_thread(task_to_schedule);
 		if (ret) {
@@ -1880,6 +1905,7 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *curr_ve_task,
 	 * updated.
 	 */
 	task_to_schedule->reg_dirty = true;
+	task_to_schedule->invalidate_branch_history = true;
 	task_to_schedule->sr_context_bitmap = 0;
 	task_to_schedule->pmr_context_bitmap = 0;
 
@@ -2009,6 +2035,7 @@ int veos_update_atb(uint64_t core_set, int dir_num,
 	int loop_cnt = 0;
 	int retval = -1;
 	int core_loop = 0;
+	struct ve_task_struct *curr_ve_tsk = NULL;
 
 	VEOS_TRACE("Entering");
 	VEOS_DEBUG("Directory num: %d Count: %d",
@@ -2029,16 +2056,34 @@ int veos_update_atb(uint64_t core_set, int dir_num,
 					goto veos_update_atb_fail;
 				}
 			}
-			VE_CORE(0, core_loop)->curr_ve_task->atb_dirty = false;
+			curr_ve_tsk = VE_CORE(0, core_loop)->curr_ve_task;
+			curr_ve_tsk->atb_dirty = false;
+			if (curr_ve_tsk->invalidate_branch_history) {
+				/* invalidate branch history here as task is
+				 * assigned on core*/
+				VEOS_DEBUG("Invoked veos invalidate"
+					" branch history for tsk(%d) on core(%d)",
+					curr_ve_tsk->pid, core_loop);
+				retval = veos_invalidate_branch_history(
+								core_loop);
+				if (retval) {
+					VEOS_ERROR("Error while invalidating"
+							" the branch history");
+					goto veos_update_atb_fail;
+				}
+				curr_ve_tsk->invalidate_branch_history = false;
+			}
 		}
 	}
 
 	/* Start all core */
 	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores; core_loop++) {
 		if (CHECK_BIT(core_set, core_loop)) {
-			if (VE_CORE(0, core_loop)->curr_ve_task != tsk) {
+			curr_ve_tsk = VE_CORE(0, core_loop)->curr_ve_task;
+			if (curr_ve_tsk != tsk) {
 				VEOS_DEBUG("Start core id : %d",
 						core_loop);
+				curr_ve_tsk->invalidate_branch_history = true;
 				psm_start_ve_core(0, core_loop);
 			} else {
 				SET_CORE_STATE(VE_CORE(0, core_loop)
@@ -2200,15 +2245,33 @@ int psm_sync_hw_regs(struct ve_task_struct *ve_task,
 			for (loop_cnt = dir_num; loop_cnt < dir_num + count
 					; loop_cnt++) {
 				retval = amm_update_atb_dir(VE_HANDLE(0),
-							ve_task->core_id,
-							ve_task,
-							loop_cnt);
+						ve_task->core_id,
+						ve_task,
+						loop_cnt);
 				if (0 > retval) {
 					VEOS_ERROR("Update ATB failed in driver");
 					goto hndl_failure;
 				}
 			}
 			ve_task->atb_dirty = false;
+			if (ve_task->invalidate_branch_history) {
+				/* invalidate branch history here as
+				 * ATB register has changed
+				 */
+				VEOS_DEBUG("Invoked veos invalidate"
+				" branch_history for tsk(%d) on core(%d)",
+					ve_task->pid, ve_task->core_id);
+				retval = veos_invalidate_branch_history(
+							ve_task->core_id);
+				if (retval) {
+					VEOS_ERROR("Error while invalidating"
+							" the branch history");
+					veos_abort("Failed to invalidate"
+							" the branch history");
+				}
+
+				ve_task->invalidate_branch_history = false;
+			}
 		}
 		break;
 	case _DMAATB:

@@ -61,6 +61,15 @@ static struct auxv_info auxv;
 /* ELF */
 #define ELF_CLASS       ELFCLASS64
 #define ELF_VE	251
+/* #1410 Used to compare with size(1024B) and flags */
+#define DIFF_SECT 0x400
+#define VE_AX 0x6
+#define VE_WA 0x3
+#define VE_WAT 0x403
+#define HEAP_START 0x601000000000
+#define MAP_ADDR_64GB_SPACE     ((uint64_t)1<<35)
+#define MAP_ADDR_64GB_FIXED     ((uint64_t)1<<36)
+
 /**
 * @brief from sys/elf_common.
 */
@@ -294,15 +303,8 @@ int pse_load_binary(char *filename, veos_handle *handle,
 		seg_addr = load_elf.seg + segnum;
 		if (seg_addr->perm & PROT_WRITE) {
 			if (!seg_addr->is_interp) {
-				ve_info.heap_start = (uint64_t)(seg_addr->ve_addr +
-						seg_addr->ve_map_size);
-				if (!IS_ALIGNED((uint64_t)ve_info.heap_start,
-							default_page_size)) {
-					ve_info.heap_start =
-						(((uint64_t)ve_info.heap_start
-						  & ~(default_page_size - 1))
-						 + (default_page_size << 1));
-				}
+				/* #1410 Hard coded value for HEAP */
+				ve_info.heap_start = HEAP_START;
 				ve_info.heap_top = ve_info.heap_start;
 				PSEUDO_DEBUG("VE process heap start : %lx"
 						", ve_info.heap_top: %lx",
@@ -339,6 +341,71 @@ int pse_load_binary(char *filename, veos_handle *handle,
 
 err_ret:
 	return ret;
+}
+
+/**
+ * @brief To Validate the gap between data and text section.
+ *
+ * @param[in] ehdr  ELF header
+ *
+ * @Output: Program proceed further in success else abort.
+ */
+void ve_validate_gap(Elf_Ehdr *ehdr)
+{
+	char *sec_string = NULL;
+	int i = 0;
+	Elf_Shdr *shdr = NULL;
+	offset_t diff_offset = 0;
+	Elf64_Addr sh_addr_ax = NULL;
+	Elf64_Addr sh_addr_wa = NULL;
+
+	if(NULL == ehdr)
+		return;
+
+	if (ehdr->e_type == ET_EXEC) {
+		shdr = (Elf64_Shdr *)load_elf.stat.start_section;
+		sec_string = load_elf.stat.start_string;
+	} else if (ehdr->e_type == ET_DYN) {
+		shdr = (Elf64_Shdr *)load_elf.stat.start_section_dyn;
+		sec_string = load_elf.stat.start_string_dyn;
+	}
+
+	if (!shdr)
+		return;
+
+	for (i = 0; i < ehdr->e_shnum; i++) {
+		if ((shdr->sh_flags == VE_AX)) {
+			/* Get the address for end of text segment */
+			sh_addr_ax = shdr->sh_addr;
+			PSEUDO_DEBUG("Section name is %s,"
+					"flags(AX): %p, address: %p\n",
+					(char *)sec_string + shdr->sh_name,
+					(void *)shdr->sh_flags,
+					(void *)sh_addr_ax);
+		}
+		if ((shdr->sh_flags == VE_WA)||	(shdr->sh_flags == VE_WAT)) {
+			/* Get the address for start of data segment */
+			sh_addr_wa = shdr->sh_addr;
+			PSEUDO_DEBUG("Section name is %s,"
+					"flags(WA/WAT): %p,"
+					"address: %p\n",
+					(char *)sec_string + shdr->sh_name,
+					(void *)shdr->sh_flags,
+					(void *)sh_addr_wa);
+			break;
+		}
+		shdr++;
+	}
+	/* To check binary/ld.so, gap is less than 1024 byte or not */
+	diff_offset = sh_addr_wa - sh_addr_ax;
+	if(diff_offset < DIFF_SECT) {
+		PSEUDO_ERROR("TEXT/DATA gap segment is less than 1024B\n");
+		fprintf(stderr, "TEXT/DATA segment gap is less than 1024B\n");
+		pseudo_abort();
+	}
+
+	PSEUDO_DEBUG("The diff between AX and WA/WAT is %p\n\n",
+			(void *)diff_offset);
 }
 
 /**
@@ -409,10 +476,10 @@ void ve_bss_info(Elf_Ehdr *ehdr, uint64_t p_vaddr, char *name)
 void *get_vdso_addr(veos_handle *handle)
 {
 	void *ret_addr = NULL;
-
+	/* #1410 Added flag to get VM within 64GB */
 	ret_addr = __ve_mmap(handle, (uint64_t)0, PAGE_SIZE_2MB,
 			PROT_READ|PROT_WRITE,
-			MAP_VDSO|MAP_2MB|MAP_ANON|MAP_PRIVATE,
+			MAP_VDSO|MAP_2MB|MAP_ANON|MAP_PRIVATE|MAP_ADDR_64GB_SPACE,
 			-1, 0);
 	if ((void *)-1 == ret_addr) {
 		PSEUDO_WARN("mmap for VDSO page fails");
@@ -1577,16 +1644,16 @@ void fill_ve_vh_segmap(veos_handle *handle)
 
 				PSEUDO_DEBUG("VE ELF aligned address: %p, gap: %p",
 						(void *)align_addr, (void *)gap);
-
+				/* #1410 Added flag to get VM within 64GB */
 				if (ehdr->e_type == ET_EXEC) {
 					if (phdr->p_flags & PF_W)
 						align_exe = (uint64_t)
 							phdr->p_align;
 					(seg_addr)->flag |=
-						MAP_PRIVATE|MAP_FIXED|
-						MAP_ADDR_SPACE;
+						MAP_PRIVATE|MAP_ADDR_64GB_SPACE;
 				}
 				if (phdr->p_flags & PF_W) {
+					ve_validate_gap(ehdr);
 					ve_bss_info(ehdr,
 							(uint64_t)align_addr,
 							".bss");
@@ -1596,13 +1663,15 @@ void fill_ve_vh_segmap(veos_handle *handle)
 						align_dyn = (uint64_t)
 							phdr->p_align;
 						(seg_addr)->flag |=
-							MAP_PRIVATE|MAP_FIXED
+							MAP_PRIVATE
+							|MAP_ADDR_64GB_SPACE
 							|page_algn;
 					}
 				} else {
 					(seg_addr)->perm |= PROT_READ|PROT_EXEC;
 					if (ehdr->e_type == ET_DYN) {
 						(seg_addr)->flag |= MAP_PRIVATE
+							|MAP_ADDR_64GB_SPACE
 								|page_algn;
 					}
 				}
@@ -1662,32 +1731,7 @@ void fill_ve_vh_segmap(veos_handle *handle)
 				align_addr = seg_addr->ve_addr +
 					load_elf.ve_interp_map;
 				ret_addr = (char *)__ve_mmap(handle,
-						(uint64_t)align_addr,
-						seg_addr->ve_map_size,
-						seg_addr->perm,
-						seg_addr->flag|MAP_ANON,
-						-1,
-						0);
-				if ((void *)-1 == ret_addr) {
-					PSEUDO_DEBUG("VE mmap fail to load"
-							" DATA (fixed): %s",
-							strerror(errno));
-					PSEUDO_ERROR("failed to load dyn DATA");
-					fprintf(stderr, "VE mmap failed to load"
-						" dyn DATA (fixed): %s\n",
-						strerror(errno));
-					pseudo_abort();
-				}
-				seg_addr->ve_addr = (uint64_t)ret_addr;
-				PSEUDO_DEBUG("Mapping file: INTERP "
-						"- Mapping type: FIXED "
-						"Load segment: %p",
-						(void *)ret_addr);
-				if(load_elf.stat.start_bss_dyn)
-					load_elf.stat.start_bss_dyn +=
-							 (uint64_t)ret_addr;
-				ret_addr = (char *)__ve_mmap(handle,
-						seg_addr->ve_addr,
+						(uint64_t)0,
 						seg_addr->ve_file_size,
 						seg_addr->perm,
 						seg_addr->flag,
@@ -1707,6 +1751,9 @@ void fill_ve_vh_segmap(veos_handle *handle)
 						" %s\n", strerror(errno));
 					pseudo_abort();
 				}
+				if(load_elf.stat.start_bss_dyn)
+					load_elf.stat.start_bss_dyn +=
+							 (uint64_t)ret_addr;
 			} else {
 				if (seg_addr->perm & PF_W) {
 					ret_addr = (char *)__ve_mmap(handle,
@@ -1734,7 +1781,7 @@ void fill_ve_vh_segmap(veos_handle *handle)
 						(uint64_t)ret_addr,
 						seg_addr->ve_file_size,
 						seg_addr->perm,
-						seg_addr->flag,
+						seg_addr->flag|MAP_ADDR_64GB_FIXED,
 						load_elf.stat.fd,
 						seg_addr->offset);
 					PSEUDO_DEBUG("Fileback Mapping file: EXEC - Mapping "
@@ -1756,7 +1803,7 @@ void fill_ve_vh_segmap(veos_handle *handle)
 					}
 				} else {
 					ret_addr = (char *)__ve_mmap(handle,
-							(uint64_t)seg_addr->ve_addr,
+							(uint64_t)0,
 							seg_addr->ve_map_size,
 							seg_addr->perm,
 							seg_addr->flag,

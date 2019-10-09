@@ -925,6 +925,7 @@ ret_t ve_shmdt(int syscall_num, char *syscall_name, veos_handle *handle)
 	if (0 > ret) {
 		PSEUDO_DEBUG("Error (%s) while getting pgsz at addr %lx",
 				strerror(-ret), shmaddr);
+		ret = -EINVAL;
 		goto hndl_return;
 	}
 

@@ -444,6 +444,7 @@ int amm_release_shm_segment(struct shm *shm_ent)
 		} else
 			VEOS_DEBUG("No physical pages allocated to shm segment(%d)", shm_ent->shmid);
 	}
+	pthread_mutex_destroy(&shm_ent->shm_lock);
 
 	list_del(&(shm_ent->shm_list));
 	free(shm_ent->vemaa);

@@ -1,0 +1,30 @@
+Tool Description:
+
+A special tool which will check for the specific gap of
+1024B between data and text section of VE binary/shared library.
+
+How to use:
+
+1. clone veos.git repository.
+2. configure and install veos 
+
+Execution steps:
+1. $ /opt/nec/ve/bin/ve_validate_binary
+	- Validates the binaries in the current directory if no option is given
+2. $ /opt/nec/ve/bin/ve_validate_binary -d <directory path to check>
+3. $ /opt/nec/ve/bin/ve_validate_binary -f <file path to check the gap of 1024B>
+4. $ /opt/nec/ve/bin/ve_validate_binary -h
+	- To display help on the options
+
+Example:
+
+1. Output in case of valid VE binary:
+
+execute as:	/opt/nec/ve/bin/ve_validate_binary -f test
+output:		***VE BINARY/SHARED LIBRARY IS VALIDATED SUCCESSFULLY!!***
+
+2. Output in case of VE binary with 0 gap:
+
+execute as:	/opt/nec/ve/bin/ve_validate_binary -f test_corrupt
+output:		DATA/TEXT gap is less: 0
+		File: ./test_corrupt

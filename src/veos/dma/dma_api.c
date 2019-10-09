@@ -319,6 +319,7 @@ ve_dma_status_t ve_dma_xfer_p_va(ve_dma_hdl *hdl, ve_dma_addrtype_t srctype,
 	if (req == NULL)
 		return VE_DMA_STATUS_ERROR;
 
+
 	ret = ve_dma_wait(req);
 	ve_dma_req_free(req);
 	return ret;

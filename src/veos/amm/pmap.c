@@ -62,8 +62,8 @@ int get_perm(char *prm)
  * @brief Detect the virtual address is heap or not
  *
  * @param[in] vaddr is virtual addr for VE process
- * @param[in] pgsize is page size of VE process
  * @param[in] tsk is the pointer to ve_task_struct.
+ * @param[in] pgmod is page mode(PG_4K/PG_2M/PG_HP) of VE process
  *
  * @return On success it return 0 and negative of errno on failure.
  */
@@ -124,8 +124,8 @@ end:
  * @brief Detect the virtual address is stack or not
  *
  * @param[in] vaddr is virtual addr for VE process
- * @param[in] pgsize is page size of VE process
  * @param[in] tsk is the pointer to ve_task_struct.
+ * @param[in] pgmod is page mode(PG_4K/PG_2M/PG_HP) of VE process
  *
  * @return On success it return 0 and negative of errno on failure.
  */

@@ -4718,7 +4718,7 @@ ret_t ve_hndl_sendto(int syscall_num, char *syscall_name, veos_handle *handle)
 	}
 
 	addr_len = args[5];
-	if (addr_len < 0 || addr_len > sizeof(struct sockaddr_storage)) {
+	if ((int)addr_len < 0 || addr_len > sizeof(struct sockaddr_storage)) {
 		retval = -EINVAL;
 		goto hndl_return1;
 	}

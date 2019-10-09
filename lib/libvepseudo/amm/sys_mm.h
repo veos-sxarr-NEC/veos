@@ -103,4 +103,5 @@ int new_vemva_chunk_atb_init(veos_handle *, vemva_t, size_t);
 int ve_sync_vhva(veos_handle *);
 void copy_vemva_dir_info(struct veshm_struct *);
 void update_ve_page_info(uint64_t *);
+int reserve_signal_trampoline(veos_handle *handle);
 #endif

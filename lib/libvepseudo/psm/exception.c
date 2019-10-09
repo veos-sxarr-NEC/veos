@@ -246,12 +246,12 @@ int ve_exception_handler(uint64_t exception, veos_handle *handle)
 	/* ILMP/ILSP/ILPV mapped to SIGSEGV */
 	case EXS_ILMP:
 	case EXS_HMILMP:
+	case EXS_HMILMS:
 		PSEUDO_DEBUG("Hardware exception mappped to SIGSEGV");
 		hw_siginfo.si_signo = SIGSEGV;
-		hw_siginfo.si_code = SEGV_ACCERR;
+		hw_siginfo.si_code = SEGV_MAPERR;
 		break;
 	case EXS_ILSP:
-	case EXS_HMILMS:
 	case EXS_HMILSP:
 		PSEUDO_DEBUG("Hardware exception mappped to SIGSEGV");
 		hw_siginfo.si_signo = SIGSEGV;
@@ -267,12 +267,12 @@ int ve_exception_handler(uint64_t exception, veos_handle *handle)
 	case EXS_ILSA:
 		PSEUDO_DEBUG("Hardware exception mappped to SIGBUS");
 		hw_siginfo.si_signo = SIGBUS;
-		hw_siginfo.si_code = BUS_ADRERR;
+		hw_siginfo.si_code = BUS_ADRALN;
 		break;
 	case EXS_IOAC:
 		PSEUDO_DEBUG("Hardware exception mappped to SIGBUS");
 		hw_siginfo.si_signo = SIGBUS;
-		hw_siginfo.si_code = BUS_ADRALN;
+		hw_siginfo.si_code = BUS_ADRERR;
 		break;
 		/* DIVE/FOFE/FUFE/XOFE/INVE/INEE mapped to SIGFPE */
 	case EXS_DIVE:
@@ -309,7 +309,7 @@ int ve_exception_handler(uint64_t exception, veos_handle *handle)
 	case EXS_ILOP:
 		PSEUDO_DEBUG("Hardware exception mappped to SIGILL");
 		hw_siginfo.si_signo = SIGILL;
-		hw_siginfo.si_code = ILL_ILLOPN;
+		hw_siginfo.si_code = ILL_ILLOPC;
 		break;
 	case EXS_ILDT:
 		PSEUDO_DEBUG("Hardware exception mappped to SIGILL");

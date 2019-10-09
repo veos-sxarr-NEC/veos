@@ -24,10 +24,15 @@
 #include "veos.h"
 #include "ve_drv.h"
 #include "libved.h"
+#include "task_mgmt.h"
 
 #define VESYNC_CREG_OFFSET_SYNC (offsetof(system_common_reg_t, SYNC))
 #define VESYNC_CREG_OFFSET_DMYWR 0x00000408
 #define VESYNC_BAR01_SYNC_ADDR_SIZE 4096
+
+#define VE_CORE_OFFSET_OF_HCR 0x10a00
+#define VE_RSA_DISABLE_BIT_ON 0xf000000000000000
+#define VE_RSA_DISABLE_BIT_OFF 0x0000000000000000
 
 /**
  * @brief Allocate address for pci bar01 sync.
@@ -86,6 +91,30 @@ int veos_commit_rdawr_order(void)
 	}
 	/* mfence is not needed because memory type is UC */
 	return 0; /* always successful */
+}
+
+/**
+ * @brief Invalidate branch history to avoid HW Bug
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int veos_invalidate_branch_history(int core_id)
+{
+	reg_t regdata = 0;
+	if (core_id < 0 || VE_NODE(0)->nr_avail_cores <= core_id)
+		return -1;
+
+	regdata = VE_RSA_DISABLE_BIT_ON;
+	vedl_set_sys_reg_words(VE_HANDLE(0),
+			       VE_CORE_SYS_REG_ADDR(0, core_id),
+			       VE_CORE_OFFSET_OF_HCR,
+			       &regdata, sizeof(reg_t));
+	regdata = VE_RSA_DISABLE_BIT_OFF;
+	vedl_set_sys_reg_words(VE_HANDLE(0),
+                               VE_CORE_SYS_REG_ADDR(0, core_id),
+                               VE_CORE_OFFSET_OF_HCR,
+                               &regdata, sizeof(reg_t));
+	return 0;
 }
 
 /**

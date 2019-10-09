@@ -2157,6 +2157,7 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	tsk->atb_dirty = false;
 	tsk->crd_dirty = false;
 	tsk->reg_dirty = false;
+	tsk->invalidate_branch_history = true;
 	tsk->usr_reg_dirty = false;
 	tsk->gid = gid;
 	tsk->uid = uid;
@@ -2169,7 +2170,7 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	tsk->exit_code_set = false;
 	tsk->thread_execed = false;
 	tsk->assign_task_flag = TSK_UNASSIGN;
-	tsk->dummy_task = false;
+	tsk->dummy_task = true;
 	tsk->real_parent_pid = real_parent_pid;
 	/* Allocate time slice to VE task, however when scheduled
 	 * this value will be initialised again. We are initializing it
@@ -2509,6 +2510,7 @@ int psm_handle_start_ve_request(struct veos_thread_arg *pti, int pid)
 	/* The birth time of task do not change across exec */
 	if (tsk->rpm_create_task || !tsk->execed_proc) {
 		tsk->rpm_create_task = false;
+		tsk->dummy_task = false;
 		retval = gettimeofday(&(tsk->start_time), NULL);
 		if (0 != retval) {
 			retval = -errno;

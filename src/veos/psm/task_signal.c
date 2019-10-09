@@ -841,29 +841,6 @@ ret:
 }
 
 /**
-* @brief Prepare trampoline instruction.
-*
-*	This function generates sigreturn(2) instruction that will be
-*	written to the VE process stack. These instructions will
-*	be executed by the VE program while returning from signal
-*	handler routine.
-*
-* @param[out] ve_sigframe Pointer to signal frame structure
-*/
-void psm_prepare_trampoline_ve(struct sigframe *ve_sigframe)
-{
-	VEOS_TRACE("Entering");
-
-	ve_sigframe->tramp[0] = 0x462eaeae00000000;
-	ve_sigframe->tramp[1] = 0x012e008e00000018;
-	ve_sigframe->tramp[2] = 0x45000f0000000000;
-	ve_sigframe->tramp[3] = 0x310003ae00000000;
-	ve_sigframe->tramp[4] = 0x3f00000000000000;
-
-	VEOS_TRACE("Exiting");
-}
-
-/**
 * @brief Fetch next signal to be delivered from pending signal set.
 *
 * @param[in] pending Pending signals for the VE process
@@ -1056,7 +1033,8 @@ int on_sig_stack(struct ve_task_struct *current)
 */
 int ve_getframe(struct ve_task_struct *p_ve_task,
 		int signum, vemaa_t *vir_frame_addr,
-		vemaa_t *phy_frame_addr, uint64_t *offset, int *on_altstack)
+		vemaa_t *phy_frame_addr, uint64_t *offset,
+		int *on_altstack, int *pg_mode)
 {
 	int onsigstack = on_sig_stack(p_ve_task);
 	int flag = p_ve_task->sighand->action[signum - 1].sa_flags;
@@ -1117,6 +1095,7 @@ int ve_getframe(struct ve_task_struct *p_ve_task,
 		*offset = aligned_addr - frame_vir_addrs;
 	}
 
+	*pg_mode = pgmod;
 	memcpy(vir_frame_addr, &frame_vir_addrs, sizeof(uint64_t));
 	memcpy(phy_frame_addr, &frame_phy_addrs, sizeof(frame_phy_addrs));
 	ret = 0;
@@ -1172,24 +1151,24 @@ static int setup_ve_frame(int signum,
 	uint64_t offset = 0, local_offset = 0, dma_size = 0;
 	vemaa_t frame_addrs[3] = {0};
 	vemaa_t frame_vir_addr = 0;
+	vemva_t trampoline_vaddr = 0;
 	struct sigframe ve_sigframe;
 	ve_dma_hdl *dma_handle;
 	ve_dma_status_t status;
 	int on_altstack = 0;
+	int pg_mode = -1;
+
 	struct ve_node_struct *vnode_info;
 
 	VEOS_TRACE("Entering");
 
 	memset(&ve_sigframe, '\0', sizeof(struct sigframe));
 
-	/* Prepare sigreturn() instruction as trampoline code. */
-	psm_prepare_trampoline_ve(&ve_sigframe);
-
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK
 		, "failed to acquire task lock");
 
 	ret = ve_getframe(p_ve_task, signum, &frame_vir_addr,
-			frame_addrs, &offset, &on_altstack);
+			frame_addrs, &offset, &on_altstack, &pg_mode);
 	if (-1 == ret) {
 		VEOS_DEBUG("[%d] Failed to fetch physical translation",
 				p_ve_task->pid);
@@ -1256,9 +1235,11 @@ static int setup_ve_frame(int signum,
 				, p_ve_task->pid, (uint64_t)frame_addrs[i]
 				, dma_size);
 		if (status != 0) {
-			VEOS_ERROR("%d unable to write signal frame", p_ve_task->pid);
-			pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK
-					, "failed to release task lock");
+			VEOS_ERROR("%d unable to write signal frame1 %d",
+							p_ve_task->pid, status);
+			pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock),
+					UNLOCK,
+					"failed to release task lock");
 			return -EFAULT;
 		}
 	}
@@ -1297,12 +1278,19 @@ static int setup_ve_frame(int signum,
 	p_ve_task->p_ve_thread->SR[2] = frame_vir_addr +
 		offsetof(struct sigframe, uc);
 
+	/* Signal trampoline code is stored at fixed address(#1410),
+	 * which is mapped during VE process loading.*/
+	trampoline_vaddr = (vemva_t)((pg_mode == PG_2M) ?
+					TRAMP_2MB : TRAMP_64MB);
+
+	VEOS_DEBUG("Signal Trampoline save at VIRT 0x%lx", trampoline_vaddr);
+
 	/* set the link register with the return address of signal handler
 	 * routine, we have set link register with the address of trampoline
 	 * instruction so that when signal handler routine return it will
 	 * excute sigreturn instruction written as trampoline.
 	 */
-	p_ve_task->p_ve_thread->SR[10] = frame_vir_addr;
+	p_ve_task->p_ve_thread->SR[10] = (uint64_t)trampoline_vaddr;
 
 	/* update the value of stack pointer SR[11] for executing the signal
 	 * handler routine
@@ -2791,7 +2779,7 @@ abort:
 void veos_polling_thread(void)
 {
 	int retval = 0;
-	struct pollfd ufds[1];
+	struct pollfd ufds[1] = {{0}};
 	char *tok;
 	char *tid_buf;
 	pid_t pid;

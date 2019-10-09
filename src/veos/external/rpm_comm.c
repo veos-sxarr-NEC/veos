@@ -1460,7 +1460,6 @@ int rpm_handle_delete_dummy_task_req(struct veos_thread_arg *pti)
 	/* Set "dummy_task" flag in VE task struct so that accounting
 	 * information is not dumped while VE task cleanup
 	 * */
-	del_dummy_tsk->dummy_task = true;
 	set_state(del_dummy_tsk);
 	put_ve_task_struct(del_dummy_tsk);
 

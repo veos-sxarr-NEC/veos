@@ -1618,7 +1618,6 @@ int amm_do_mprotect(vemva_t vaddr, ssize_t size, uint64_t perm,
 			for (index = 0; index < vnode->numa_count; index++)
 				pg_invalid(&(atb[index].entry[dir_num][pgoff]));
 		} else if (perm == PROT_READ) {
-			VEOS_DEBUG("Setting permission: PROT_READ");
 			for (index = 0; index < vnode->numa_count; index++)
 				pg_setprot(&(atb[index].entry[dir_num][pgoff]));
 		} else if ((perm & PROT_WRITE)) {

@@ -584,6 +584,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	new_task->thread_execed = false;
 	new_task->vforked_proc = false;
 	new_task->wake_up_parent = false;
+	new_task->rpm_preserve_task = 0;
 
 	/* Number of voluntary and involuntary context switches
 	 * are reset to zero for child process/thread.
@@ -709,6 +710,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	new_task->exit_status = 0;
 	new_task->exit_code_set = false;
 	new_task->reg_dirty = false;
+	new_task->invalidate_branch_history = true;
 
 	/* Initialize block_status with BLOCK_RECVD, so that
 	 * this process can be scheduled successfully after it

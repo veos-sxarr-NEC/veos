@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([veos], [2.1.3])
+AC_INIT([veos], [2.2.0])
 AC_CONFIG_SRCDIR([lib/libvepseudo/psm/exception.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([./build-aux])
@@ -187,6 +187,7 @@ AC_CONFIG_FILES([Makefile
 		src/veos/psm/Makefile
 		src/veos/psm/ve_coredump_helper.h
 		src/veos/vemm/Makefile
+		src/ve_validate_bin/Makefile
 		debian/control
 		debian/rules
 		debian/veos-dev.install

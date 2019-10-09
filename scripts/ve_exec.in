@@ -219,6 +219,24 @@ if ! [[ ${VE_NODE} =~ $re ]] ; then
 	exit 1;
 fi
 
+if [[ -v _VENODELIST ]]; then
+	# The scheduler sets ve node number to _VENODELIST.  We check
+	# the VE node to execute the program is assigned by the
+	# scheduler. If it is not assigned, we don't execute the
+	# program.  If _VENODELIST is an empty value, we don't execute
+	# the program.
+	FOUND=0
+	for n in ${_VENODELIST}; do
+		if [[ ${VE_NODE} == $n ]]; then
+			FOUND=1
+			break;
+		fi
+	done
+	if [[ ${FOUND} -eq 0 ]]; then
+		echo "ERROR: VE node #${VE_NODE} is not assigned by the scheduler"
+		exit 1
+	fi
+fi
 
 if  [[ ${VE_CORE} == -1 ]] ; then
         :

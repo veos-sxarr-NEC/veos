@@ -352,6 +352,7 @@ struct ve_task_struct {
 	uint64_t *thread_sched_bitmap;
 	bool atb_dirty;
 	bool crd_dirty;
+	bool invalidate_branch_history; /*! True, do. False, no need */
 	int32_t *core_dma_desc; /*!< Core ID to be assigned to the task */
 	struct ve_udma *udma_context; /*!< Pointer to user dma structure */
 	did_t did; /* DID (Debug id) of the task */

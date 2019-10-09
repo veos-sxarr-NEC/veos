@@ -36,6 +36,10 @@
 #include "libved.h"
 #include "comm_request.h"
 
+/* Note : These both flags are also defined in file 've_shm.h'.
+ * and there purpose is same at both place. Please take care
+ * while modifying the flags value */
+
 #define SHM_2MB		((uint32_t)1 << 22)
 #define SHM_64MB       ((uint32_t)1 << 23)
 

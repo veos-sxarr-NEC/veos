@@ -76,7 +76,11 @@
 #define LARGE_PSHFT	21	/*<!Shift for large page*/
 #define HUGE_PSHFT	26	/*<!Shift for huge page*/
 
-/* Mapping control flags */
+/* Mapping control flags
+ * Note : MAP_2MB, MAP_64MB, MAP_ADDR_SPACE, MAP_VDSO flags are also
+ * defined in file 've_mem.h'. There puropose is same in both files.
+ * please take care while modifying these flag value
+ */
 #define MAP_2MB			((uint64_t)1<<22)
 #define MAP_ADDR_SPACE          ((uint64_t)1<<34)
 #define MAP_64MB		((uint64_t)1<<23)
