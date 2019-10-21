@@ -23,8 +23,8 @@
  * @internal
  * @author PSMG / Process management
  */
-#ifndef __VEOS_IPC_H
-#define __VEOS_IPC_H
+#ifndef __VEOS_HANDLER_H
+#define __VEOS_HANDLER_H
 #include <stdio.h>
 #include <search.h>
 #include <stdlib.h>
@@ -124,5 +124,9 @@ int veos_handle_stop_proc_req(struct veos_thread_arg *);
 int veos_handle_get_pci_sync_req(veos_thread_arg_t *);
 extern int veos_handle_map_dmades(veos_thread_arg_t *);
 extern int veos_handle_unmap_dmades(veos_thread_arg_t *);
+int veos_handle_register_vemva_to_pciatb(veos_thread_arg_t *);
+int veos_handle_unregister_vhsaa_from_pciatb(veos_thread_arg_t *);
+int veos_handle_register_vhsaa_to_dmaatb(veos_thread_arg_t *);
+int veos_handle_unregister_vehva_from_dmaatb(veos_thread_arg_t *);
 
 #endif

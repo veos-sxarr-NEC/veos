@@ -87,4 +87,8 @@ struct veos_cmd_entry pseudo_veos_cmd[PSEUDO_VEOS_MAX_MSG_NUM] = {
 	{"CMD_VHSHM", veos_vhshm},
 	{"MAP_DMADES", veos_handle_map_dmades},
 	{"UNMAP_DMADES", veos_handle_unmap_dmades},
+	{"REGIS_PCIATB", veos_handle_register_vemva_to_pciatb},
+	{"UNREG_PCIATB", veos_handle_unregister_vhsaa_from_pciatb},
+	{"REGIS_DMAATB", veos_handle_register_vhsaa_to_dmaatb},
+	{"UNREG_DMAATB", veos_handle_unregister_vehva_from_dmaatb}
 };
