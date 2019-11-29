@@ -253,8 +253,17 @@ int ve_send_data_tid(veos_handle *handle, uint64_t address,
 	}
 
 	/* If dst or size are not align then acquire lock */
-	if (as->top_offset || as->bottom_offset)
+	if (as->top_offset || as->bottom_offset) {
+		int ret2 = 0;
+		ret2 = pthread_rwlock_rdlock(&sync_fork_dma);
+		if (ret2) {
+			PSEUDO_DEBUG("Failed to acquire read lock for "
+                                "dma: %s", strerror(ret2));
+			fprintf(stderr, "Internal resource usage error\n");
+			pseudo_abort();
+		}
 		pthread_mutex_lock(&ve_send_data_lock);
+	}
 
 	/* If top offset, then allocate top buffer and receive data. */
 	if (as->top_offset != 0) {
@@ -352,8 +361,17 @@ exit_func3:
 	if (b_buf) free(b_buf);
 exit_func2:
 	if (buf) free(buf);
-	if (as->top_offset || as->bottom_offset)
+	if (as->top_offset || as->bottom_offset) {
+		int ret2 = 0;
 		pthread_mutex_unlock(&ve_send_data_lock);
+		ret2 = pthread_rwlock_unlock(&sync_fork_dma);
+		if (ret2) {
+			PSEUDO_DEBUG("Failed to release read lock for "
+				"dma: %s", strerror(ret2));
+			fprintf(stderr, "Internal resource usage error\n");
+			pseudo_abort();
+		}
+	}
 exit_func1:
 	if (as) free(as);
 	PSEUDO_DEBUG("returned with %d", ret);
