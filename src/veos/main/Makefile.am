@@ -18,6 +18,7 @@ libvemain_a_CFLAGS = \
 	-I$(srcdir)/../amm \
 	-I$(srcdir)/../ived \
 	-I$(srcdir)/../vemm \
+	-I$(srcdir)/../pps \
 	-I$(top_srcdir)/src/pseudo \
 	-I$(top_srcdir)/lib/libived \
 	-I$(top_srcdir)/include \

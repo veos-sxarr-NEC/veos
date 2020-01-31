@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([veos], [2.2.2])
+AC_INIT([veos], [2.3.0])
 AC_CONFIG_SRCDIR([lib/libvepseudo/psm/exception.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([./build-aux])
@@ -62,6 +62,12 @@ AC_ARG_WITH(limitsdir, [AS_HELP_STRING([--with-limitsdir],
 	    [limitsdir=${with_limitsdir}],
 	    [limitsdir=/etc/security/limits.d])
 AC_SUBST(limitsdir)
+AC_ARG_WITH(veldconfdir, [AS_HELP_STRING([--with-veldconfdir],
+            [Specify veos configuration file directory
+            [/etc/ld.so.conf.d]])],
+            [veldconfdir=${with_veldconfdir}],
+            [veldconfdir=/etc/ld.so.conf.d])
+AC_SUBST(veldconfdir)
 AC_ARG_WITH(sysctldir, [AS_HELP_STRING([--with-sysctldir],
 	    [Specify sysctl configuration file directory for VE program,
 	    [/etc/sysctl.d]])],
@@ -183,6 +189,7 @@ AC_CONFIG_FILES([Makefile
 		src/veos/ptrace/Makefile
 		src/veos/ived/Makefile
 		src/veos/main/Makefile
+		src/veos/pps/Makefile
 		src/veos/main/veos_sock.h
 		src/veos/psm/Makefile
 		src/veos/psm/ve_coredump_helper.h

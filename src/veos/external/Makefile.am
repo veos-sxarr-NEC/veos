@@ -7,6 +7,7 @@ libveexternal_a_CFLAGS = \
 	-I$(top_srcdir)/src/veos/psm \
 	-I$(top_srcdir)/src/veos/main \
 	-I$(top_srcdir)/src/veos/amm \
+	-I$(top_srcdir)/src/veos/pps \
 	-I$(top_srcdir)/src/pseudo \
 	-I$(top_srcdir)/include/ \
 	-I$(top_builddir)/lib/libveosprotoc \

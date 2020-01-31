@@ -31,6 +31,7 @@ libveamm_a_CFLAGS = \
 	-I$(srcdir)/../psm \
 	-I$(srcdir)/../main \
 	-I$(top_srcdir)/src/veos/ived \
+	-I$(top_srcdir)/src/veos/pps \
 	-I$(top_srcdir)/src/veos/external \
 	-I$(top_srcdir)/lib/libived \
 	-I$(top_srcdir)/include/ \

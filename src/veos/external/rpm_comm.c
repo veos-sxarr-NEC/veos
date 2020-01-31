@@ -40,6 +40,8 @@
 #include "velayout.h"
 #include "ptrace_req.h"
 #include "ve_shm.h"
+#include "buddy.h"
+#include "ve_swap.h"
 
 /**
  * @brief Write the buffer on the file descriptor.
@@ -171,7 +173,6 @@ int rpm_handle_getpriority_req(struct veos_thread_arg *pti)
 	/* Convert namespace pid to host pid */
 	host_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, prio_req.who);
 	if (host_pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
 		VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",
@@ -231,7 +232,6 @@ int rpm_handle_setpriority_req(struct veos_thread_arg *pti)
 	/* Convert namespace pid to host pid */
 	host_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, prio_req.who);
 	if (host_pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
 		VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",
@@ -281,13 +281,8 @@ int rpm_handle_checkpid_req(struct veos_thread_arg *pti)
 	/* Check VE pid exists or not */
 	retval = psm_rpm_handle_check_pid(pid);
 	if (0 > retval) {
-		VEOS_DEBUG("Failed in checking if PID exists");
 		VEOS_DEBUG("PSM check PID returned %d", retval);
-		goto hndl_return;
 	}
-
-	retval = 0;
-hndl_return:
 	/* Send the response back to RPM command */
 	retval = veos_rpm_send_cmd_ack(pti->socket_descriptor, NULL,
 			0, retval);
@@ -1254,7 +1249,7 @@ skip_affinity_mask_check:
 	retval = psm_handle_exec_ve_process(pti, &core_id, &node_id,
 			pid, 0, "Dummy_task", false, 0, (uint64_t)0,
 			NULL, NULL, 0, 0, true, "Dummy path", &numa_node,
-			create_proc.policy_flag, create_proc.ppid);
+			create_proc.policy_flag, create_proc.ppid, pid);
 	if (0 > retval) {
 		VEOS_ERROR("Creating VE process failed");
 		VEOS_DEBUG("Creating VE process from RPM command returned: %d",
@@ -1269,10 +1264,8 @@ skip_affinity_mask_check:
 		retval = -ESRCH;
 		goto hndl_return;
 	}
-	if (create_proc.flag == 2) {
-		memcpy(tsk->sighand->rlim , create_proc.ve_rlim,
-				sizeof(create_proc.ve_rlim));
-	}
+	memcpy(tsk->sighand->rlim , create_proc.ve_rlim,
+			sizeof(create_proc.ve_rlim));
 
 	tsk->execed_proc = true;
 	tsk->rpm_preserve_task = create_proc.flag;
@@ -1551,6 +1544,1037 @@ hndl_return1:
 }
 
 /**
+ * @brief Check pid is tid of child thread or not.
+ *
+ * @param[in] ve_task Pointer of source VE task struct
+ *
+ * @return false, if pid is tid of child thread return ture.
+ */
+static bool is_child_tid(struct ve_task_struct *ve_task)
+{
+	bool retval = false;
+
+	VEOS_TRACE("In %s", __func__);
+
+	if (ve_task->group_leader->pid != ve_task->pid) {
+		retval = true;
+	}
+
+	VEOS_TRACE("Out %s", __func__);
+
+	return retval;
+}
+
+/**
+ * @brief pids check of PPS.
+ *
+ * @param[in] pids structure of ve_swap_pid
+ *
+ * @return 0 on success, -EINVAL on failure.
+ */
+static int swap_pid_check(struct ve_swap_pids pids)
+{
+	int retval = 0;
+
+	VEOS_TRACE("In %s", __func__);
+
+	if (pids.process_num < 0) {
+		VEOS_ERROR("Data which veswap sent contains less data"
+							" than expected");
+		retval = -EINVAL;
+		goto hndl_return;
+	} else if (pids.process_num > MAX_SWAP_PROCESS) {
+		VEOS_ERROR("Data which veswap sent contains more data"
+							" than expected");
+		retval = -EINVAL;
+		goto hndl_return;
+	}
+	if (pids.pid[pids.process_num] != PPS_END_OF_PIDS) {
+		VEOS_ERROR("Data which veswap sent has contradiction");
+		retval = -EINVAL;
+		goto hndl_return;
+	}
+
+hndl_return:
+	VEOS_TRACE("Out %s", __func__);
+	return retval;
+}
+
+/**
+ * @brief Check whether specified process can execute swap handling.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ * @param[in] ve_task Pointer of source VE task struct
+ *
+ * @return 0 on success, -errno on failure.
+ */
+static int check_process_for_swap(struct veos_thread_arg *pti,
+			struct ve_task_struct *tsk)
+{
+	int retval = -1;
+	int ret = -1;
+	pid_t pid = 0;
+	proc_t ve_proc_info = {0};
+	proc_t ve_caller_proc_info = {0};
+	pid_t caller_pid = 0;
+
+	int errno_re = 0;
+	pid = tsk->pid;
+
+	VEOS_TRACE("In %s", __func__);
+
+	/* Check security */
+	ret = psm_get_ve_proc_info(pid, &ve_proc_info);
+	if (ret == -1) {
+		VEOS_ERROR("Failed to get proc information for pid: %d", pid);
+		errno_re = EPERM;
+		goto hndl_return;
+	}
+	caller_pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
+	ret = psm_get_ve_proc_info(caller_pid, &ve_caller_proc_info);
+	if (ret == -1) {
+		VEOS_ERROR("Failed to get proc information for caller pid: %d",
+				caller_pid);
+		errno_re = EPERM;
+		goto hndl_return;
+	}
+
+	if (!(pti->cred.uid) ||
+		(pti->cred.uid == ve_proc_info.euid &&
+		pti->cred.uid == ve_proc_info.suid &&
+		pti->cred.uid == ve_proc_info.ruid &&
+		pti->cred.gid == ve_proc_info.egid &&
+		pti->cred.gid == ve_proc_info.sgid &&
+		pti->cred.gid == ve_proc_info.rgid)) {
+
+		VEOS_DEBUG("Caller process: %d and swap process: "
+				"%d belongs to same user",
+				caller_pid, pid);
+	} else {
+		VEOS_DEBUG("Caller process :%d is not have "
+		"permission to handle swap request of process %d",
+				 caller_pid, pid);
+		errno_re = EPERM;
+		goto hndl_return;
+	}
+
+hndl_return:
+	retval = -errno_re;
+	VEOS_TRACE("Out %s", __func__);
+	return retval;
+}
+
+/**
+ * @brief Handles the VE_SWAP_OUT request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_ve_swapout_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	int retval_to_cmd = -errno;
+	struct ve_node_struct *p_ve_node = NULL;
+	struct ve_task_struct *ve_task = NULL;
+	struct veos_swap_request_info *request_info;
+	ProtobufCBinaryData rpm_pseudo_msg = {0};
+	struct ve_swap_pids target_pids = {};
+	struct ve_task_struct *group_leader = NULL, *tmp = NULL;
+	struct ve_ipc_sync *ipc_sync = NULL;
+	pid_t pid = 0;
+	int i;
+	int pid_num = 0;
+	int valid_pid_num = 0;
+	int to_next_pid = 0;
+
+	VEOS_TRACE("In %s", __func__);
+
+	if (!pti) {
+		VEOS_ERROR("Data which veswap sent is not found");
+		retval = -1;
+		goto hndl_return;
+	}
+
+	request_info = (struct veos_swap_request_info *)malloc(
+					sizeof(struct veos_swap_request_info));
+	if (request_info == NULL) {
+		retval_to_cmd = -ECANCELED;
+		VEOS_ERROR("Failed to create Swap request due to %s",
+							strerror(errno));
+		goto hndl_sendmgs;
+	}
+
+	p_ve_node = VE_NODE(0);
+	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_msg;
+	if (rpm_pseudo_msg.len != sizeof(struct ve_swap_pids)) {
+		VEOS_ERROR("Data which veswap sent is invalid");
+		retval_to_cmd = -ECANCELED;
+		free(request_info);
+		goto hndl_sendmgs;
+	}
+	memcpy(&target_pids, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
+
+	retval = swap_pid_check(target_pids);
+	if (retval != 0) {
+		retval_to_cmd = -ECANCELED;
+		free(request_info);
+		goto hndl_sendmgs;
+	}
+
+	pid_num = target_pids.process_num;
+	for (i = 0; i < pid_num; i++) {
+		to_next_pid = 0;
+		pid = vedl_host_pid(VE_HANDLE(0),
+				pti->cred.pid, target_pids.pid[i]);
+		if (pid <= 0) {
+			VEOS_ERROR("Conversion of target_pid to host"
+					" pid fails");
+			VEOS_DEBUG("PID conversion failed, host: %d"
+					" target pid: %d"
+					" error: %s",
+					pti->cred.pid,
+					target_pids.pid[i],
+					strerror(errno));
+			continue;
+		}
+		VEOS_DEBUG("swapout target pid is %d", pid);
+
+		/* Check whether VEOS is terminating */
+		if (!veos_check_pps_enable()) {
+			VEOS_DEBUG("Partial process swapping is disabled");
+			goto hndl_free_req;
+		}
+
+		ve_task = find_ve_task_struct(pid);
+		if (ve_task == NULL) {
+			VEOS_DEBUG("VE task with pid %d not found", pid);
+			continue;
+		}
+		/* Check whether process is core dumping */
+		if (is_dumping_core(ve_task)) {
+			VEOS_DEBUG("%d is core dumping", pid);
+			put_ve_task_struct(ve_task);
+			continue;
+		}
+		ipc_sync = ve_get_ipc_sync(ve_task);
+		if (ipc_sync == NULL) {
+			put_ve_task_struct(ve_task);
+			continue;
+		}
+		pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+				thread_group_mm_lock), LOCK,
+				"Failed to acquire thread_group_mm_lock");
+
+		group_leader = ve_task->group_leader;
+		veos_operate_all_ve_task_lock(group_leader, LOCK);
+
+		/* Check whether pid is tid of child thread */
+		if (is_child_tid(ve_task)) {
+			VEOS_DEBUG("%d is child tid", pid);
+			veos_operate_all_ve_task_lock(group_leader, UNLOCK);
+			pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+				thread_group_mm_lock), UNLOCK,
+				"Failed to release thread_group_mm_lock");
+			ve_put_ipc_sync(ipc_sync);
+			put_ve_task_struct(ve_task);
+			continue;
+		}
+
+		/* Check process */
+		retval = check_process_for_swap(pti, ve_task);
+		if (retval != 0) {
+			veos_operate_all_ve_task_lock(group_leader, UNLOCK);
+			pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+				thread_group_mm_lock), UNLOCK,
+				"Failed to release thread_group_mm_lock");
+			ve_put_ipc_sync(ipc_sync);
+			put_ve_task_struct(ve_task);
+			continue;
+		}
+
+		list_for_each_entry(tmp, &(group_leader->thread_group),
+							thread_group) {
+			if (tmp->ptraced) {
+				VEOS_DEBUG("%d is ptraced", pid);
+				veos_operate_all_ve_task_lock(
+					group_leader, UNLOCK);
+				pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+					thread_group_mm_lock), UNLOCK,
+					"Failed to release thread_group_mm_lock");
+				ve_put_ipc_sync(ipc_sync);
+				put_ve_task_struct(ve_task);
+				to_next_pid = 1;
+				break;
+			}
+
+			/* Check status and sub-status */
+			if (((tmp->ve_task_state == ZOMBIE) ||
+				(tmp->ve_task_state == STOP)) &&
+				(tmp->sstatus == ACTIVE)) {
+				VEOS_DEBUG("child thread %d,"
+					" status:%d, sub-status:%d", tmp->pid,
+					tmp->ve_task_state, tmp->sstatus);
+			} else {
+				VEOS_DEBUG("Checking status and "
+					"sub-status of child thread "
+					"failed, status:%d, sub-status:%d",
+					tmp->ve_task_state,
+					tmp->sstatus);
+				veos_operate_all_ve_task_lock(
+					group_leader, UNLOCK);
+				pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+					thread_group_mm_lock), UNLOCK,
+					"Failed to release thread_group_mm_lock");
+				ve_put_ipc_sync(ipc_sync);
+				put_ve_task_struct(ve_task);
+				to_next_pid = 1;
+				break;
+			}
+			/* Change sub-status with main thread together*/
+		}
+
+		if (!to_next_pid) {
+			if (group_leader->ptraced) {
+				VEOS_DEBUG("%d is ptraced", pid);
+				veos_operate_all_ve_task_lock(group_leader,
+					UNLOCK);
+				pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+					thread_group_mm_lock), UNLOCK,
+					"Failed to release thread_group_mm_lock");
+				ve_put_ipc_sync(ipc_sync);
+				put_ve_task_struct(ve_task);
+				continue;
+			}
+			/* Check status and sub-status */
+			/* Swap-out against ZOMBIE group_leader is not allowed. */
+			if ((group_leader->ve_task_state != STOP) ||
+				(group_leader->sstatus != ACTIVE)) {
+				VEOS_DEBUG("Checking status and sub-status of "
+					"leader thread failed, status:%d, "
+					"sub-status:%d",
+					group_leader->ve_task_state,
+					group_leader->sstatus);
+				veos_operate_all_ve_task_lock(group_leader,
+					UNLOCK);
+				pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+					thread_group_mm_lock), UNLOCK,
+					"Failed to acquire thread_group_mm_lock");
+				ve_put_ipc_sync(ipc_sync);
+				put_ve_task_struct(ve_task);
+				continue;
+			}
+			/* Change sub-status */
+			veos_update_substatus(group_leader, SWAPPING_OUT);
+			veos_operate_all_ve_task_lock(group_leader, UNLOCK);
+			pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+					thread_group_mm_lock), UNLOCK,
+					"Failed to release hread_group_mm_lock");
+			/* To delete ve_task_struct in  psm_do_execve_wait()
+			 * when VH binary is executed via evecve(),
+			 * Swap-out procedure must acquire handling_request_lock_task
+			 * without incrementing ref_cnt of ve_task_struct.
+			 * Swap-thread must release handling_request_lock_task,
+			 * and must free ipc_sync, even if ve_task_struct
+			 * corresponding to process id wihch is in request
+			 * information, is not found.
+			 */
+			put_ve_task_struct(ve_task);
+			pthread_rwlock_lock_unlock(
+				&(ipc_sync->handling_request_lock_task),
+				WRLOCK,
+				"Failed to acquire handling_request_lock_task");
+			request_info->ipc_sync_array[valid_pid_num] = ipc_sync;
+			request_info->pid_array[valid_pid_num] = pid;
+			valid_pid_num++;
+		}
+	}
+	request_info->pid_array[valid_pid_num] = PPS_END_OF_PIDS;
+	request_info->pid_number = valid_pid_num;
+
+	/* Check whether VEOS is terminating */
+	pthread_mutex_lock_unlock(&(p_ve_node->swap_request_pids_lock), LOCK,
+		"Failed to aqcuire swap_request lock");
+	if (!p_ve_node->swap_request_pids_enable) {
+		VEOS_DEBUG("VEOS is terminating");
+		pthread_mutex_lock_unlock(&(p_ve_node->swap_request_pids_lock),
+			UNLOCK, "Failed to release swap_request lock");
+		goto hndl_free_req;
+	}
+	list_add_tail(&(request_info->swap_info),
+			&(p_ve_node->swap_request_pids_queue));
+
+	/* Wake up thread */
+	VEOS_DEBUG("Wake up thread");
+	pthread_cond_broadcast(&(p_ve_node->swap_request_pids_cond));
+	pthread_mutex_lock_unlock(&(p_ve_node->swap_request_pids_lock), UNLOCK,
+					"Failed to release swap_request lock");
+
+	if (valid_pid_num == pid_num) {
+		retval_to_cmd = 0;
+	} else {
+		retval_to_cmd = -EPERM;
+	}
+	goto hndl_sendmgs;
+
+hndl_free_req:
+	retval_to_cmd = -ENOTSUP;
+	request_info->pid_array[valid_pid_num] = PPS_END_OF_PIDS;
+	request_info->pid_number = valid_pid_num;
+	del_doing_swap_request(request_info);
+	for (i = 0; request_info->pid_array[i] != PPS_END_OF_PIDS; i++) {
+		ve_put_ipc_sync(request_info->ipc_sync_array[i]);
+	}
+	free(request_info);
+
+hndl_sendmgs:
+	retval = 0;
+	/* Send the response back to RPM command */
+	VEOS_DEBUG("Send the response back %d to RPM command", retval_to_cmd);
+	retval = veos_rpm_send_cmd_ack(pti->socket_descriptor, NULL, 0,
+					retval_to_cmd);
+	if (retval == -1) {
+		VEOS_ERROR("Failed send the response back to RPM command");
+	}
+
+hndl_return:
+	VEOS_TRACE("Out %s", __func__);
+	return retval;
+}
+
+/**
+ * @brief Handles the VE_SWAP_IN request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_ve_swapin_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	int retval_to_cmd = -errno;
+	struct ve_task_struct *ve_task = NULL;
+	struct ve_task_struct *group_leader = NULL;
+	struct veos_swap_request_info *request_info = NULL;
+	ProtobufCBinaryData rpm_pseudo_msg = {0};
+	struct ve_swap_pids target_pids = {};
+	pid_t pid = 0;
+	int i;
+	int pid_num = 0;
+	int valid_pid_num = 0;
+
+	VEOS_TRACE("In %s", __func__);
+
+	if (!pti) {
+		VEOS_ERROR("Data which veswap sent is not found");
+		retval = -1;
+		goto hndl_return1;
+	}
+
+	request_info = (struct veos_swap_request_info *)malloc(
+					sizeof(struct veos_swap_request_info));
+	if (request_info == NULL) {
+		retval_to_cmd = -ECANCELED;
+		VEOS_ERROR("Failed to create Swap request due to %s",
+							strerror(errno));
+		goto hndl_return;
+	}
+
+	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_msg;
+	if (rpm_pseudo_msg.len != sizeof(struct ve_swap_pids)) {
+		VEOS_ERROR("Data which veswap sent is invalid");
+		retval_to_cmd = -ECANCELED;
+		free(request_info);
+		goto hndl_return;
+	}
+	memcpy(&target_pids, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
+
+	retval = swap_pid_check(target_pids);
+	if (retval != 0) {
+		retval_to_cmd = -ECANCELED;
+		free(request_info);
+		goto hndl_return;
+	}
+
+	pid_num = target_pids.process_num;
+	for (i = 0; i < pid_num; i++) {
+		pid = vedl_host_pid(VE_HANDLE(0),
+				pti->cred.pid, target_pids.pid[i]);
+		if (pid <= 0) {
+			VEOS_ERROR("Conversion of target_pid to host"
+					" pid fails");
+			VEOS_DEBUG("PID conversion failed, host: %d"
+					" target pid: %d"
+					" error: %s",
+					pti->cred.pid,
+					target_pids.pid[i],
+					strerror(errno));
+			continue;
+		}
+		ve_task = find_ve_task_struct(pid);
+		if (ve_task == NULL) {
+			VEOS_DEBUG("VE task with pid %d not found", pid);
+			continue;
+		}
+
+		group_leader = ve_task->group_leader;
+		pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+				thread_group_mm_lock), LOCK,
+				"Failed to acquire thread_group_mm_lock");
+		veos_operate_all_ve_task_lock(group_leader, LOCK);
+		/* Check whether ptraced is true */
+		if (ve_task->ptraced) {
+			VEOS_DEBUG("ptraced is true, pid is %d", pid);
+			veos_operate_all_ve_task_lock(group_leader, UNLOCK);
+			put_ve_task_struct(ve_task);
+			pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+				thread_group_mm_lock), UNLOCK,
+				"Failed to release thread_group_mm_lock");
+			continue;
+		}
+
+		/* Check process */
+		retval = check_process_for_swap(pti, ve_task);
+		if (retval != 0) {
+			veos_operate_all_ve_task_lock(group_leader, UNLOCK);
+			put_ve_task_struct(ve_task);
+			pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+				thread_group_mm_lock), UNLOCK,
+				"Failed to release thread_group_mm_lock");
+			continue;
+		}
+
+		request_info->pid_array[valid_pid_num] = pid;
+		valid_pid_num++;
+		veos_operate_all_ve_task_lock(group_leader, UNLOCK);
+		put_ve_task_struct(ve_task);
+		pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+			thread_group_mm_lock), UNLOCK,
+			"Failed to release thread_group_mm_lock");
+	}
+	request_info->pid_array[valid_pid_num] = PPS_END_OF_PIDS;
+
+	retval_to_cmd = veos_ve_swapin_req(request_info->pid_array);
+
+	free(request_info);
+hndl_return:
+
+	/* Send the response back to RPM command */
+	VEOS_DEBUG("Send the response back %d to RPM command", retval_to_cmd);
+	retval = veos_rpm_send_cmd_ack(pti->socket_descriptor, NULL, 0,
+					retval_to_cmd);
+	if (retval == -1) {
+		VEOS_ERROR("Failed send the response back to RPM command");
+	}
+hndl_return1:
+	VEOS_TRACE("Out %s", __func__);
+	return retval;
+}
+
+/**
+ * @brief Handles the VE_SWAP_STATUSINFO request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @note If Request is invalid, return value for veswap command is -errno, and
+ *       ve_swap_status_info doesn't have ANY VALID DATA.
+ *       If Request is valid, and a VE process is invalid, return value for
+ *       veswap command is 0, and corresponding ve_swap_status_struct has
+ *       + pid           : PID from request.
+ *       + proc_state    : -1
+ *       + proc_substate : -errno
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_ve_swapstatusinfo_req(struct veos_thread_arg *pti)
+{
+	int worker_retval, i, ret;
+	int command_retval = 0;
+	ProtobufCBinaryData rpm_pseudo_msg = {};
+	struct ve_swap_pids pids;
+	struct ve_task_struct *tsk, *tmp;
+	struct ve_task_struct *group_leader = NULL;
+	struct ve_swap_status_info swap_stat_array = {};
+	struct ve_swap_status_struct *swap_status;
+
+	VEOS_TRACE("In %s", __func__);
+
+	if (!pti) {
+		VEOS_ERROR("Data which veswap sent is not found");
+		worker_retval = -1;
+		goto hndl_return1;
+	}
+	rpm_pseudo_msg = (((PseudoVeosMessage *)
+					(pti->pseudo_proc_msg))->pseudo_msg);
+	if (rpm_pseudo_msg.len != sizeof(struct ve_swap_pids)) {
+		VEOS_ERROR("Data which veswap sent is invalid");
+		command_retval = -ECANCELED;
+		goto hndl_return;
+	}
+	memcpy(&pids, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
+
+	ret = swap_pid_check(pids);
+	if (ret != 0) {
+		command_retval = -ECANCELED;
+		goto hndl_return;
+	}
+	VEOS_DEBUG("VE_SWAP_STATUSINFO request for %d processes is received",
+							pids.process_num);
+
+	swap_stat_array.len = pids.process_num;
+	for (i = 0; i < pids.process_num; i++) {
+		swap_status = &(swap_stat_array.ve_swap_status[i]);
+		swap_status->pid = vedl_host_pid(VE_HANDLE(0),
+					pti->cred.pid, pids.pid[i]);
+		if (swap_status->pid <= 0) {
+			VEOS_ERROR("Conversion of target_pid to host"
+					" pid fails");
+			VEOS_DEBUG("PID conversion failed, host: %d"
+					" pids.pid[%d]: %d"
+					" error: %s",
+					pti->cred.pid,
+					i, pids.pid[i],
+					strerror(errno));
+			swap_status->proc_state = -1;
+			swap_status->proc_substate = -errno;
+			continue;
+		}
+		pids.pid[i] = swap_status->pid;
+		tsk = find_ve_task_struct(pids.pid[i]);
+		if (tsk == NULL) {
+			VEOS_ERROR("tsk %d is not found",
+					pids.pid[pids.process_num - 1]);
+			swap_status->proc_state = -1;
+			swap_status->proc_substate = -ESRCH;
+			continue;
+		}
+		/* Check whether process is core dumping */
+		if (is_dumping_core(tsk)) {
+			swap_status->proc_state = -1;
+			swap_status->proc_substate = -EPERM;
+			put_ve_task_struct(tsk);
+			continue;
+		}
+		ret = check_process_for_swap(pti, tsk);
+		if (ret != 0) {
+			swap_status->proc_state = -1;
+			swap_status->proc_substate = ret;
+			put_ve_task_struct(tsk);
+			continue;
+		}
+
+		pthread_mutex_lock_unlock(&(tsk->p_ve_mm->
+				thread_group_mm_lock), LOCK,
+				"Failed to acquire thread_group_mm_lock");
+
+		group_leader = tsk->group_leader;
+		veos_operate_all_ve_task_lock(group_leader, LOCK);
+
+		/* Check whether pid is tid of child thread */
+		if (is_child_tid(tsk)) {
+			VEOS_DEBUG("%d is child tid", pids.pid[i]);
+			veos_operate_all_ve_task_lock(group_leader, UNLOCK);
+			pthread_mutex_lock_unlock(&(tsk->p_ve_mm->
+						thread_group_mm_lock), UNLOCK,
+					"Failed to release thread_group_mm_lock");
+			swap_status->proc_state = -1;
+			swap_status->proc_substate = -ESRCH;
+			put_ve_task_struct(tsk);
+			continue;
+		}
+
+		swap_status->proc_state = group_leader->ve_task_state;
+		swap_status->proc_substate = group_leader->sstatus;
+		if (group_leader->ptraced) {
+			swap_status->proc_state = -1;
+			swap_status->proc_substate = -EPERM;
+		} else {
+			list_for_each_entry(tmp, &(group_leader->thread_group),
+								thread_group) {
+				if (tmp->ptraced) {
+					swap_status->proc_state = -1;
+					swap_status->proc_substate = -EPERM;
+				}
+			}
+		}
+		veos_operate_all_ve_task_lock(group_leader, UNLOCK);
+		pthread_mutex_lock_unlock(&(tsk->p_ve_mm->
+				thread_group_mm_lock), UNLOCK,
+				"Failed to release thread_group_mm_lock");
+		put_ve_task_struct(tsk);
+	}
+
+hndl_return:
+	worker_retval = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+					(uint8_t *)&swap_stat_array,
+					sizeof(struct ve_swap_status_info),
+					command_retval);
+hndl_return1:
+	VEOS_TRACE("Out %s", __func__);
+	return worker_retval;
+}
+
+/**
+ * @brief Handles the VE_SWAP_NODEINFO request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_ve_swapnodeinfo_req(struct veos_thread_arg *pti)
+{
+	int worker_retval, i;
+	int command_retval = 0;
+	struct ve_swap_node_info swap_node_info = {0};
+	struct ve_node_struct *vnode = VE_NODE(0);
+	unsigned long long node_swap_sz = 0;
+
+	VEOS_TRACE("In %s", __func__);
+
+	if (!pti) {
+		VEOS_ERROR("Data which veswap sent is not found");
+		worker_retval = -1;
+		goto hndl_return1;
+	}
+	VEOS_DEBUG("VE_SWAP_NODEINFO request received");
+
+	swap_node_info.node_num = vnode->node_num;
+	if (!veos_check_pps_enable()) {
+		command_retval = -ENOTSUP;
+		goto hndl_return;
+	}
+
+	if (vnode->pps_mp == NULL) {
+		VEOS_ERROR("Failed to get mempool for PPS");
+		goto hndl_return;
+	}
+	/* calculate swapped memory */
+	pthread_mutex_lock_unlock(&(vnode->pps_mp->buddy_mempool_lock), LOCK,
+					"Failed to acquire PPS buddy lock");
+
+	for (i = 0; i < vnode->numa_count; i++)
+		node_swap_sz += vnode->pps_mp_used[i];
+
+	pthread_mutex_lock_unlock(&(vnode->pps_mp->buddy_mempool_lock), UNLOCK,
+					"Failed to release PPS buddy lock");
+
+	VEOS_DEBUG("node_num : %d, node_swap_sz : %llu",
+			swap_node_info.node_num, node_swap_sz);
+	swap_node_info.node_swapped_sz = node_swap_sz;
+hndl_return:
+	worker_retval = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+					(uint8_t *)&swap_node_info,
+					sizeof(struct ve_swap_node_info),
+					command_retval);
+hndl_return1:
+	VEOS_TRACE("Out %s", __func__);
+	return worker_retval;
+}
+
+/**
+ * @brief get the swapped memory size of VE process.
+ *
+ * @param[in] tsk Pointer of source VE task struct
+ * @param[out] swapped_sz Pointer to contain the swapped memory size
+ *		of VE process
+ *
+ * @return None.
+ *
+ * @note Acquire thread_group_mm_lock before invoking this.
+ */
+static void veos_get_swapped_size(struct ve_task_struct *tsk,
+				unsigned long long *swapped_sz)
+{
+	struct list_head *p = NULL, *n = NULL;
+	struct ve_swapped_virtual *tmp = NULL;
+	size_t tmp_swapped_sz = 0;
+	struct ve_node_struct *vnode = VE_NODE(0);
+	int refcount = 0;
+	struct ve_page **ve_pages = vnode->ve_pages;
+
+	VEOS_TRACE("In %s", __func__);
+	list_for_each_safe(p, n, &(tsk->group_leader->swapped_pages)) {
+
+		tmp = list_entry(p, struct ve_swapped_virtual, pages);
+		if ((tmp->kind == PPS_VIRT_ATB) || (tmp->kind == PPS_VIRT_DMAATB)) {
+			if (tmp->phy->pno != -1) {
+				refcount = tmp->phy->ref_cnt
+					 + ve_pages[tmp->phy->pno]->ref_count;
+			} else {
+				refcount = tmp->phy->ref_cnt;
+			}
+
+			tmp_swapped_sz += tmp->phy->pgsz/refcount;
+			VEOS_DEBUG("count swapped_sz (%ld), kind (%d)",
+					tmp->phy->pgsz/tmp->phy->ref_cnt, tmp->kind);
+		} else {
+			VEOS_ERROR("page kind is (%d) not DMAATB or ATB",tmp->kind);
+		}
+	}
+
+	*swapped_sz = tmp_swapped_sz;
+	VEOS_DEBUG("swapped_sz is %llu", *swapped_sz);
+
+	VEOS_TRACE("Out %s", __func__);
+}
+/**
+ * @brief get the swapped memory size of VE process..
+ * @note The ve_task_lock of struct ve_task_struct is acquired in advance.
+ *
+ * @param[in] tsk Pointer of source VE task struct
+ * @param[out] swapped_sz Pointer to contain the swapped memory size
+ *		of VE process
+ *
+ * @return 0 on success, -errno on failure.
+ */
+static int veos_get_swappable_size(struct ve_task_struct *tsk,
+				unsigned long long *swappable_sz)
+{
+	pgno_t pgno;
+	int dir = 0, ent = 0;
+	int retval = 0, ret = 0;
+	size_t tmp_swapped_sz = 0;
+	struct ve_node_struct *vnode = VE_NODE(0);
+	int refcount = 0;
+
+	VEOS_TRACE("In %s", __func__);
+
+	/*  dmaatb calculate */
+	for (dir = vnode->nr_avail_cores; dir < DMAATB_DIR_NUM; dir++) {
+		if (!ps_isvalid(&(tsk->p_ve_mm->dmaatb.dir[dir])))
+			continue;
+
+		VEOS_DEBUG("DIR[%d] : 0x%lx", dir,
+				tsk->p_ve_mm->dmaatb.dir[dir].data);
+		for (ent = 0; ent < DMAATB_ENTRY_MAX_SIZE; ent++) {
+			if (pg_gettype(&(tsk->p_ve_mm->
+				dmaatb.entry[dir][ent])) != VE_ADDR_VEMAA)
+				continue;
+
+			pgno = pg_getpb(&(tsk->p_ve_mm->dmaatb.entry[dir][ent]),
+									PG_2M);
+			if ((pgno == PG_BUS) || (pgno == 0))
+				continue;
+
+			ret = is_ve_page_swappable(pgno, vnode);
+			if (ret != 0)
+				continue;
+
+			VEOS_DEBUG("ENT[%d][%d] : 0x%lx ", dir, ent,
+						VE_PAGE(vnode, pgno)->pgsz);
+			if (VE_PAGE(vnode, pgno)->swapped_info != NULL) {
+				refcount = VE_PAGE(vnode, pgno)->ref_count
+					 + VE_PAGE(vnode, pgno)->swapped_info->ref_cnt;
+			} else {
+				refcount = VE_PAGE(vnode, pgno)->ref_count;
+			}
+			if (refcount != 0) {
+				tmp_swapped_sz +=
+					(VE_PAGE(vnode, pgno)->pgsz) / refcount;
+				refcount = 0;
+			}
+		}
+	}
+
+	/*  atb calculate */
+	for (dir = 0; dir < ATB_DIR_NUM; dir++) {
+		if (!ps_isvalid(&(tsk->p_ve_mm->atb[0].dir[dir])))
+			continue;
+
+		VEOS_DEBUG("DIR[%d] : 0x%lx", dir,
+				tsk->p_ve_mm->atb[0].dir[dir].data);
+		for (ent = 0; ent < ATB_ENTRY_MAX_SIZE; ent++) {
+			pgno = pg_getpb(&(tsk->p_ve_mm->atb[0].entry[dir][ent]),
+									PG_2M);
+			if ((pgno == PG_BUS) || (pgno == 0))
+				continue;
+
+			ret = is_ve_page_swappable(pgno, vnode);
+			if (ret != 0)
+				continue;
+
+			VEOS_DEBUG("ENT[%d][%d] : 0x%lx ", dir, ent,
+						VE_PAGE(vnode, pgno)->pgsz);
+			if (VE_PAGE(vnode, pgno)->swapped_info != NULL) {
+				refcount = VE_PAGE(vnode, pgno)->ref_count
+					 + VE_PAGE(vnode, pgno)->swapped_info->ref_cnt;
+			} else {
+				refcount = VE_PAGE(vnode, pgno)->ref_count;
+			}
+			if (refcount != 0) {
+				tmp_swapped_sz +=
+					(VE_PAGE(vnode, pgno)->pgsz) / refcount;
+				refcount = 0;
+			}
+		}
+	}
+	*swappable_sz = tmp_swapped_sz;
+	VEOS_DEBUG("swappable_sz : %llu ", *swappable_sz);
+
+	VEOS_TRACE("Out %s", __func__);
+	return retval;
+}
+/**
+ * @brief Handles the VE_SWAP_INFO request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_ve_swapinfo_req(struct veos_thread_arg *pti)
+{
+	int worker_retval, i, ret;
+	int command_retval = 0;
+	ProtobufCBinaryData rpm_pseudo_msg = {};
+	struct ve_swap_pids pids;
+	struct ve_task_struct *tsk, *tmp;
+	struct ve_task_struct *group_leader = NULL;
+	struct ve_swap_info swap_info = {};
+	struct ve_swap_struct *swap_status;
+	unsigned long long *p_swapped_sz, *p_swappable_sz;
+	struct ve_node_struct *vnode = VE_NODE(0);
+
+	VEOS_TRACE("In %s", __func__);
+
+	if (!pti) {
+		VEOS_ERROR("Data which veswap sent is not found");
+		worker_retval = -1;
+		goto hndl_return1;
+	}
+	rpm_pseudo_msg = (((PseudoVeosMessage *)
+					(pti->pseudo_proc_msg))->pseudo_msg);
+	if (rpm_pseudo_msg.len != sizeof(struct ve_swap_pids)) {
+		VEOS_ERROR("Data which veswap sent is invalid");
+		command_retval = -ECANCELED;
+		goto hndl_return;
+	}
+	memcpy(&pids, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
+
+	ret = swap_pid_check(pids);
+	if (ret != 0) {
+		command_retval = -ECANCELED;
+		goto hndl_return;
+	}
+	VEOS_DEBUG("VE_SWAP_INFO request for %d processes is received",
+							pids.process_num);
+
+	swap_info.len = pids.process_num;
+	for (i = 0; i < pids.process_num; i++) {
+		swap_status = &(swap_info.ve_swap[i]);
+		swap_status->pid = vedl_host_pid(VE_HANDLE(0),
+					pti->cred.pid, pids.pid[i]);
+		if (swap_status->pid <= 0) {
+			VEOS_ERROR("Conversion of target_pid to host"
+					" pid fails");
+			VEOS_DEBUG("PID conversion failed, host: %d"
+					" pids.pid[%d]: %d"
+					" error: %s",
+					pti->cred.pid,
+					i, pids.pid[i],
+					strerror(errno));
+			swap_status->proc_state = -1;
+			swap_status->proc_substate = -errno;
+			continue;
+		}
+		pids.pid[i] = swap_status->pid;
+		tsk = find_ve_task_struct(pids.pid[i]);
+		if (tsk == NULL) {
+			VEOS_ERROR("tsk %d is not found",
+						pids.pid[i]);
+			swap_status->proc_state = -1;
+			swap_status->proc_substate = -ESRCH;
+			continue;
+		}
+		/* Check whether process is core dumping */
+		if (is_dumping_core(tsk)) {
+			swap_status->proc_state = -1;
+			swap_status->proc_substate = -EPERM;
+			put_ve_task_struct(tsk);
+			continue;
+		}
+		ret = check_process_for_swap(pti, tsk);
+		if (ret != 0) {
+			swap_status->proc_state = -1;
+			swap_status->proc_substate = ret;
+			put_ve_task_struct(tsk);
+			continue;
+		}
+
+		pthread_mutex_lock_unlock(&(tsk->p_ve_mm->
+				thread_group_mm_lock), LOCK,
+				"Failed to acquire thread_group_mm_lock");
+
+		group_leader = tsk->group_leader;
+		veos_operate_all_ve_task_lock(group_leader, LOCK);
+
+		/* Check whether pid is tid of child thread */
+		if (is_child_tid(tsk)) {
+			VEOS_DEBUG("%d is child tid", pids.pid[i]);
+			veos_operate_all_ve_task_lock(group_leader, UNLOCK);
+			pthread_mutex_lock_unlock(&(tsk->p_ve_mm->
+						thread_group_mm_lock), UNLOCK,
+					"Failed to release thread_group_mm_lock");
+			swap_status->proc_state = -1;
+			swap_status->proc_substate = -ESRCH;
+			put_ve_task_struct(tsk);
+			continue;
+		}
+		swap_status->proc_state = group_leader->ve_task_state;
+		swap_status->proc_substate = group_leader->sstatus;
+		if (group_leader->ptraced) {
+			swap_status->proc_state = -1;
+			swap_status->proc_substate = -EPERM;
+		} else {
+			list_for_each_entry(tmp, &(group_leader->thread_group),
+								thread_group) {
+				if (tmp->ptraced) {
+					swap_status->proc_state = -1;
+					swap_status->proc_substate = -EPERM;
+				}
+			}
+		}
+		veos_operate_all_ve_task_lock(group_leader, UNLOCK);
+		pthread_mutex_lock_unlock(&(tsk->p_ve_mm->
+				thread_group_mm_lock), UNLOCK,
+				"Failed to release thread_group_mm_lock");
+
+		p_swapped_sz = &(swap_status->swapped_sz);
+		p_swappable_sz = &(swap_status->swappable_sz);
+
+		/* get swapped memory size*/
+		pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock),
+				LOCK, "Failed to acquire thread_group_mm_lock");
+		pthread_mutex_lock_unlock(&(vnode->ve_pages_node_lock),
+				LOCK, "Failed to acquire ve_pages_node_lock");
+		veos_get_swapped_size(tsk, p_swapped_sz);
+
+		VEOS_DEBUG("swapped_sz is %llu", swap_status->swapped_sz);
+
+		/* get swappable memory size*/
+		ret = veos_get_swappable_size(tsk, p_swappable_sz);
+		pthread_mutex_lock_unlock(&(vnode->ve_pages_node_lock),
+			UNLOCK, "Failed to release  ve_pages_node_lock");
+		pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock),
+			UNLOCK, "Failed to release thread_group_mm_lock");
+		if (ret != 0) {
+			VEOS_ERROR("tsk %d is can't get swappable_sz",
+						pids.pid[i]);
+		}
+		VEOS_DEBUG("swappable_sz is %llu", swap_status->swappable_sz);
+		put_ve_task_struct(tsk);
+	}
+
+hndl_return:
+	worker_retval = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+					(uint8_t *)&swap_info,
+					sizeof(struct ve_swap_info),
+					command_retval);
+hndl_return1:
+	VEOS_TRACE("Out %s", __func__);
+	return worker_retval;
+}
+
+/**
  * @brief Handles "RPM Query" request from RPM commmand.
  *
  * @param[in] pti Contains the request message received from RPM command
@@ -1600,6 +2624,7 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 	}
 
 	/* Invoke the command specific function */
+	VEOS_DEBUG("rpm_subcmd is %d", rpm_subcmd);
 	switch (rpm_subcmd) {
 	case VE_GETPRIORITY:
 		VEOS_DEBUG("RPM request: GETPRIORITY");
@@ -1801,6 +2826,46 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 			goto hndl_return;
 		}
 		break;
+	case VE_SWAP_OUT:
+		VEOS_DEBUG("RPM request : VE_SWAP_OUT");
+		retval = rpm_handle_ve_swapout_req(pti);
+		if (0 > retval) {
+			VEOS_ERROR("Query request failed");
+			goto hndl_return;
+		}
+		break;
+	case VE_SWAP_IN:
+		VEOS_DEBUG("RPM request : VE_SWAP_IN");
+		retval = rpm_handle_ve_swapin_req(pti);
+		if (0 > retval) {
+			VEOS_ERROR("Query request failed");
+			goto hndl_return;
+		}
+		break;
+	case VE_SWAP_STATUSINFO:
+		VEOS_DEBUG("RPM request : VE_SWAP_STATUSINFO");
+		retval = rpm_handle_ve_swapstatusinfo_req(pti);
+		if (0 > retval) {
+			VEOS_ERROR("Query request failed");
+			goto hndl_return;
+		}
+		break;
+	case VE_SWAP_NODEINFO:
+		VEOS_DEBUG("RPM request : VE_SWAP_NODEINFO");
+		retval = rpm_handle_ve_swapnodeinfo_req(pti);
+		if (0 > retval) {
+			VEOS_ERROR("Query request failed");
+			goto hndl_return;
+		}
+		break;
+	case VE_SWAP_INFO:
+		VEOS_DEBUG("RPM request : VE_SWAP_INFO");
+		retval = rpm_handle_ve_swapinfo_req(pti);
+		if (0 > retval) {
+			VEOS_ERROR("Query request failed");
+			goto hndl_return;
+		}
+		break;
 	case VE_RPM_INVALID:
 		VEOS_ERROR("Invalid query request failed");
 		retval = -1;
@@ -1816,3 +2881,4 @@ hndl_return:
 	VEOS_TRACE("Exiting");
 	return retval;
 }
+

@@ -378,6 +378,7 @@ int alloc_pcientry(uint64_t start_entry,
 	int idx = 0, entry_cnt = 0;
 	struct ve_node_struct *vnode_info = VE_NODE(0);
 	int ret = 0;
+	pgno_t pgnum;
 
 	VEOS_TRACE("invoked with start_entry(0x%lx) count(%ld) page_base(%p)",
 			start_entry, count, page_base);
@@ -393,8 +394,7 @@ int alloc_pcientry(uint64_t start_entry,
 			idx, vnode_info->pciatb[idx].data);
 		/*Increament ref count*/
 
-		ret = common_get_put_page(page_base[entry_cnt],
-				GET_PAGE, true);
+		ret = amm_do_get_page(page_base[entry_cnt], true);
 		if (ret < 0) {
 			VEOS_DEBUG("Error(%s) to inc ref count",
 				strerror(-ret));
@@ -402,6 +402,15 @@ int alloc_pcientry(uint64_t start_entry,
 					"Failed to release pci lock");
 			return ret;
 		}
+		pthread_mutex_lock_unlock(&vnode_info->ve_pages_node_lock, LOCK,
+						"Fail to acquire ve page lock");
+		pgnum = pfnum(page_base[entry_cnt], PG_2M);
+		if (vnode_info->ve_pages[pgnum] == (struct ve_page *)-1)
+			pgnum = ROUN_DN(pgnum, HUGE_PAGE_IDX);
+		vnode_info->ve_pages[pgnum]->pci_count++;
+		pthread_mutex_lock_unlock(&vnode_info->ve_pages_node_lock,
+					UNLOCK, "Fail to release ve page lock");
+
 	}
 
 	/*Sync entry to the hardware*/
@@ -627,7 +636,7 @@ int veos_alloc_vdso_pcientry(uint8_t pairnum, uint64_t sync)
 		return ret;
 	}
 	/*Increament the ref count of vdso*/
-	ret = common_get_put_page(vdso_addr, GET_PAGE, true);
+	ret = amm_do_get_page(vdso_addr, true);
 	if (ret < 0) {
 		VEOS_DEBUG("Error(%s) in inc page(%ld) ref count",
 			   strerror(-ret), vdso_pgno);
@@ -1098,6 +1107,7 @@ int64_t veos_delete_pciatb(uint64_t entry, size_t size)
 	size_t pci_pgsize = -1;
 	struct ve_node_struct *vnode_info = VE_NODE(0);
 	int64_t ret = 0;
+	pgno_t pgnum;
 
 	VEOS_DEBUG("invoked to detete pcientry(%ld)"
 		"with size(0x%lx)", entry, size);
@@ -1146,6 +1156,25 @@ int64_t veos_delete_pciatb(uint64_t entry, size_t size)
 		page_base = GET_PCIATB_PB(&vnode_info->pciatb[idx]);
 		/*Invalidating pci s/w entry*/
 		vnode_info->pciatb[idx].data = INVALID_ENTRY;
+		pthread_mutex_lock_unlock(&vnode_info->ve_pages_node_lock, LOCK,
+						"Fail to acquire ve page lock");
+		if (vnode_info->ve_pages[page_base] == NULL) {
+			VEOS_DEBUG("%ld page is not found", page_base);
+			pthread_mutex_lock_unlock(
+					&vnode_info->ve_pages_node_lock,
+					UNLOCK, "Fail to release ve page lock");
+			pthread_mutex_lock_unlock(&vnode_info->pciatb_lock,
+					UNLOCK, "Failed to release pci lock");
+			return ret;
+		} else if (vnode_info->ve_pages[page_base] ==
+							(struct ve_page *)-1) {
+			pgnum = ROUN_DN(page_base, HUGE_PAGE_IDX);
+		} else {
+			pgnum = page_base;
+		}
+		vnode_info->ve_pages[pgnum]->pci_count--;
+		pthread_mutex_lock_unlock(&vnode_info->ve_pages_node_lock,
+					UNLOCK, "Fail to release ve page lock");
 		ret = amm_put_page(page_base * PAGE_SIZE_2MB);
 		if (ret < 0) {
 			VEOS_DEBUG("Error(%s) in inc ref count",

@@ -26,6 +26,7 @@ libvepsm_a_SOURCES = \
 libvepsm_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 \
 	-I$(top_srcdir)/src/veos/dma \
+	-I$(top_srcdir)/src/veos/pps \
 	-I$(top_srcdir)/src/veos/amm \
 	-I$(top_srcdir)/src/veos/main \
 	-I$(top_srcdir)/src/veos/ived \

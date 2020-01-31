@@ -31,6 +31,9 @@ LIBVEPSEUDO_1.0 {
     ve_vhva_to_vehva;
     veos_handle_create;
     veos_handle_free;
+    veos_handle_copy;
+    ve_send_data_tid;
+    ve_recv_data_tid;
   local:
     *;
 };

@@ -125,4 +125,5 @@ bool psm_unassign_task(struct ve_task_struct *);
 bool psm_unassign_assign_task(struct ve_task_struct *, bool);
 struct ve_task_struct *find_and_remove_task_to_rebalance(int, int);
 void insert_and_update_task_to_rebalance(int, int, struct ve_task_struct *);
+int veos_stop_udma(struct ve_task_struct *);
 #endif

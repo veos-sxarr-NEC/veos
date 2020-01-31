@@ -273,6 +273,7 @@ int psm_rpm_handle_pidstat_req(int pid, struct velib_pidstat *pidstat)
 	/* Populate the stack pointer & instruction pointer */
 	pidstat->kstesp = tsk->p_ve_thread->SR[11];
 	pidstat->ksteip = tsk->p_ve_thread->IC;
+	pidstat->tgid = tsk->tgid;
 
 	retval = 0;
 hndl_return:
@@ -464,6 +465,91 @@ hndl_return:
 }
 
 /**
+ * @brief Check that given pid exists as tgid of
+ * any VE process (required to find VEO process)
+ *
+ * @param[in] pid TGID of VE process
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int find_veo_proc(int pid)
+{
+	int retval = -1;
+	int node_loop = 0, core_loop = 0, max_core = -1;
+	struct ve_task_struct *ve_task_list_head = NULL;
+	struct ve_task_struct *ve_task_curr = NULL;
+	struct ve_core_struct *p_ve_core = NULL;
+
+	VEOS_TRACE("Entering");
+#ifdef VE_OS_DEBUG
+	list_ve_proc();
+#endif
+	max_core = VE_NODE(0)->nr_avail_cores;
+
+	/* Core loop */
+	for (; core_loop < max_core; core_loop++) {
+		VEOS_TRACE("Core loop: %d", core_loop);
+		p_ve_core = VE_CORE(VE_NODE_ID(node_loop), core_loop);
+		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
+				RDLOCK,
+				"Failed to acquire ve core read lock");
+		ve_task_list_head = p_ve_core->ve_task_list;
+
+		ve_task_curr = ve_task_list_head;
+
+		if (NULL == ve_task_curr) {
+			VEOS_DEBUG("No task in the list "
+					"for Node %d Core %d",
+					VE_NODE_ID(node_loop), core_loop);
+			pthread_rwlock_lock_unlock(
+					&(p_ve_core->ve_core_lock),
+					UNLOCK,
+					"Failed to release ve core lock");
+			continue;
+		}
+		VEOS_TRACE("Node %d: Core %d "
+				"Head is %p "
+				"PID(C) = %d "
+				"PID(s) = %d",
+				VE_NODE_ID(node_loop),
+				core_loop,
+				ve_task_list_head,
+				ve_task_curr->proc_pid,
+				pid);
+		do {
+			if (ve_task_curr->proc_pid == pid) {
+				VEOS_DEBUG("FOUND NODE: %d"
+						" CORE : %d"
+						" TASK : %p"
+						" TASK PID : %d",
+						VE_NODE_ID(node_loop),
+						core_loop,
+						ve_task_curr,
+						ve_task_curr->proc_pid);
+				pthread_rwlock_lock_unlock(
+					&(p_ve_core->ve_core_lock),
+					UNLOCK,
+					"Failed to release ve core lock");
+				retval = 0;
+				goto hndl_return;
+			}
+		} while ((ve_task_list_head != ve_task_curr->next)
+				&& (ve_task_curr = ve_task_curr->next));
+
+		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
+				UNLOCK,
+				"Failed to release ve core lock");
+	}
+	VEOS_DEBUG("Task with PID : %d not found in Node %d",
+			pid,
+			VE_NODE_ID(node_loop));
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+
+/**
  * @brief Check that the VE pid exists or not
  *
  * @param[in] pid Pid of VE process
@@ -474,6 +560,7 @@ int psm_rpm_handle_check_pid(int pid)
 {
 	int retval = -1;
 	struct ve_task_struct *tsk = NULL;
+	struct list_head *p = NULL, *n = NULL;
 
 	VEOS_TRACE("Entering");
 
@@ -481,13 +568,38 @@ int psm_rpm_handle_check_pid(int pid)
 	tsk = find_ve_task_struct(pid);
 	if (NULL == tsk) {
 		VEOS_DEBUG("PID: %d not found.", pid);
-		retval = -ESRCH;
-		goto hndl_return;
+		retval = find_veo_proc(pid);
+		if (!retval) {
+			VEOS_DEBUG("PID: %d found.", pid);
+			/* To inform that given process does not exist
+			 * on VE but a VE process have this PID as its tgid
+			 * (possible in case of VEO processes)
+			 */
+			retval = VEO_PROCESS_EXIST;
+			goto hndl_return;
+		} else {
+			VEOS_DEBUG("PID: %d not found.", pid);
+			retval = -ESRCH;
+			goto hndl_return;
+		}
 	} else {
 		VEOS_DEBUG("PID: %d found.", pid);
 		retval = 0;
+		put_ve_task_struct(tsk);
 	}
-	put_ve_task_struct(tsk);
+	if (!retval) {
+		/* To check that given PID is a process or thread.
+		 * It required for VEO process handling */
+		list_for_each_safe(p, n, &ve_init_task.tasks) {
+			struct ve_task_struct *tmp =
+				list_entry(p, struct ve_task_struct, tasks);
+			if (tmp->pid == pid) {
+				retval = 0;
+				goto hndl_return;
+			}
+		}
+	}
+	retval = VE_VALID_THREAD;
 hndl_return:
 	VEOS_TRACE("Exiting");
 	return retval;

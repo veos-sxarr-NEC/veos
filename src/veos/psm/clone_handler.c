@@ -597,6 +597,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	INIT_LIST_HEAD(&(new_task->children));
 	INIT_LIST_HEAD(&(new_task->siblings));
 	INIT_LIST_HEAD(&(new_task->tasks));
+	INIT_LIST_HEAD(&(new_task->swapped_pages));
 	ve_init_sigpending(&(new_task->pending));
 
 	/*setting signal related fields in child process*/
@@ -613,6 +614,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	if (!(clone_flags & CLONE_THREAD)) {
 		VEOS_DEBUG("Setting private members in child to NULL");
 		new_task->flags |= PF_FORKNOEXEC;
+		new_task->tgid = new_task->pid;
 		new_task->exit_signal = 0;
 		new_task->group_leader = new_task;
 		new_task->real_parent = current;
@@ -622,6 +624,9 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 		new_task->udma_context = NULL;
 		new_task->core_dma_desc = NULL;
 		new_task->ived_resource = NULL;
+		new_task->ipc_sync = NULL;
+		new_task->thread_sched_count = NULL;
+		new_task->thread_sched_bitmap = NULL;
 	}
 
 	if (clone_flags & CLONE_VFORK) {
@@ -667,6 +672,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	if (clone_flags & CLONE_THREAD) {
 		new_task->exit_signal = -1;
 		new_task->group_leader = current->group_leader;
+		new_task->ipc_sync = new_task->group_leader->ipc_sync;
 		new_task->parent = current->parent;
 		new_task->p_ve_thread->SR[11] = stack_start;
 	} else {
@@ -751,6 +757,18 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 					" lock");
 			goto free_mm_struct;
 		}
+
+		pthread_mutex_lock_unlock(&(current->ve_task_lock), LOCK,
+				"Failed to acquire ve_task lock [PID: %d]",
+				current->pid);
+		if (current->ve_task_state == STOP &&
+			current->sstatus == ACTIVE) {
+			new_task->ve_task_state = STOP;
+			new_task->sstatus = ACTIVE;
+		}
+		pthread_mutex_lock_unlock(&(current->ve_task_lock), UNLOCK,
+				"Failed to release ve_task lock [PID: %d]",
+				current->pid);
 
 		list_add_tail(&new_task->thread_group,
 				&new_task->group_leader->thread_group);

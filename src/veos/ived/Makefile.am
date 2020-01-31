@@ -22,6 +22,7 @@ libveived_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 \
 	-I$(srcdir) \
 	-I$(srcdir)/../main \
+	-I$(srcdir)/../pps \
 	-I$(srcdir)/../psm \
 	-I$(srcdir)/../dma \
 	-I$(srcdir)/../amm \

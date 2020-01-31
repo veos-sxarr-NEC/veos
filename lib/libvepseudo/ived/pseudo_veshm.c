@@ -140,6 +140,7 @@ pseudo_veshm_attach(uint64_t *args, veos_handle *handle)
 	int64_t attached_vemva = (int64_t)NULL;
 	int64_t local_pgsize;
 	uint64_t flag;
+	uint64_t pg_mask = 0;
 	struct veshm_args veshm_param;
 	PseudoVeosMessage *ret_msg = NULL;
 	PseudoVeosMessage ve_veshm_req = PSEUDO_VEOS_MESSAGE__INIT;
@@ -178,6 +179,15 @@ pseudo_veshm_attach(uint64_t *args, veos_handle *handle)
 			flag = MAP_64MB;
 		}
 		flag |= MAP_PRIVATE | MAP_ANON | MAP_VESHM;
+
+		pg_mask = (local_pgsize == PGSIZE_2M) ? 
+			((1LL<<21)-1) : ((1LL<<26)-1);
+		if ( ((veshm_param.arg.args_veshm_sub_attach.vemva & pg_mask) 
+		      != 0) 
+		     || (size & pg_mask) != 0 ){
+			retval = -EINVAL;
+			goto err_ret;
+		}
 
 		attached_vemva = (int64_t)ve_get_vemva
 			(handle, (uint64_t)NULL, size, flag, 

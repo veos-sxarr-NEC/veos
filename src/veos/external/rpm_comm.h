@@ -29,11 +29,20 @@
 #include <stdbool.h>
 #include "veos_handler.h"
 #include "veos.h"
+#include "task_mgmt.h"
 #define VMFLAGS_LENGTH  81
 #define VE_MAX_REGVALS  64
 #define MAX_CORE_IN_HEX  4
 #define VE_EINVAL_COREID 514
 #define VE_EINVAL_NUMAID 515
+#define PACKET_COUNT 4
+#define VEO_PROCESS_EXIST       515     /*!< Identifier for VEO API PID */
+#define VE_VALID_THREAD         516     /*!< Identifier for process/thread */
+
+extern log4c_category_t *cat_os_pps;
+
+#define PPS_INFO(category, fmt, ...) \
+	VE_LOG(category, LOG4C_PRIORITY_INFO, fmt, ## __VA_ARGS__)
 
 /**
  * @brief RPM sub commands
@@ -64,6 +73,11 @@ enum veos_rpm_subcmd {
 	VE_GET_REGVALS,
 	VE_NUMA_INFO,
 	VE_DEL_DUMMY_TASK,
+	VE_SWAP_STATUSINFO,
+	VE_SWAP_INFO,
+	VE_SWAP_NODEINFO,
+	VE_SWAP_OUT,
+	VE_SWAP_IN,
 	VE_RPM_INVALID = -1,
 };
 
@@ -230,7 +244,7 @@ struct ve_mapinfo {
 	char vmflags[VMFLAGS_LENGTH];		/*!<
 						 * Flags associated with the
 						 * mapping
-						 */
+				rr		 */
 };
 
 /**
@@ -264,6 +278,7 @@ struct velib_pidstat {
 	unsigned long start_time;       /*!< Start time of VE process */
 	bool whole;                     /*!< Flag for single thread (0) or
 					  the whole thread group (1) */
+	pid_t tgid;			/*!< VE process's thread group ID */
 };
 
 /**
@@ -425,6 +440,66 @@ struct ve_numa_stat {
 							 *NUMA node */
 };
 
+/**
+ * @brief Structure to get swap status informations of one VE process
+ */
+struct ve_swap_status_struct {
+	pid_t pid;              /*!< VE process ID */
+	int proc_state;         /*!< VE process state */
+	int proc_substate;      /*!< VE process sub state */
+};
+
+/**
+ * @brief Structure to get swap status informations of some VE processes per VE
+ * Node
+ */
+struct ve_swap_status_info {
+	int len;                /*!<
+				 * the length of structure
+				 * ve_swap_status_struct array
+				 */
+	struct ve_swap_status_struct ve_swap_status[MAX_SWAP_PROCESS];
+				/*!<
+				 * Structure array of
+				 * VE process state for PPS
+				 */
+};
+
+/**
+ * @brief Structure to get the pid list
+ */
+struct ve_swap_pids {
+	pid_t pid[MAX_SWAP_PROCESS + 1]; /*!< pids */
+	int process_num; /*!< The number of processes */
+};
+
+/**
+ * @brief Structure to get swap informations of VE process
+ */
+struct ve_swap_struct {
+	pid_t pid;                       /*!< VE process ID */
+	int proc_state;                  /*!< VE process state */
+	int proc_substate;               /*!< VE process sub state */
+	unsigned long long swapped_sz;   /*!< swapped memory size of VE process*/
+	unsigned long long swappable_sz; /*!< swappable memory size of VE process*/
+};
+
+/**
+ * @brief Structure to get swap informations of VE node
+ */
+struct ve_swap_info {
+	int len;                        /*!< the length of structure ve_swap_struct array */
+	struct ve_swap_struct ve_swap[MAX_SWAP_PROCESS/PACKET_COUNT];
+					/*!< Structure array of VE process state for PPS */
+};
+
+/**
+ * @brief Information for swap about VE nodes
+ */
+struct ve_swap_node_info {
+	int node_num;                           /*!< number of VE nodes */
+	unsigned long long node_swapped_sz;     /*!< swapped memory size of VE nodes*/
+};
 
 int veos_write_buf(int, void *, int);
 int veos_rpm_send_cmd_ack(int, uint8_t *, int64_t, int64_t);
@@ -453,4 +528,9 @@ int rpm_handle_ipc_ls_rm_req(struct veos_thread_arg *);
 int rpm_handle_get_regvals_req(struct veos_thread_arg *pti);
 int rpm_handle_delete_dummy_task_req(struct veos_thread_arg *pti);
 int rpm_handle_numa_info_req(struct veos_thread_arg *pti);
+int rpm_handle_ve_swapout_req(struct veos_thread_arg *pti);
+int rpm_handle_ve_swapin_req(struct veos_thread_arg *pti);
+int rpm_handle_ve_swapstatusinfo_req(struct veos_thread_arg *pti);
+int rpm_handle_ve_swapnodeinfo_req(struct veos_thread_arg *pti);
+int rpm_handle_ve_swapinfo_req(struct veos_thread_arg *pti); 
 #endif

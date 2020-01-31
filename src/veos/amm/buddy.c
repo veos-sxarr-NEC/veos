@@ -171,6 +171,8 @@ int __page_entry(struct buddy_mempool *mp, pgno_t pg_no, int pgmod, int order)
 	page->private_data = NULL;
 	page->owner = NULL;
 	page->buddy_order = order;
+	page->pci_count = 0;
+	page->swapped_info = NULL;
 
 	if (vnode_info->ve_pages[pg_no] != NULL) {
 		 VEOS_DEBUG("page %ld already allocated", pg_no);
@@ -561,6 +563,8 @@ struct block *get_buddy(struct buddy_mempool *mp,
 	VEOS_DEBUG("self start after calc %lx", self->start);
 	_buddy = self_start ^ (((uint64_t)1) << order);
 	VEOS_DEBUG("_buddy %lx", _buddy);
+	_buddy += mp->base_addr;
+	VEOS_DEBUG("_buddy after adding base_addr : %lx", _buddy);
 	if (list_empty(&mp->frb->free[order]))
 		return (void *)-1;
 	VEOS_DEBUG("traversing free list(%p) of order %d",

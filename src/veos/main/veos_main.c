@@ -48,6 +48,7 @@
 #include "veos_ived_common.h"
 #include "config.h"
 #include "vesync.h"
+#include "ve_swap.h"
 
 #define IPC_QUEUE_LEN 20
 
@@ -55,7 +56,6 @@ static char veos_sock_file[PATH_MAX] = {'\0'};
 char drv_sock_file[PATH_MAX] = {'\0'};
 /* Buffer to store IVED's socket file path. */
 char ived_sock_file[PATH_MAX] = {'\0'};
-struct ve_nodes_vh *p_ve_nodes_vh;
 sem_t terminate_sem;
 log4c_category_t *cat_os_core;
 volatile sig_atomic_t terminate_flag = NOT_REQUIRED;
@@ -71,6 +71,8 @@ int64_t veos_timer_interval = PSM_TIMER_INTERVAL_SECS * 1000000000 +
 int64_t veos_time_slice = PSM_TIME_SLICE_SECS * 1000000 +
 						(PSM_TIME_SLICE_NSECS / 1000);
 int no_update_os_state = 0;
+struct ve_node_struct ve_node; /* the VE node */
+struct ve_node_struct *p_ve_node_global = &ve_node; /* the pointer to VE node */
 
 /**
  * @brief This function releases all the resources
@@ -90,13 +92,6 @@ void veos_terminate_node_core(int abnormal)
 
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "In Func");
 
-	/* Deallocate all the node/core structures*/
-	if (p_ve_nodes_vh == NULL) {
-		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_DEBUG,
-				"No VE node/core structure initialized");
-		return;
-	}
-
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_DEBUG,
 				"Deallocating VE node/core structures");
 	if (abnormal == NORMAL) {
@@ -108,85 +103,82 @@ void veos_terminate_node_core(int abnormal)
 
 	}
 
-	p_ve_node = p_ve_nodes_vh->p_ve_nodes[0];
-	if (p_ve_node != NULL) {
-		/* Removing VE system load */
-		list_for_each_safe(p, q, &(p_ve_node->ve_sys_load_head)) {
-			struct ve_sys_load *tmp =
-				list_entry(p, struct ve_sys_load, list);
-			free(tmp);
-		}
-		if (munmap(VE_NODE(0)->cnt_regs_addr,
-				sizeof(system_common_reg_t)) != 0) {
-			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-					"Unmapping common register failed");
-		}
-
-		if (sem_destroy(&(p_ve_node->node_sem)) == -1) {
-			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-				"Destroying semaphore node_sem failed");
-		}
-
-		for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores;
-								core_loop++) {
-			p_ve_core = p_ve_node->p_ve_core[core_loop];
-			if (p_ve_core == NULL)
-				continue;
-			if (munmap(p_ve_core->usr_regs_addr,
-				sizeof(core_user_reg_t)) != 0) {
-				VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-					"Unmapping user register failed: core %d",
-					core_loop);
-			}
-			if (munmap(p_ve_core->sys_regs_addr,
-				sizeof(core_system_reg_t)) != 0) {
-				VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-					"Unmapping system register failed: core %d",
-					core_loop);
-			}
-
-			if (sem_destroy(&(p_ve_core->core_sem)) == -1) {
-				VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-						"Destroying semaphore failed for core %d",
-						p_ve_core->core_num);
-			}
-			if (pthread_rwlock_destroy(&(p_ve_core->ve_core_lock))) {
-				VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-						"Destroying read_write lock failed for core %d",
-						core_loop);
-			}
-			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_DEBUG,
-							"Free Core[%d]",
-							core_loop);
-			free(p_ve_core);
-		}
-		if (abnormal == NORMAL) {
-			if (veos_set_ve_node_state(p_ve_node,
-							OS_ST_OFFLINE) != 0)
-				VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_DEBUG,
-					"Setting VE node state failed");
-		}
-		/*destroy ve_node lock*/
-		if (pthread_mutex_destroy(&p_ve_node->ve_node_lock) != 0) {
-			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-					"Node mutex lock destroy failed");
-		}
-
-		/* destroy tasklist_lock*/
-		if (pthread_mutex_destroy(&p_ve_node->ve_tasklist_lock) != 0) {
-			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-					"Node tasklist lock destroy failed");
-		}
-
-		if (pthread_rwlock_destroy(&(VE_NODE(0)->ve_relocate_lock)) != 0) {
-			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-					"Failed to destroy ipc read-write lock");
-		}
-
-		vedl_close_ve(VE_HANDLE(0));
-		free(p_ve_node);
+	p_ve_node = &ve_node;
+	/* Removing VE system load */
+	list_for_each_safe(p, q, &(p_ve_node->ve_sys_load_head)) {
+		struct ve_sys_load *tmp =
+			list_entry(p, struct ve_sys_load, list);
+		free(tmp);
 	}
-	free(p_ve_nodes_vh);
+	if (munmap(VE_NODE(0)->cnt_regs_addr,
+			sizeof(system_common_reg_t)) != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+			"Unmapping common register failed");
+	}
+
+	if (sem_destroy(&(p_ve_node->node_sem)) == -1) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+			"Destroying semaphore node_sem failed");
+	}
+
+	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores;
+	     core_loop++) {
+		p_ve_core = p_ve_node->p_ve_core[core_loop];
+		if (p_ve_core == NULL)
+			continue;
+		if (munmap(p_ve_core->usr_regs_addr,
+				sizeof(core_user_reg_t)) != 0) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Unmapping user register failed: core %d",
+				core_loop);
+		}
+		if (munmap(p_ve_core->sys_regs_addr,
+				sizeof(core_system_reg_t)) != 0) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Unmapping system register failed: core %d",
+				core_loop);
+		}
+
+		if (sem_destroy(&(p_ve_core->core_sem)) == -1) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Destroying semaphore failed for core %d",
+				p_ve_core->core_num);
+		}
+		if (pthread_rwlock_destroy(&(p_ve_core->ve_core_lock))) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Destroying read_write lock failed for core %d",
+				core_loop);
+		}
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_DEBUG,
+			"Free Core[%d]",
+			core_loop);
+		free(p_ve_core);
+	}
+	if (abnormal == NORMAL) {
+		if (veos_set_ve_node_state(p_ve_node,
+						OS_ST_OFFLINE) != 0)
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_DEBUG,
+				"Setting VE node state failed");
+	}
+	/*destroy ve_node lock*/
+	if (pthread_mutex_destroy(&p_ve_node->ve_node_lock) != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+			"Node mutex lock destroy failed");
+	}
+
+	/* destroy tasklist_lock*/
+	if (pthread_mutex_destroy(&p_ve_node->ve_tasklist_lock) != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+			"Node tasklist lock destroy failed");
+	}
+
+	if (pthread_rwlock_destroy(&(VE_NODE(0)->ve_relocate_lock)) != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+			"Failed to destroy ipc read-write lock");
+	}
+
+	vedl_close_ve(VE_HANDLE(0));
+
 	psm_del_sighand_struct(&ve_init_task);
 	if (pthread_rwlock_destroy(&init_task_lock)) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
@@ -251,6 +243,8 @@ static void veos_termination(int abnormal)
 		}
 	}
 
+	veos_free_ppsbuf();
+
 	if (ve_dma_close_p(p_ve_node->dh) != 0)
 		veos_abort("Failed to finalize DMA manager");
 	/*Deallocating node AMM resourcces*/
@@ -299,6 +293,8 @@ static void usage(char *veos_path)
 	"                                  which VEOS sets.\n"
 	"    --pcisync3=pcisyar3,pcisymr3  The values of PCISYAR3 and PCISYMR3\n"
 	"                                  which VEOS sets.\n"
+	"    --ve-swap-mem-max=value       Maximum value of memory that can be\n"
+	"                                  swapped out per VE node.\n"
 	"    --cleanup                     Starts a VEOS and terminates it\n"
 	"                                  immediately, in order to ensure all VE\n"
 	"                                  core, user mode DMA and privileged DMA\n"
@@ -534,20 +530,22 @@ int main(int argc, char *argv[])
 	pthread_t veos_sigstop_thread;
 	pthread_attr_t attr;
 	pthread_rwlockattr_t rw_attr;
+	size_t pps_buf_size = 0;
 
 	struct option long_options[] = {
-			{"pcisync1",       required_argument, NULL,  0 },
-			{"pcisync2",       required_argument, NULL,  0 },
-			{"pcisync3",       required_argument, NULL,  0 },
-			{"cleanup",        no_argument,       NULL,  0 },
-			{"help",           no_argument,       NULL, 'h'},
-			{"sock",           required_argument, NULL, 's'},
-			{"dev",            required_argument, NULL, 'd'},
-			{"ived",           required_argument, NULL, 'i'},
-			{"vemm",           required_argument, NULL, 'm'},
-			{"timer-interval", required_argument, NULL, 't'},
-			{"time-slice",     required_argument, NULL, 'T'},
-			{"version",        no_argument,       NULL, 'V'},
+			{"pcisync1",        required_argument, NULL,  0 },
+			{"pcisync2",        required_argument, NULL,  0 },
+			{"pcisync3",        required_argument, NULL,  0 },
+			{"cleanup",         no_argument,       NULL,  0 },
+			{"ve-swap-mem-max", required_argument, NULL,  0 },
+			{"help",            no_argument,       NULL, 'h'},
+			{"sock",            required_argument, NULL, 's'},
+			{"dev",             required_argument, NULL, 'd'},
+			{"ived",            required_argument, NULL, 'i'},
+			{"vemm",            required_argument, NULL, 'm'},
+			{"timer-interval",  required_argument, NULL, 't'},
+			{"time-slice",      required_argument, NULL, 'T'},
+			{"version",         no_argument,       NULL, 'V'},
 			{0, 0, 0, 0}
 			};
 
@@ -613,6 +611,16 @@ int main(int argc, char *argv[])
 			} else if (index == OPT_CLEANUP) {
 				opt_clean = 1;
 				break;
+			} else if (index == OPT_VESWAPMAX) {
+				pps_buf_size =
+					veos_convert_sched_options(optarg,
+						0, INT64_MAX / (1024 * 1024));
+				if (pps_buf_size == -1) {
+					fprintf(stderr, "%s option error\n",
+						long_options[index].name);
+					exit(EXIT_FAILURE);
+				}
+				break;
 			} else {
 				fprintf(stderr, "Wrong option specified\n");
 				exit(EXIT_FAILURE);
@@ -649,6 +657,11 @@ int main(int argc, char *argv[])
 	}
 	if (veos_ived_log4c_init()) {
 		fprintf(stderr, "Initializing log4c for IVED failed\n");
+		retval = 1;
+		goto hndl_return;
+	}
+	if (veos_pps_log4c_init()) {
+		fprintf(stderr, "Initializing log4c for PPS failed\n");
 		retval = 1;
 		goto hndl_return;
 	}
@@ -760,12 +773,21 @@ int main(int argc, char *argv[])
 		retval = 1;
 		goto hndl_sem;
 	}
+
+	if (veos_alloc_ppsbuf(pps_buf_size) != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
+				"Initializing Partial Process Swapping failed");
+		retval = 1;
+		goto hndl_termination;
+	}
+
 	if (veos_init_pci_sync() != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
 					"Initializing PCI synchronization failed");
 		retval = 1;
 		goto hndl_termination;
 	}
+
 	if (opt_vemm != 0) {
 		if (vemm_agent_run(vemm_sock_file) != 0) {
 			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
@@ -867,7 +889,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (veos_remove_timer(p_ve_nodes_vh->p_ve_nodes[0]) != 0) {
+	if (veos_remove_timer(&ve_node) != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 					"Can't stop VEOS scheduler timer");
 		retval = 1;
@@ -875,6 +897,9 @@ int main(int argc, char *argv[])
 
 	/* Wake up all threads of waiting to allocate memory */
 	amm_wake_alloc_page();
+
+	/* Wake up swap threads and T(s) processes */
+	send_notice_to_swap_thread();
 
 	/* wait termination of in-progress IPC request and
 	 * in-progress state change of process
@@ -924,10 +949,11 @@ hndl_vemm:
 	}
 
 hndl_termination:
-	if (veos_remove_timer(p_ve_nodes_vh->p_ve_nodes[0]) != 0)
+	if (veos_remove_timer(&ve_node) != 0)
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 		       "Can't stop VEOS scheduler timer");
 	veos_request_termination(0);
+	send_notice_to_swap_thread();
 	veos_termination(retval);
 
 hndl_sem:

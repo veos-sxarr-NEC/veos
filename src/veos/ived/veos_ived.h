@@ -77,6 +77,7 @@ struct ived_shared_resource_data{
 	int attach_veshm_num;	/*!< For debug only. Don't divert to other purpose. */
 
 	struct veos_vhshm veos_vhshm_res_head; /* !< VHSHM resource structure */
+	bool is_swap_out;			/*!< process swap out or not */
 };
 
 
@@ -85,5 +86,8 @@ extern int veos_ived_erase_osdata();
 extern int veos_init_ived_proc_property(struct ve_task_struct *);
 extern int veos_clean_ived_proc_property(struct ve_task_struct *);
 extern int veos_ived_get_pciatb_pgmode(int);
+extern int veos_veshm_update_is_swap_out(struct ve_task_struct *, bool);
 
+extern int veos_veshm_test_paddr_array_all(struct ve_task_struct *);
+extern void veos_veshm_update_paddr_array_all(struct ve_task_struct *);
 #endif

@@ -61,6 +61,7 @@ pthread_mutex_t veshm_remains_lock;
 #define REPLY_OK	0
 #define REPLY_NG	-ECANCELED
 #define LOCK_TIMEOUT	10	/* seconds */
+#define INVALID_VESHM	0xFFFFFFFFFFFFFFFF
 
 
 /**
@@ -458,6 +459,7 @@ delete_owned_veshm_info(struct list_head *owner_list_head,
 	if (list_cnt != NULL)
 		(*list_cnt)--;
 	list_del(&entry->list);
+	free(entry->paddr_array);
 	free(entry);
 
 	return (0);
@@ -773,3 +775,234 @@ ret_sucess:
 	return(0);
 }
 
+/**
+ * @brief update VESHM is_swap_out
+ * 
+ * This function updates is_swap_out@ived_shared_resource_data,
+ * before Swap-out and after Swap-in.
+ * So, This function must be invoked in the beginning of Swap-out,
+ * and must be invoked at the end of Swap-in, from "swap thread",
+ * only with handling_request_lock_task@ve_task_struct,
+ * with write lock of ived_resource_lock@ived_shared_resource_data
+ *
+ * @param [in] tsk	Target process
+ *
+ * @param [in] is_swap_out process swap out or not
+ *
+ * @retval 0 on sucess
+ * @retval -1 on failure
+ */
+int
+veos_veshm_update_is_swap_out(struct ve_task_struct *tsk, bool is_swap_out)
+{
+	int retval = -1;
+	struct ived_shared_resource_data *resource;
+
+	IVED_TRACE(log4cat_veos_ived, "PASS");
+
+	if (tsk == NULL) {
+		IVED_CRIT(log4cat_veos_ived, "Task is NULL.");
+		goto hndl_return;
+	}
+
+	if (tsk->ived_resource == NULL) {
+		IVED_CRIT(log4cat_veos_ived, "Resource data is NULL.");
+		goto hndl_return;
+	}
+
+	resource = tsk->ived_resource;
+
+	pthread_rwlock_wrlock(&resource->ived_resource_lock);
+	resource->is_swap_out = is_swap_out;
+	pthread_rwlock_unlock(&resource->ived_resource_lock);
+
+	retval = 0;
+	IVED_TRACE(log4cat_veos_ived, "PASS");
+hndl_return:
+	return retval;
+}
+
+/**
+ * @brief checkes phycal address of own VESHM information
+ *
+ * This function checks physical address of owned
+ * VESHM information was changed or not, before Swap-out.
+ * This function is invoked from ve_so_swapout().
+ * The current check is only VESHM that is not
+ * registered in PCIATB
+ *
+ * @param [in] tsk	Target process
+ * 
+ * @retval 0 on sucess
+ * @retval -1 on failure
+ */
+int 
+veos_veshm_test_paddr_array_all(struct ve_task_struct *tsk)
+{
+	struct ived_shared_resource_data *resource;
+	struct owned_veshm_info *entry = NULL;
+	struct list_head *list_p, *list_n;
+	int ret = 0;
+	int retval = -1;
+
+	IVED_TRACE(log4cat_veos_ived, "PASS");
+
+	if (tsk == NULL) {
+		IVED_CRIT(log4cat_veos_ived, "Task is NULL.");
+		goto hndl_return;
+	}
+
+	if (tsk->ived_resource == NULL) {
+		IVED_CRIT(log4cat_veos_ived, "Resource data is NULL.");
+		goto hndl_return;
+	}
+
+	resource = tsk->ived_resource;
+
+	pthread_rwlock_wrlock(&resource->ived_resource_lock);
+	/* loop VESHM information*/
+	list_for_each_safe(list_p, list_n, &resource->owned_veshm_list) {
+		/* get owned VESHM information */
+		entry = list_entry(list_p, struct owned_veshm_info, list);
+		/* get physical address of owned VESHM */
+		/* check physical address */
+		if (entry->pciatb_entries == 0) {
+			ret = check_veshm_paddr(entry->paddr_array,
+					entry->physical_pages,
+					entry->physical_pgsize, tsk->pid,
+					entry->vemva, entry->size);
+			if (ret == -1) {
+				IVED_ERROR(log4cat_veos_ived,
+				   "check_veshm_paddr failed.");
+			} else if (ret == 1) {
+				entry->paddr_array[0] = INVALID_VESHM;
+			}
+		}
+	}
+	pthread_rwlock_unlock(&resource->ived_resource_lock);
+	retval = 0;
+	IVED_TRACE(log4cat_veos_ived, "PASS");
+hndl_return:
+	return retval;
+}
+/**
+ * @brief update physical address and specified memory's
+ *
+ * @param [in] entries  Length of registered physical address array
+ * @param [in] pgsize   Page size of registered physical pages
+ * @param [in] pid	PID of examined process 
+ * @param [in] vemva	Virtual address of examined address
+ * @param [in] memsize	Memory size 
+ * @param [out] paddr	Registered physical address
+ *
+ * @retval 0  Physical addresses update success.
+ * @retval -1 Failed
+ */
+int
+update_veshm_paddr(uint64_t entries, uint64_t pgsize, pid_t pid,
+			uint64_t vemva, uint64_t memsize, uint64_t *paddr)
+{
+	int i;
+	int64_t new_paddr;
+	int atb_prot;
+
+	if (paddr == NULL){
+		assert(0);
+		return (-1);
+	}
+
+	for (i = 0; i < entries; i++){
+		new_paddr = veos_virt_to_phy(vemva + pgsize * i,
+						pid, false, &atb_prot);
+		if (new_paddr < 0) {
+			new_paddr = INVALID_VESHM;
+		}
+		*(paddr + i) = (uint64_t)new_paddr;
+		IVED_DEBUG(log4cat_veos_ived, 
+			"Physical address is changed: vemva:%#"PRIx64"",
+				vemva+pgsize*i);
+	}
+
+	return(0);
+}
+
+/**
+ * @brief checkes phycal address of own VESHM information
+ *
+ * This function update physical address of owned
+ * VESHM information was if they were changed by Swap-in.
+ * This function is invoked from ve_do_swapin().
+ * The current check is only VESHM that is not
+ * registered in PCIATB
+ *
+ * @param [in] tsk	Target process
+ * @return None
+ */
+void
+veos_veshm_update_paddr_array_all(struct ve_task_struct *tsk)
+{
+	struct ived_shared_resource_data *resource;
+	struct owned_veshm_info *entry = NULL;
+	struct list_head *list_p, *list_n;
+	int ret = 0;
+
+	IVED_TRACE(log4cat_veos_ived, "PASS");
+
+	if (tsk == NULL) {
+		IVED_CRIT(log4cat_veos_ived, "Task is NULL.");
+		goto hndl_return;
+	}
+
+	if (tsk->ived_resource == NULL) {
+		IVED_CRIT(log4cat_veos_ived, "Resource data is NULL.");
+		goto hndl_return;
+	}
+
+	resource = tsk->ived_resource;
+
+	pthread_rwlock_wrlock(&resource->ived_resource_lock);
+	/* loop VESHM information*/
+	list_for_each_safe(list_p, list_n, &resource->owned_veshm_list) {
+		/* get owned VESHM information */
+		entry = list_entry(list_p, struct owned_veshm_info, list);
+		/* get physical address of owned VESHM */
+		/* check physical address */
+		if (entry->pciatb_entries == 0) {
+			if (entry->paddr_array == (uint64_t *)INVALID_VESHM) {
+				IVED_DEBUG(log4cat_veos_ived,
+				   "veshm_paddr all 'F'");
+				continue;
+			}
+			ret = check_veshm_paddr(entry->paddr_array,
+					entry->physical_pages,
+					entry->physical_pgsize, tsk->pid,
+					entry->vemva, entry->size);
+			if (ret == -1) {
+				IVED_ERROR(log4cat_veos_ived,
+					   "check_veshm_paddr failed.");
+			} else if (ret == 0) { 
+				IVED_DEBUG(log4cat_veos_ived,
+		   			"Physical addresses are not changed");
+			} else {
+				ret = update_veshm_paddr(entry->physical_pages,
+						entry->physical_pgsize,
+						tsk->pid,
+						entry->vemva, entry->size,
+						entry->paddr_array);
+				if (ret == -1){
+					IVED_ERROR(log4cat_veos_ived,
+						"Updating physical addresses "
+						"failed");
+				} else {
+					IVED_DEBUG(log4cat_veos_ived,
+			   			"Physical addresses are "
+						"update.");
+				}
+			}
+		}
+	}
+	pthread_rwlock_unlock(&resource->ived_resource_lock);
+	IVED_TRACE(log4cat_veos_ived, "PASS");
+hndl_return:
+	return;
+}

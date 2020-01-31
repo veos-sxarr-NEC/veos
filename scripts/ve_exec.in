@@ -32,7 +32,7 @@ export VE_EXEC_PATH=$PATH_VE_EXEC
 
 if [ -z "$VE_LD_ORIGIN_PATH" ]
 then
-       export VE_LD_ORIGIN_PATH=`pwd`
+	export VE_LD_ORIGIN_PATH=`pwd`
 fi
 
 flag_traceme=0
@@ -44,6 +44,31 @@ NUMA_NODE_ID=-1
 flag_membind=0
 node_given=0
 numa_node_id_given=0
+flag_show_limit=0
+flag_show_usage=0
+regex='^[0-9]+$';
+
+#declare and initialize variables for VE_LIMIT_OPT parsing
+declare -A resource_limit_option=(
+		[c]="core file size          (blocks, -c)"
+		[d]="data seg size           (kbytes, -d)"
+		[i]="pending signals                 (-i)"
+		[m]="max memory size         (kbytes, -m)"
+		[s]="stack size              (kbytes, -s)"
+		[t]="cpu time               (seconds, -t)"
+		[v]="virtual memory          (kbytes, -v)"
+		)
+declare -A resource_limit_values=() ;
+declare -A resource_limit_valid_arg=() ;
+for option in "${!resource_limit_option[@]}";
+do
+	let hard$option=-1 ;
+	let soft$option=-1 ;
+	resource_limit_valid_arg[hard$option]=1 ;
+	resource_limit_valid_arg[soft$option]=1 ;
+	resource_limit_values[hard$option]=$(ulimit "-H$option") ;
+	resource_limit_values[soft$option]=$(ulimit "-S$option") ;
+done;
 
 if [ ! -x "$PATH_VE_EXEC" ] ; then
 	echo "ERROR: acutal ve_exec is not found in path: ${PATH_VE_EXEC}"
@@ -59,11 +84,16 @@ Options:
                                 on which VE program belongs
   -c core, --core=<core>        where core is the VE core number on
                                 which VE program to be executed
-  --                            End of options (Requires if binary name
+  --show-limit                  display the applicable soft and hard
+                                resource limits of VE process supported by
+                                VE_LIMIT_OPT environment variable
+  --                            end of options (requires if binary name
                                 starts with ‘-’)
 ENVIRONMENT VARIABLE
-  VE_NODE_NUMBER                provides the VE node number
-  If -N option is specified, this environment variable is ignored."
+  VE_NODE_NUMBER                provide the VE node number
+  If -N option is specified, this environment variable is ignored.
+  VE_ATOMIC_IO                  value 1 enables atomic I/O
+  VE_ACC_IO                     value 1 enables accelerated I/O"
 }
 
 partitioning_help_message() {
@@ -76,18 +106,341 @@ Options:
   -c core, --core=<core>        where core is the VE core number on
                                 which VE program to be executed
                                 Can't specify both '-c' and '--cpunodebind'
-  --cpunodebind=<NUMA node ID>  Specify NUMA node ID on which VE program
+  --cpunodebind=<NUMA node ID>  specify NUMA node ID on which VE program
                                 to be executed
-  --localmembind                Memory policy is set to MPOL_BIND
-  --                            End of options (Requires if binary name
+  --localmembind                memory policy is set to MPOL_BIND
+  --show-limit                  display the applicable soft and hard
+                                resource limits of VE process supported by
+                                VE_LIMIT_OPT environment variable
+  --                            end of options (requires if binary name
                                 starts with ‘-’)
 ENVIRONMENT VARIABLE
-  VE_NODE_NUMBER                provides the VE node number
+  VE_NODE_NUMBER                provide the VE node number
   If -N option is specified, this environment variable is ignored.
+  VE_NUMA_OPT                   provide NUMA node ID and memory policy
+  If NUMA node ID or memory policy are specified as command line argument,
+  then the values passed in this environment variable will be ignored.
+  VE_ATOMIC_IO                  value 1 enables atomic I/O
+  VE_ACC_IO                     value 1 enables accelerated I/O"
+}
 
-  VE_NUMA_OPT                   provide NUMA node ID, set memory policy too
-  If NUMA node ID  or memory policy are specified as command line argument
-  then the values passed in this environment variable will be ignored."
+ve_limit_opt_usage()
+{
+	if [[ $flag_show_usage != 1 ]]; then
+		printf "Error: invalid input in VE_LIMIT_OPT $1\n" "$2"
+		if [[ $flag_show_limit == 0 ]]; then
+			exit 1
+		fi
+		flag_show_usage=1
+	fi
+}
+function check_limit_overflow()
+{
+max_val1=18014398509481983    #maximum allowed value for resources (-c, -d, -v, -s and -m).
+max_val2=18446744073709551615 #maximum allowed value for resources (-i, -t).
+input=$2;
+limit_opt=$1
+input=$(printf "%u" $(($input)))
+resource_limit_values[$limit_opt]=$input
+if [[ "$limit_opt" != "hardi" && "$limit_opt" != "softi"
+	&& "$limit_opt" != "hardt" && "$limit_opt" != "softt" ]]; then
+	if [[ $input -gt $max_val1 ]]; then
+		error_string="(error: limit out of range)"
+	fi
+else
+	if [[ ${resource_limit_values[$limit_opt]} == $max_val2 ]]; then
+		resource_limit_values[$limit_opt]="unlimited";
+	elif [[ "$limit_opt" == "hardt" || "$limit_opt" == "softt" ]]; then
+		if [[ ${resource_limit_values[$limit_opt]} == 0 ]]; then
+			resource_limit_values[$limit_opt]=1;
+		fi
+	fi
+fi
+}
+ve_limit_validate_display()
+{
+for option in "${!resource_limit_option[@]}";
+do
+	error_string=""
+	optarg_hard=${resource_limit_values[hard$option]}
+	optarg_soft=${resource_limit_values[soft$option]}
+	if [[ $flag_show_limit == 1 ]]; then
+		if [[ ${optarg_soft} =~ $regex ]]; then
+			check_limit_overflow "soft$option"  $optarg_soft
+		fi
+		if [[ ${optarg_hard} =~ $regex ]]; then
+			check_limit_overflow "hard$option"  $optarg_hard
+		fi
+		if [[ ${optarg_soft} =~ $regex
+			&& ${optarg_hard} =~ $regex
+			&& ${resource_limit_values[soft$option]} -gt ${resource_limit_values[hard$option]} ]]; then
+				error_string="(error: invalid limits)"
+		elif [[ ${optarg_soft} ==  "unlimited"
+			&& ${optarg_hard} != "unlimited" ]]; then
+				error_string="(error: invalid limits)"
+		fi
+	fi
+	if [[ ! ${optarg_hard} =~ $regex && "$optarg_hard" != "unlimited" ]]; then
+		resource_limit_valid_arg[hard$option]=0
+		error_string="($optarg_hard: invalid number)"
+	fi
+	if [[ ! ${optarg_soft} =~ $regex && "$optarg_soft" != "unlimited" ]]; then
+		resource_limit_valid_arg[soft$option]=0
+		error_string="($optarg_soft: invalid number)"
+	fi
+	if [[ $flag_show_limit == 1 ]]; then
+		:
+		printf "%s " "${resource_limit_option[$option]}"
+		printf "%-20s %-20s %s\n" "${resource_limit_values[soft$option]}" "${resource_limit_values[hard$option]}" "$error_string"
+	elif [[ ${resource_limit_valid_arg[hard$option]} != 1
+		|| ${resource_limit_valid_arg[soft$option]} != 1
+		|| $error_string != "" ]]; then
+			ve_limit_opt_usage
+			exit 1
+	fi
+done
+}
+
+ve_limit_opt_parse()
+{
+#check if VE_STACK_LIMIT environment variable is defined and give it precedence
+#over 'ulimit' value of resource limits
+if [ ! -z "$VE_STACK_LIMIT" ]; then
+	if [[ ${VE_STACK_LIMIT} =~ $regex || $VE_STACK_LIMIT == "unlimited" ]]; then
+		resource_limit_values[softs]=$VE_STACK_LIMIT ;
+		resource_limit_values[hards]=$VE_STACK_LIMIT ;
+	fi
+fi
+
+#make VE_LIMIT_OPT environment variable input parsable by getopt
+VE_LIMIT_OPT=$(echo $VE_LIMIT_OPT)
+TEMP_VE_LIMIT_OPT=$VE_LIMIT_OPT
+IFS=" " read  -a ve_limit_opt <<< "$VE_LIMIT_OPT"
+
+SHORT_OPTS="m:s:d:c:v:i:t:"
+LONG_OPTS="hardm:,softm:,hards:,softs:,hardd:,softd:,hardv:,softv:,hardc:,softc:,hardi:,softi:,hardt:,softt:,"
+TEMP=`getopt -q --options $SHORT_OPTS --longoptions $LONG_OPTS -- "${ve_limit_opt[@]}"`
+if [ $? -ne 0 ]; then
+	ve_limit_opt_usage;
+fi
+TEMP="${TEMP:1}"
+eval set -- "$TEMP"
+unset TEMP
+
+short_option_array=$(echo $SHORT_OPTS | sed "s/:/ /g");
+long_option_array=$(echo $LONG_OPTS | sed "s/:,/ /g");
+long_option_array=$(echo $long_option_array | sed 's/[^ ]* */-&/g');
+# extract options and their arguments into variables
+while true ; do
+
+	# Check if the options and arguments are space separated or not
+	for i in $(echo "$short_option_array $long_option_array")
+	do
+		if [[ "$1" == "-$i" ]]; then
+			if [[ ! "$TEMP_VE_LIMIT_OPT" =~ "$1 $2" ]]; then
+				ve_limit_opt_usage
+				flag_missing_space=1
+				break
+			fi
+		fi
+	done
+	if [[ "$flag_missing_space" == 1 ]]; then
+		shift 2
+		flag_missing_space=0
+		continue
+	fi
+
+	case "$1" in
+		-c)	case "$2" in
+				*) if [[ $hardc == -1 ]]; then
+					hardc=$2 ;
+					resource_limit_values[hardc]=$2 ;
+				   fi
+				   if [[ $softc == -1 ]]; then
+					softc=$2 ;
+					resource_limit_values[softc]=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--hardc)case "$2" in
+				*) if [[ $hardc == -1 ]]; then
+					hardc=$2 ;
+					resource_limit_values[hardc]=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--softc)case "$2" in
+				*) if [[ $softc == -1 ]]; then
+					softc=$2;
+					resource_limit_values[softc]=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		-d)	case "$2" in
+				*)if [[ $hardd == -1 ]]; then
+					resource_limit_values[hardd]=$2 ;
+					hardd=$2 ;
+				   fi
+				   if [[ $softd == -1 ]]; then
+					resource_limit_values[softd]=$2 ;
+					softd=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--hardd)case "$2" in
+				*) if [[ $hardd == -1 ]]; then
+					resource_limit_values[hardd]=$2 ;
+					hardd=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--softd)case "$2" in
+				*) if [[ $softd == -1 ]]; then
+					resource_limit_values[softd]=$2 ;
+					softd=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		-i)	case "$2" in
+				*) if [[ $hardi == -1 ]]; then
+					resource_limit_values[hardi]=$2 ;
+					hardi=$2 ;
+				   fi
+				   if [[ $softi == -1 ]]; then
+					resource_limit_values[softi]=$2 ;
+					softi=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--hardi)case "$2" in
+				*) if [[ $hardi == -1 ]]; then
+					hardi=$2 ;
+					resource_limit_values[hardi]=$2 ;
+				fi
+			esac
+			shift 2 ;;
+		--softi)case "$2" in
+				*) if [[ $softi == -1 ]]; then
+					softi=$2 ;
+					resource_limit_values[softi]=$2 ;
+				    fi
+			esac
+			shift 2 ;;
+		-m)	case "$2" in
+				*) if [[ $hardm == -1 ]]; then
+					hardm=$2 ;
+					resource_limit_values[hardm]=$2 ;
+				   fi
+				   if [[ $softm == -1 ]]; then
+					resource_limit_values[softm]=$2 ;
+					softm=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--hardm)case "$2" in
+				*) if [[ $hardm == -1 ]]; then
+					resource_limit_values[hardm]=$2 ;
+					hardm=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--softm)case "$2" in
+				*) if [[ $softm == -1 ]]; then
+					resource_limit_values[softm]=$2 ;
+					softm=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		-s)	case "$2" in
+				*) if [[ $hards == -1 ]]; then
+					hards=$2 ;
+					resource_limit_values[hards]=$2 ;
+				   fi
+				   if [[ $softs == -1 ]]; then
+					resource_limit_values[softs]=$2 ;
+					softs=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--hards)case "$2" in
+				*) if [[ $hards == -1 ]]; then
+					hards=$2 ;
+					resource_limit_values[hards]=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--softs)case "$2" in
+				*) if [[ $softs == -1 ]]; then
+					resource_limit_values[softs]=$2 ;
+					softs=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		-t)	case "$2" in
+				*) if [[ $hardt == -1 ]]; then
+					resource_limit_values[hardt]=$2 ;
+					hardt=$2 ;
+				   fi
+				   if [[ $softt == -1 ]]; then
+					resource_limit_values[softt]=$2 ;
+					softt=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--hardt)case "$2" in
+				*) if [[ $hardt == -1 ]]; then
+					resource_limit_values[hardt]=$2 ;
+					hardt=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--softt)case "$2" in
+				*) if [[ $softt == -1 ]]; then
+					resource_limit_values[softt]=$2 ;
+					softt=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		-v)	case "$2" in
+				 *) if [[ $softv == -1 ]]; then
+					resource_limit_values[softv]=$2 ;
+					softv=$2 ;
+				   fi
+				 if [[ $hardv == -1 ]]; then
+					resource_limit_values[hardv]=$2 ;
+					hardv=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--hardv)case "$2" in
+				*) if [[ $hardv == -1 ]]; then
+					resource_limit_values[hardv]=$2 ;
+					hardv=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--softv)
+			case "$2" in
+				*) if [[ $softv == -1 ]]; then
+					resource_limit_values[softv]=$2 ;
+					softv=$2 ;
+				   fi
+			esac
+			shift 2 ;;
+		--)	if [[ "$2" != "" ]]; then
+				ve_limit_opt_usage;
+			fi
+			shift ;
+			break ;;
+		-*)	shift ;
+			ve_limit_opt_usage;
+			break ;;
+		*)	ve_limit_opt_usage;
+			break ;;
+	esac
+done
+
+ve_limit_validate_display
 }
 
 #to display wrapper script usage
@@ -120,7 +473,7 @@ fi
 
 #read the options
 TEMP=`getopt -o "+VhN:c:" \
-	--long version,help,traceme,localmembind,node:,core:,cpunodebind: \
+	--long version,help,traceme,localmembind,node:,core:,cpunodebind:,show-limit \
 	-- "$@"`
 retval=$?
 if [ $retval -ne 0 ]; then
@@ -161,11 +514,19 @@ while true ; do
 				shift 2 ;
 			esac ;;
 	    --localmembind)
-                       flag_membind=1;
-                       shift ;;
+			flag_membind=1;
+			shift ;;
 		 --traceme)
 			flag_traceme=1;
 			shift;;
+	      --show-limit)
+			flag_show_limit=1;
+			ve_limit_opt_parse
+			if [[ $flag_show_usage == 1 ]]; then
+				exit 1 ;
+			else
+				exit 0 ;
+			fi ;;
 		--)
 			shift ;
 			break ;;
@@ -193,15 +554,15 @@ if [[ ${numa_node_id_given} -eq 0 || ${flag_membind} -eq 0
 		if [[ $num_opt_var == "--localmembind" ]]
 		then
 			flag_membind=1;
-                elif [[ $num_opt_var =~ '--cpunodebind=' ]]
-                then
+		elif [[ $num_opt_var =~ '--cpunodebind=' ]]
+		then
 			if [[ ${numa_node_id_given} -eq 0 ]]; then
 				NUMA_NODE_ID=$(echo $num_opt_var |\
 						 sed 's/--cpunodebind=//g')
 				numa_node_id_given=1;
 			fi
 		else
-			echo “ERROR: Invalid argument passed to VE_NUMA_OPT”
+			echo "ERROR: Invalid argument passed to VE_NUMA_OPT"
 			exit 1;
 		fi
 	done
@@ -213,8 +574,7 @@ if [[ ${numa_node_id_given} -eq 1 && ${ve_core_given} -eq 1 ]]; then
 fi
 
 
-re='^[0-9]+$'
-if ! [[ ${VE_NODE} =~ $re ]] ; then
+if ! [[ ${VE_NODE} =~ $regex ]] ; then
 	echo "ERROR: '$VE_NODE' is not a valid node number"
 	exit 1;
 fi
@@ -240,7 +600,7 @@ fi
 
 if  [[ ${VE_CORE} == -1 ]] ; then
         :
-elif ! [[ ${VE_CORE} =~ $re ]] ; then
+elif ! [[ ${VE_CORE} =~ $regex ]] ; then
         echo "ERROR: '$VE_CORE' is not a valid core number"
         exit 1;
 
@@ -248,19 +608,19 @@ fi
 
 if  [[ ${NUMA_NODE_ID} == -1 ]] ; then
         :
-elif ! [[ ${NUMA_NODE_ID} =~ $re ]] ; then
+elif ! [[ ${NUMA_NODE_ID} =~ $regex ]] ; then
 	echo "ERROR: '$NUMA_NODE_ID' is not a valid numa node id"
 	exit 1;
 fi
 
 
 ve_arg=( $@ )
-if ! [ -e "$ve_arg" ]; then
+if ! [[ -e "$ve_arg" ]]; then
         echo "ERROR: '$ve_arg' No such file exists"
         exit 1;
 fi
 
-if ! [ -x "$ve_arg" ]; then
+if ! [[ -x "$ve_arg" ]]; then
 	echo "ERROR: '$ve_arg' is not a valid executable"
 	exit 1;
 fi
@@ -272,26 +632,36 @@ sock_driver=$(printf '/dev/veslot%s' "$VE_NODE" );
 sock_veos=$(printf '@localstatedir@/veos%s.sock' "$VE_NODE" );
 
 #embedding option if traceme option is provided by user
-if [ ${flag_traceme} -eq 1 ]; then
+if [[ ${flag_traceme} -eq 1 ]]; then
 	PATH_VE_EXEC=$(printf '%s --traceme' "${PATH_VE_EXEC}");
 fi
 
-if [ ${flag_membind} -eq 1 ]; then
+if [[ ${flag_membind} -eq 1 ]]; then
 	PATH_VE_EXEC=$(printf '%s --localmembind' "${PATH_VE_EXEC}");
 fi
 
-if ! [ -L $sock_driver ]; then
+if ! [[ -L $sock_driver ]]; then
 	echo "Node '$VE_NODE' is Offline"
 	exit 1;
 fi
 
-if ! [ -e $sock_veos ]; then
+if ! [[ -e $sock_veos ]]; then
 	echo "VEOS corresponding to Node '$VE_NODE' is Offline"
 	exit 1;
 fi
 
+if [[(-v VE_ACC_IO && "${VE_ACC_IO}" != "0")
+	&& (! -v VE_ATOMIC_IO || "${VE_ATOMIC_IO}" == "0")
+	&& (! -v VE_PDMA_IO || "${VE_PDMA_IO}" == "0")]]; then
+	export VE_LD_PRELOAD="libveaccio.so.1 $VE_LD_PRELOAD"
+fi
+
 PATH_VE_EXEC="${PATH_VE_EXEC} -d ${sock_driver} -s ${sock_veos} -c ${VE_CORE}
 		--cpunodebind=${NUMA_NODE_ID}";
+#extract and validate the VE process specific resource limit by
+#reading VE_LIMIT_OPT environment variable
+ve_limit_opt_parse
+
 #executes the actual ve_exec binary
-	exec $PATH_VE_EXEC -- "${@}"
+exec $PATH_VE_EXEC -- "${@}"
 exit 0

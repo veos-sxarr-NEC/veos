@@ -1113,16 +1113,15 @@ void psm_save_current_user_context(struct ve_task_struct *curr_ve_task)
 {
 	reg_t sr_tmp[64] = {0};
 	reg_t pmr_tmp[64] = {0};
-	int node_id = -1, core_id = -1;
+	int core_id = -1;
 	struct ve_node_struct *p_ve_node = NULL;
 	struct ve_core_struct *p_ve_core = NULL;
 	ve_dma_status_t dmast = 0;
 	pid_t pid = getpid();
 
-	node_id = curr_ve_task->node_id;
 	core_id = curr_ve_task->core_id;
-	p_ve_node = VE_NODE(node_id);
-	p_ve_core = VE_CORE(node_id, core_id);
+	p_ve_node = VE_NODE(0);
+	p_ve_core = VE_CORE(0, core_id);
 
 	VEOS_TRACE("Entering");
 	pthread_mutex_lock_unlock(&(curr_ve_task->ve_task_lock), LOCK,
@@ -3083,4 +3082,98 @@ hndl_return:
 			"Failed to release core read lock");
 hndl_return1:
 	VEOS_TRACE("Exiting");
+}
+
+/**
+ *
+ * @return 0 on success, -1 on Failure.
+ *
+ * @note Invoked by other modules i.e. PPS
+ */
+int veos_stop_udma(struct ve_task_struct *tsk)
+{
+	int retval = -1;
+	int ret, core_num;
+	bool dma_migration_occured = true;
+	struct ve_core_struct *p_ve_core;
+
+	VEOS_TRACE("Entering");
+
+	if (tsk == NULL) {
+		VEOS_DEBUG("task structure is NULL");
+		goto hndl_return;
+	}
+
+	do {
+		pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock),
+			LOCK, "Failed to acquire thread-group-mm-lock");
+		if (tsk->core_dma_desc == NULL || *(tsk->core_dma_desc) == -1) {
+			VEOS_DEBUG("%d is not executing User Mode DMA",
+							tsk->group_leader->pid);
+			pthread_mutex_lock_unlock(&(tsk->p_ve_mm->
+				thread_group_mm_lock), UNLOCK,
+				"Failed to acquire thread-group-mm-lock");
+			retval = 0;
+			goto hndl_return;
+		}
+		core_num = *(tsk->core_dma_desc);
+		p_ve_core = VE_CORE(0, core_num);
+		VEOS_DEBUG("tsk %d is executing User Mode DMA on %d",
+						tsk->pid, p_ve_core->core_num);
+		pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock),
+			UNLOCK, "Failed to acquire thread-group-mm-lock");
+
+		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), WRLOCK,
+					"Failed to acquire Core %d read lock",
+					p_ve_core->core_num);
+		pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock),
+			LOCK, "Failed to acquire thread-group-mm-lock");
+
+		/* Check DMA migration, or Rebalancing VE task */
+		if (core_num != *(tsk->core_dma_desc)) {
+			VEOS_DEBUG("DMA migration or Rebalancing VE task occured");
+			pthread_mutex_lock_unlock(&(tsk->p_ve_mm->
+				thread_group_mm_lock), UNLOCK,
+				"Failed to acquire thread-group-mm-lock");
+			pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
+				UNLOCK, "Failed to acquire Core %d read lock",
+				p_ve_core->core_num);
+		} else {
+			dma_migration_occured = false;
+		}
+	}while (dma_migration_occured);
+
+	VEOS_DEBUG("Reset Core DMA descriptor flag");
+	*(tsk->core_dma_desc) = -1;
+
+	ret = psm_stop_udma(core_num, tsk->p_ve_mm->udma_desc_bmap);
+	if (ret != 0) {
+		VEOS_ERROR("Stopping user DMA failed");
+		goto hndl_unlock;
+	}
+
+	ret = psm_save_udma_context(tsk, core_num);
+	if (ret != 0) {
+		VEOS_ERROR("Saving user DMA context failed");
+		goto hndl_unlock;
+	}
+
+	ret = veos_scheduleout_dmaatb(tsk);
+	if (ret != 0) {
+		VEOS_ERROR("Scheduling out DMAATB failed due to %s",
+								strerror(ret));
+		goto hndl_unlock;
+	}
+
+	retval = 0;
+hndl_unlock:
+	pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock), UNLOCK,
+				"Failed to acquire thread-group-mm-lock");
+	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
+					"Failed to acquire Core %d read lock",
+					p_ve_core->core_num);
+
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
 }

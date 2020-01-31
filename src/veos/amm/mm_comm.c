@@ -843,7 +843,8 @@ int amm_handle_mmap(veos_thread_arg_t *pti)
 
 	ret = amm_do_mmap(req.vaddr, req.size, req.perm, req.flags, tsk, &(req.f_stat));
 	if (0 > ret)
-		VEOS_ERROR("error while mapping memory for (pid:%d)", pid);
+		VEOS_ERROR("error while mapping memory for %s (pid:%d)",
+						strerror(-ret), pid);
 	else
 		VEOS_DEBUG("memory mapped successfully (pid:%d)", pid);
 
@@ -1168,7 +1169,7 @@ int amm_handle_dma_req(veos_thread_arg_t *pti)
 		/*Check if dst_addr is mapped with a file*/
 		size = is_addr_file_backed(dst_addr, tsk);
 		if (!size)
-			VEOS_DEBUG("src address is not file backed");
+			VEOS_DEBUG("dst address is not file backed");
 		else if (length > size)
 			length = size;
 	}
@@ -1251,7 +1252,6 @@ int amm_handle_process_vm_rw_req(veos_thread_arg_t *pti)
 	host_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
 			ve_process_rw_info.r_pid);
 	if (host_pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
 		VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",

@@ -19,6 +19,7 @@ libvedma_a_CFLAGS = \
 	-I$(srcdir)/../amm \
 	-I$(srcdir)/../psm \
 	-I$(srcdir)/../main \
+	-I$(srcdir)/../pps \
 	-I$(top_srcdir)/src/pseudo \
 	-I$(top_srcdir)/include \
 	-I@prefix@/include

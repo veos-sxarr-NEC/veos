@@ -67,6 +67,8 @@
 
 #define VE_ACCT_VERSION		3
 
+#define MAX_SWAP_PROCESS 256
+
 /**
  * This macro will be used to check the load on VE system .
  */
@@ -132,6 +134,30 @@ enum proc_state {
 	STOP, /*!< VE Process stop state */
 	EXIT_DEAD, /*!< to identify the task to be deleted*/
 	P_INVAL = -1 /*!< VE Process invalid state */
+};
+
+/**
+ * @brief Process sub status of STOP status
+ */
+enum swap_status {
+        INVALID = 0,
+        ACTIVE = 1, /*!< SUB-S : a */
+        SWAPPING_OUT, /*!< SUB-S : o */
+        SWAPPED_OUT, /*!< SUB-S : s */
+        SWAPPING_IN, /*!< SUB-S : i */
+        TRACED = -1 /*!< SUB-S for Traced process */
+};
+
+/**
+ * @brief Data created by worker thread to handle swap-thread with Swap-out/in
+ */
+struct veos_swap_request_info {
+	struct list_head swap_info; /*!< list head */
+	pid_t pid_array[MAX_SWAP_PROCESS + 1]; /*!< process id */
+	/* To release handling_request_lock_task even if ve_task_struct is
+	 * released */
+	struct ve_ipc_sync *ipc_sync_array[MAX_SWAP_PROCESS + 1];
+	int pid_number; /*!< length of pid_array */
 };
 
 #define SET_TASK_STATE(VAR, STATE) VE_ATOMIC_SET(enum proc_state, &(VAR), STATE)
@@ -372,6 +398,7 @@ struct ve_task_struct {
 	int core_id; /*!< VE core ID of this process */
 	int node_id; /*!< VE node ID of this process */
 	int numa_node;/*!< NUMA node number of this process */
+	enum swap_status sstatus; /*!< Process sub-status of STOP status */
 	struct ve_core_struct *p_ve_core; /*!< Pointer to VE core this task is assigned */
 	struct ve_task_struct *next; /*!< Pointer to next ve_task on this Core */
 	core_user_reg_t *p_ve_thread; /*!< VE core related information and state of this task */
@@ -452,6 +479,15 @@ struct ve_task_struct {
 				* information in case RPM sends delete dummy
 				* task request */
 	pid_t real_parent_pid;  /*!< VE Parent proces PID */
+	struct list_head swapped_pages; /*!< List of ATB/DMAATB corresponding
+					 * to VE memory which was deallocated
+					 * in Swap-out */
+	struct ve_ipc_sync *ipc_sync; /*!< Structure wihch has handling_request_lock_task.
+				       * Don't access to this structure directly,
+				       * have to use ve_get_ipc_sync().
+				       */
+	pid_t proc_pid;		/*!< VE Parent proces PID */
+	pid_t tgid;		/*!< VE process's thread group ID */
 };
 
 
@@ -522,7 +558,7 @@ int64_t psm_handle_schedule_ve_process(pid_t);
 int psm_handle_exec_ve_process(struct veos_thread_arg *, int *,
                 int *, int, int, char *, bool, pid_t,  uint64_t, char *,
                 struct rlimit *, uint64_t, uint64_t, bool, char *, int *,
-                int, pid_t);
+		int, pid_t, pid_t);
 int psm_pseudo_send_load_binary_req(struct veos_thread_arg *, int, int, int, int);
 int psm_handle_delete_ve_process(struct ve_task_struct *);
 void delete_entries(struct ve_task_struct *);
@@ -530,6 +566,7 @@ void clear_ve_task_struct(struct ve_task_struct *);
 int psm_handle_fork_ve_request(pid_t pid, int, int);
 struct ve_mm_struct *alloc_ve_mm_struct_node();
 struct ve_task_struct *find_ve_task_struct(int);
+int find_veo_proc(int);
 int get_ve_task_struct(struct ve_task_struct *);
 void put_ve_task_struct(struct ve_task_struct *);
 void set_state(struct ve_task_struct *);
@@ -568,4 +605,5 @@ void psm_do_process_cleanup(struct ve_task_struct *, struct ve_task_struct *, in
 int psm_get_regval(struct ve_task_struct *, int, int *, uint64_t *);
 int psm_map_lhm_shm_area(struct ve_task_struct *, int, char *, uint64_t);
 struct ve_task_struct *find_child_ve_task_struct(pid_t, pid_t);
+void send_notice_to_swap_thread(void);
 #endif

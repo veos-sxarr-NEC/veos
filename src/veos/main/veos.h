@@ -72,30 +72,27 @@
 /**
  * @brief VE Nodes
  */
-struct ve_nodes_vh {
-	struct ve_node_struct *p_ve_nodes[MAX_VE_NODE_PER_VH]; /*!< Array of VE nodes */
-};
-
-extern struct ve_nodes_vh *p_ve_nodes_vh;
+extern struct ve_node_struct ve_node; /* the VE node */
+extern struct ve_node_struct *p_ve_node_global; /* the pointer to VE node */
 
 #define VE_HANDLE(x) \
-	(p_ve_nodes_vh->p_ve_nodes[x]->handle)
+	(ve_node.handle)
 #define VE_CORE(x, y) \
-	(p_ve_nodes_vh->p_ve_nodes[x]->p_ve_core[y])
+	(ve_node.p_ve_core[y])
 #define VE_NODE(x) \
-	(p_ve_nodes_vh->p_ve_nodes[x])
+	(p_ve_node_global)
 
 #define VE_CORE_USR_REG_ADDR(x, y) \
-	(p_ve_nodes_vh->p_ve_nodes[x]->p_ve_core[y]->usr_regs_addr)
+	(ve_node.p_ve_core[y]->usr_regs_addr)
 #define VE_CORE_SYS_REG_ADDR(x, y) \
-	(p_ve_nodes_vh->p_ve_nodes[x]->p_ve_core[y]->sys_regs_addr)
+	(ve_node.p_ve_core[y]->sys_regs_addr)
 #define VE_CORE_CNT_REG_ADDR(x) \
-	(p_ve_nodes_vh->p_ve_nodes[x]->cnt_regs_addr)
+	(ve_node.cnt_regs_addr)
 
 #define VE_NODE_ID(node_idx) (node_idx)
 
 #define VE_SYSFS_PATH(node_id)	\
-	(p_ve_nodes_vh->p_ve_nodes[node_id]->ve_sysfs_path)
+	(ve_node.ve_sysfs_path)
 
 #define SET_ARITHMETIC_MODE(x, val) ((x)->PSW = ((x)->PSW & PSW_AM_MASK) | val);
 
@@ -211,6 +208,14 @@ struct ve_node_struct {
 	int partitioning_mode; /* !< An indicator of partitioning mode */
 	int numa_count; /* !< The number of NUMA nodes */
 	struct ve_numa_struct numa[VE_MAX_NUMA_NODE]; /* !< Data structures to store NUMA information */
+	struct buddy_mempool *pps_mp; /* !< Memory poll of PPS buffer */
+	size_t pps_mp_used[VE_MAX_NUMA_NODE]; /* !< Used size of PPS buffer for every NUMA node, in Byte */
+	struct list_head swap_request_pids_queue; /* !< Swap request queue, which contains struct veos_swap_request_info */
+	pthread_mutex_t swap_request_pids_lock; /* !< Lock wihch protecs Swap request queue */
+	bool swap_request_pids_enable; /* !< Status of swap request queue */
+	bool resource_freed; /* !< Resource freed flag for swap */
+	pthread_cond_t swap_request_pids_cond; /* !< Condition variable which is used to start Swap-out or Swap-in */
+	size_t pps_buf_size; /* !< Size of PPS buffer in Byte */
 };
 
 /**
@@ -227,10 +232,11 @@ struct ve_sys_load {
  */
 #define VE_ABORT_CAUSE_BUF_SIZE 512
 
-#define OPT_PCISYNC1 0
-#define OPT_PCISYNC2 1
-#define OPT_PCISYNC3 2
-#define OPT_CLEANUP  3
+#define OPT_PCISYNC1  0
+#define OPT_PCISYNC2  1
+#define OPT_PCISYNC3  2
+#define OPT_CLEANUP   3
+#define OPT_VESWAPMAX 4
 
 #define NOT_REQUIRED 0
 #define REQUIRED     1
@@ -270,7 +276,7 @@ void veos_abort(const char *, ...)
 		__attribute__((noreturn)) ;
 int veos_set_pcisync_option(int, char *);
 int veos_send_sigkil(char *);
-int64_t veos_convert_sched_options(char *, int, int);
+int64_t veos_convert_sched_options(char *, int64_t, int64_t);
 extern volatile sig_atomic_t terminate_flag;
 extern pthread_rwlock_t handling_request_lock;
 extern int opt_ived; /* -i specified. */
@@ -334,5 +340,8 @@ extern const log4c_location_info_t locinfo;
 	.sigpending		= 0,					\
 	.ve_task_lock		= PTHREAD_MUTEX_INITIALIZER,		\
 	.offset_lock		= PTHREAD_MUTEX_INITIALIZER,		\
+	.sstatus		= INVALID,				\
+	.swapped_pages		= LIST_HEAD_INIT(ve_tsk.swapped_pages),	\
+	.ipc_sync		= NULL					\
 }
 #endif

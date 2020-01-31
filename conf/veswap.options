@@ -1,0 +1,2 @@
+#The maximum size of memory that can be swapped out per VE node.
+#ve-os-launcher@*=--ve-swap-mem-max=32768

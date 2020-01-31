@@ -874,11 +874,13 @@ int fill_note_info(struct elf_note_info *info,
 	struct elf_prpsinfo *psinfo = NULL;
 	unsigned int i = 0;
 	int ret = 0;
+	bool single_threadgrp_item = false;
+	bool append_grp_leader = true;
 
 	info->size = 0;
 	info->thread = NULL;
 	group_leader = p_ve_task->group_leader;
-	head = group_leader;
+	head = p_ve_task; /* Always keep the head on the thread which is crashed */
 
 	psinfo = (struct elf_prpsinfo *)malloc(sizeof(*psinfo));
 	if (NULL == psinfo) {
@@ -905,16 +907,30 @@ int fill_note_info(struct elf_note_info *info,
 
 	VEOS_DEBUG("thread notes: %d, number of regsets: %d",
 			 info->thread_notes, view->n);
+
+	/* If group leader has a crash then don't append it in the end of list */
+	if(group_leader == p_ve_task)
+	append_grp_leader = false;
 	/*
 	 * Allocate a structure for each thread.
 	 */
 
 	if (!list_empty(&group_leader->thread_group)) {
-		list_for_each_safe(p, n, &group_leader->thread_group) {
+		list_for_each_safe(p, n, &p_ve_task->thread_group) {
 
 			tmp = list_entry(p,
 					struct ve_task_struct,
 					thread_group);
+
+			/* Check if there exists only 1 thread apart from main thread */
+			if(n->next == p)
+				single_threadgrp_item = true;
+
+			/* Do not add group leader to the dumping list at this moment */
+			if(single_threadgrp_item == false && tmp == group_leader)
+				continue;
+
+			VEOS_DEBUG("Running for pid : %d",tmp->pid);
 
 			t = (struct elf_thread_core_info *)malloc(
 					offsetof(struct elf_thread_core_info,
@@ -931,7 +947,9 @@ int fill_note_info(struct elf_note_info *info,
 			/*MEMSET*/
 			memset(t, '\0', offsetof(struct elf_thread_core_info, notes[info->thread_notes]));
 			t->task = tmp;
-			if (tmp == head || !info->thread) {
+			if (!info->thread) {
+				/* Start creating the first node of dumping list
+				 * with Crashed thread as head */
 				t->next = info->thread;
 				info->thread = (struct elf_thread_core_info *)malloc(
 						offsetof(struct elf_thread_core_info,
@@ -949,8 +967,7 @@ int fill_note_info(struct elf_note_info *info,
 				info->thread->next = t;
 			} else {
 				/*
-				 * Make sure to keep the original task at
-				 * the head of the list.
+				 * Append the other threads to the dumping list
 				 */
 				t->next = NULL;
 				temp_thread =  info->thread;
@@ -958,6 +975,31 @@ int fill_note_info(struct elf_note_info *info,
 					temp_thread = temp_thread->next;
 				temp_thread->next = t;
 			}
+		}
+		/* Append the group leader now if there are multiple threads */
+		if(single_threadgrp_item == false && append_grp_leader == true)
+		{
+			t = (struct elf_thread_core_info *)malloc(
+                                        offsetof(struct elf_thread_core_info,
+                                                notes[info->thread_notes]));
+                        if (NULL == t) {
+                                VEOS_CRIT(
+                                        "Failed(%s) to allocate buffer for group leader to"
+                                        " store thread structure",
+                                        strerror(errno));
+                                ret = -1;
+                                goto end;
+                        }
+			memset(t, '\0', offsetof(struct elf_thread_core_info, notes[info->thread_notes]));
+			t->task = group_leader;
+
+			t->next = NULL;
+                        temp_thread =  info->thread;
+                        while (temp_thread->next != NULL)
+                                temp_thread = temp_thread->next;
+                        temp_thread->next = t;
+
+
 		}
 	} else {
 		info->thread = (struct elf_thread_core_info *)malloc(

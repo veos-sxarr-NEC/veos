@@ -212,7 +212,10 @@ one:
 		put_ve_task_struct(current);
 	}
 
-	if (elf_type == EXIT_EXECVE_VH) {
+	if (elf_type == EXIT_ZOMBIE) {
+		VEOS_DEBUG("group leader %d was ZOMBIE and already deleted",
+				group_leader->pid);
+	} else if (elf_type == EXIT_EXECVE_VH) {
 		VEOS_DEBUG("Deleting thread group leader %d",
 				group_leader->pid);
 		psm_do_execve_wait(group_leader);
@@ -270,11 +273,18 @@ int psm_del_sighand_struct(struct ve_task_struct *p_ve_task)
 		 * same thread parallelly and synchronization is achieved
 		 * using a combination of get_ve_task_struct and delete lock.
 		 */
+		if (p_ve_task->ipc_sync != NULL)
+			ve_put_ipc_sync(p_ve_task->ipc_sync);
 		if (p_ve_task->ived_resource != NULL)
 			veos_clean_ived_proc_property(p_ve_task);
 		veos_free_jid(p_ve_task);
 		psm_free_udma_context_region(p_ve_task);
 		free(p_ve_task->core_dma_desc);
+		p_ve_task->core_dma_desc = NULL;
+		free(p_ve_task->thread_sched_count);
+		p_ve_task->thread_sched_count = NULL;
+		free(p_ve_task->thread_sched_bitmap);
+		p_ve_task->thread_sched_bitmap = NULL;
 		free(sighand);
 		p_ve_task->sighand = NULL;
 	}
@@ -655,7 +665,7 @@ void psm_delete_entries_for_thread(struct ve_task_struct *del_task)
 void delete_entries(struct ve_task_struct *del_task_struct)
 {
 	int pid = -1;
-	int node_id = -1, core_id = -1;
+	int core_id = -1;
 	struct ve_task_struct *ve_task_list_head = NULL;
 	struct ve_task_struct *temp = NULL, *group_leader = NULL;
 	struct list_head *p, *n;
@@ -676,30 +686,29 @@ void delete_entries(struct ve_task_struct *del_task_struct)
 		veos_acct_ve_proc(del_task_struct);
 
 	pid = del_task_struct->pid;
-	node_id = del_task_struct->node_id;
 	core_id = del_task_struct->core_id;
 	group_leader = del_task_struct->group_leader;
 
 	/* Delete this VE process node */
-	pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
+	pthread_rwlock_lock_unlock(&(VE_CORE(0, core_id)->ve_core_lock),
 		WRLOCK,
 		"Failed to acquire ve core write lock");
 
-	ve_task_list_head = VE_CORE(node_id, core_id)->ve_task_list;
+	ve_task_list_head = VE_CORE(0, core_id)->ve_task_list;
 
 	if ((del_task_struct == ve_task_list_head) &&
 		(del_task_struct->next == del_task_struct)) {
 		/* Current task to be deleted is head of the list */
 		VEOS_DEBUG("PID %d is to be deleted", pid);
 		ve_task_list_head = NULL;
-		VE_CORE(node_id, core_id)->ve_task_list = ve_task_list_head;
+		VE_CORE(0, core_id)->ve_task_list = ve_task_list_head;
 
-		ve_atomic_dec(&(VE_NODE(node_id)->num_ve_proc));
-		ve_atomic_dec(&(VE_NODE(node_id)->
+		ve_atomic_dec(&(VE_NODE(0)->num_ve_proc));
+		ve_atomic_dec(&(VE_NODE(0)->
 			numa[del_task_struct->numa_node].num_ve_proc));
-		ve_atomic_dec(&(VE_CORE(node_id, core_id)->num_ve_proc));
+		ve_atomic_dec(&(VE_CORE(0, core_id)->num_ve_proc));
 
-		pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
+		pthread_rwlock_lock_unlock(&(VE_CORE(0, core_id)->ve_core_lock),
 				UNLOCK,
 				"Failed to release ve core lock");
 		goto resume;
@@ -711,16 +720,16 @@ void delete_entries(struct ve_task_struct *del_task_struct)
 	temp->next = del_task_struct->next;
 	if (del_task_struct == ve_task_list_head) {
 		ve_task_list_head = temp->next;
-		VE_CORE(node_id, core_id)->ve_task_list = ve_task_list_head;
+		VE_CORE(0, core_id)->ve_task_list = ve_task_list_head;
 		VEOS_DEBUG("Now Head is %p", ve_task_list_head);
 	}
 
-	ve_atomic_dec(&(VE_NODE(node_id)->num_ve_proc));
-	ve_atomic_dec(&(VE_NODE(node_id)->
+	ve_atomic_dec(&(VE_NODE(0)->num_ve_proc));
+	ve_atomic_dec(&(VE_NODE(0)->
 		numa[del_task_struct->numa_node].num_ve_proc));
-	ve_atomic_dec(&(VE_CORE(node_id, core_id)->num_ve_proc));
+	ve_atomic_dec(&(VE_CORE(0, core_id)->num_ve_proc));
 
-	pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
+	pthread_rwlock_lock_unlock(&(VE_CORE(0, core_id)->ve_core_lock),
 		UNLOCK,
 		"Failed to release ve core lock");
 
@@ -804,7 +813,7 @@ resume:
 		VEOS_DEBUG("Deleting VE process structure with"
 				" PID %d from Driver",
 				pid);
-		ret = vedl_delete_ve_task(VE_HANDLE(node_id), pid);
+		ret = vedl_delete_ve_task(VE_HANDLE(0), pid);
 		if (ret) {
 			VEOS_DEBUG("Fail(%s) to delete task with PID %d",
 					strerror(errno),
@@ -827,8 +836,8 @@ resume:
 		free(del_task_struct);
 	}
 
-	if (0 == VE_CORE(node_id, core_id)->num_ve_proc)
-		VE_CORE(node_id, core_id)->ve_core_state = STOPPED;
+	if (0 == VE_CORE(0, core_id)->num_ve_proc)
+		VE_CORE(0, core_id)->ve_core_state = STOPPED;
 hndl_return:
 	VEOS_TRACE("Exiting");
 }
@@ -842,7 +851,7 @@ hndl_return:
 */
 int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 {
-	int core_id = -1, node_id = -1;
+	int core_id = -1;
 	int retval = -1;
 	bool leader_set_dead = false;
 	struct ve_task_struct *group_leader = NULL, *real_parent = NULL;
@@ -869,7 +878,6 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 	/* Collect accounting information */
 	psm_acct_collect(del_task_curr->exit_code, del_task_curr);
 
-	node_id = del_task_curr->node_id;
 	core_id = del_task_curr->core_id;
 
 	VEOS_DEBUG("DEL TASK %d CORE %d",
@@ -889,7 +897,7 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 	/* Acquire core's write lock.
 	 * It's shifted above so that nr_active is not read using core's
 	 * read lock while it is being decremented in parallel */
-	pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
+	pthread_rwlock_lock_unlock(&(VE_CORE(0, core_id)->ve_core_lock),
 			WRLOCK, "Failed to acquire delete task's core write lock");
 
 	VEOS_DEBUG("Marking task's state as ZOMBIE or EXIT_DEAD");
@@ -909,7 +917,7 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 	del_task_curr->flags |= PF_EXITING;
 
 	/* If task is current task on core then migrate */
-	if (del_task_curr == VE_CORE(node_id, core_id)->curr_ve_task) {
+	if (del_task_curr == VE_CORE(0, core_id)->curr_ve_task) {
 		VEOS_DEBUG("Invoke psm_unassign_migrate_task");
 		psm_unassign_migrate_task(del_task_curr);
 	}
@@ -927,7 +935,7 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 		del_task_curr->is_dlt_drv = true;
 		del_task_curr->is_crt_drv = false;
 
-		pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
+		pthread_rwlock_lock_unlock(&(VE_CORE(0, core_id)->ve_core_lock),
 				UNLOCK, "Failed to release core write lock");
 		/* Since only thread group leader can be ZOMBIE, further code
 		 * is redundant in this context. Hence we jump from here.
@@ -935,7 +943,7 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 		goto hndl_reparent;
 	}
 
-	pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
+	pthread_rwlock_lock_unlock(&(VE_CORE(0, core_id)->ve_core_lock),
 			UNLOCK, "Failed to release core write lock");
 
 	/* Remove task from thread_group list */
@@ -955,7 +963,7 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 	 * */
 	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
 	                                "Failed to acquire tasklist lock");
-	pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
+	pthread_rwlock_lock_unlock(&(VE_CORE(0, core_id)->ve_core_lock),
 			WRLOCK, "Failed to acquire delete task's core write lock");
 	pthread_mutex_lock_unlock(&group_leader->p_ve_mm->thread_group_mm_lock,
 			LOCK, "Failed to acquire thread-group-mm-lock");
@@ -969,14 +977,14 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 			pthread_mutex_lock_unlock(&group_leader->p_ve_mm->
 					thread_group_mm_lock, UNLOCK,
 					"Failed to release thread-group-mm-lock");
-			pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
+			pthread_rwlock_lock_unlock(&(VE_CORE(0, core_id)->ve_core_lock),
 				UNLOCK, "Failed to release core write lock");
 			pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
 	                                "Failed to release tasklist lock");
 			goto hndl_reparent;
 		}
 	}
-	pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
+	pthread_rwlock_lock_unlock(&(VE_CORE(0, core_id)->ve_core_lock),
 			UNLOCK, "Failed to release core write lock");
 	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
 	                                "Failed to acquire tasklist lock");

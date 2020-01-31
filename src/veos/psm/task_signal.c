@@ -59,6 +59,7 @@
 #include "ptrace_req.h"
 #include "ve_coredump_helper.h"
 
+extern pthread_mutex_t readproc_mutex;
 /**
 * @brief Check whether caller process have permission to send
 * signal request to callee process
@@ -2639,6 +2640,86 @@ void psm_do_sigsuspend(struct ve_task_struct *p_ve_task, sigset_t *mask_set)
 }
 
 /**
+ * @brief This Function check the state of the pseudo process corresponding to 
+ * given VE process. If the state of the pseudo process is in ZOMBIE('Z') state 
+ * then check the state of its threads in the thread group. 
+ *
+ * @param[in] pid Pid of VE process
+ *
+ * @return true If pseudo process state corresponding to VE process is STOP('T')
+ * 	      	or pseudo process is in ZOMBIE('Z') state and all its threads are in 'T' state.
+ * 	   false In case of failure.
+ *
+ * @internal
+ * @author Signal Handling
+ * */
+bool is_pseudo_stop(pid_t pid)
+{
+	bool retval = false;
+	PROCTAB* proc = NULL;
+	proc_t *proc_info = NULL, *task_info = NULL;
+
+	VEOS_TRACE("Entering");
+
+	pthread_mutex_lock_unlock(&readproc_mutex, LOCK,
+			"Failed to acquire readproc lock");
+
+	/* initialize process information from /proc/ */
+	proc = openproc(PROC_FILLMEM|PROC_FILLSTAT|PROC_FILLSTATUS|PROC_PID|
+			PROC_FILLNS, &pid);
+	if (NULL == proc) {
+		VEOS_DEBUG("Fails to open proc interface for pid: %d", pid);
+		goto hndl_return;
+	}
+
+	/* read the proc information */
+	proc_info = readproc(proc, NULL);
+	if (NULL == proc_info) {
+		VEOS_DEBUG("Fail to read proc information for pid: %d", pid);
+		goto hndl_return1;
+	}
+	
+	/* Check if thread group leader is Stopped */
+	if('T' == proc_info->state)
+	{
+		retval = true;
+	}
+	/* Check if thread group leader is zombie other threads
+	 * is in Stop state then correspodning
+	 * VE thread group threads also needs to be in stop state, hence
+	 * return true
+	 */
+	else if('Z' == proc_info->state && proc_info->nlwp > 1)
+	{
+		task_info = readtask(proc, proc_info, NULL);
+		if(task_info != NULL)
+		{
+			freeproc(task_info);
+			/* Read the task info for the other thread of the thread group */
+			task_info = readtask(proc, proc_info, NULL);
+			if(task_info != NULL && 'T' == task_info->state)
+			{
+				freeproc(task_info);
+				retval = true;
+			}
+		}
+		else
+		{
+			VEOS_DEBUG("Fail to read task information of other task for pid: %d", pid);
+		}
+	}
+
+	freeproc(proc_info);
+hndl_return1:
+	closeproc(proc);
+hndl_return:
+	pthread_mutex_lock_unlock(&readproc_mutex, UNLOCK,
+			"Failed to release readproc lock");
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
  * @brief Set the state of  every VE process executing on VE node to STOP if
  * corresponding pseudo process state is set to STOP.
  *
@@ -2658,7 +2739,6 @@ void veos_stopping_thread(void)
 	struct ve_task_struct *tmp = NULL;
 	int retval = 0;
 	struct timespec req;
-	proc_t proc_info;
 
 	VEOS_TRACE("Entering");
 
@@ -2723,17 +2803,11 @@ void veos_stopping_thread(void)
 			if (STOP == tmp->ve_task_state)
 				continue;
 
-			/* Find state of Pseudo process */
-			retval = psm_get_ve_proc_info(tmp->pid, &proc_info);
-			if (-1 == retval) {
-				VEOS_WARN("Failed to get state info"
-					" for task: %d", tmp->pid);
-				continue;
-			}
 			/* Stopping VE process as pseudo process is in
-			 * stopped state
+			 * stopped state or pseudo process is in Zombie('Z')
+			 * state and other threds in its thread group are STOPED('T').
 			 * */
-			if (proc_info.state == 'T') {
+			if (true == is_pseudo_stop(tmp->pid)) {
 				VEOS_DEBUG("Stopping VE process %d as "
 					"pseudo process is stopped", tmp->pid);
 				VEOS_DEBUG("Acquiring tasklist_lock");
@@ -2878,6 +2952,7 @@ void veos_polling_thread(void)
 					LOCK,
 					"Failed to acquire task lock [PID = %d]",
 					tsk->pid);
+				ve_unlock_swapped_proc_lock(tsk);
 				if (!tsk->exit_code_set) {
 					tsk->exit_code = SIGKILL;
 					tsk->exit_code_set = true;
@@ -2913,4 +2988,26 @@ hndl_err:
 hndl_ret:
 	veos_abort("veos polling thread failed");
 	return;
+}
+
+/**
+ * @brief Check whether if core dump is ongoing.
+ *
+ * @param[in] requestor, task to initiate coredump.
+ *
+ * @return false, if task is dumping core return ture.
+ */
+bool is_dumping_core(struct ve_task_struct *requestor)
+{
+	bool able = false;
+
+	pthread_mutex_lock_unlock(&(requestor->sighand->siglock)
+				, LOCK, "failed to acquire sig lock");
+	if (requestor->sighand->signal_flag == VE_SIGNAL_GROUP_COREDUMP) {
+		able = true;
+	}
+	pthread_mutex_lock_unlock(&(requestor->sighand->siglock)
+				, UNLOCK, "failed to acquire sig lock");
+
+	return able;
 }

@@ -117,8 +117,318 @@ void pseudo_abort()
 }
 
 /**
-* @brief Fetch the resource limit as set by "ulimit" command
-*
+ * @brief Convert 'string' to 'unsigned long long' and also handle
+ * out of range value of 'unsigned long long'
+ *
+ * @param limit_optarg [in] String value
+ * @param lim_val [out] Converted value in 'unsigned long long'
+ *
+ * @return 0 on success and -1 on failure
+ */
+int get_value(char *lim_optarg, unsigned long long *lim_val)
+{
+       int retval = 0;
+	if(!lim_optarg)
+	        return -1;
+
+       char *optstr = lim_optarg;
+       PSEUDO_TRACE("Entering");
+
+       if (strncmp(optstr, "unlimited", sizeof("unlimited")) == 0) {
+	       *lim_val = RLIM_INFINITY;
+	       return retval;
+       }
+       while (*optstr >= '0' && *optstr <= '9')
+               *lim_val = (*lim_val) * 10 + (*optstr++ - '0');
+
+       PSEUDO_DEBUG("Limit value spcified: %llu", *lim_val);
+       if (*optstr != '\0') {
+               PSEUDO_ERROR("Invalid limit value in VE_LIMIT_OPT: %s", optstr);
+               retval = -1;
+       }
+       PSEUDO_TRACE("Exiting");
+       return retval;
+}
+
+/**
+ * @brief Parse VE_LIMIT_OPT and fetch the resource limit
+ *
+ * @param limit_opt [in] Resource limit passed by user as environment
+ * variable in "VE_LIMIT_OPT"
+ * @param ve_rlim [out] To set the resource limit
+ *
+ * @return 0 on success and -1 on failure.
+ */
+
+int get_ve_limit_opt(char *limit_opt, struct rlimit *ve_rlim)
+{
+	int arg_c = 0;
+	int opt = 0, limit = 0;
+	int len_optind_arg = 0, len_optarg = 0;
+	int retval = -1;
+	bool repeat_lim[VE_RLIM_CNT] = {0};
+	unsigned long long lim_val = 0;
+	char *arg_v[512] = {NULL};
+	if(!limit_opt)
+               goto out;
+
+	char *token = strtok(limit_opt, " ");
+
+	static const struct option longopts[] = {
+		{ "hardc",        required_argument, NULL, 1 },
+		{ "softc",     required_argument, NULL, 2 },
+		{ "hardd",      required_argument, NULL, 3 },
+		{ "softd",       required_argument, NULL, 4 },
+		{ "hardi",        required_argument, NULL, 5 },
+		{ "softi",       required_argument, NULL, 6 },
+		{ "hardm",      required_argument, NULL, 7 },
+		{ "softm",      required_argument, NULL, 8 },
+		{ "hards",    required_argument, NULL, 9 },
+		{ "softs",   required_argument, NULL, 10 },
+		{ "hardt",       required_argument, NULL, 11 },
+		{ "softt",     required_argument, NULL, 12 },
+		{ "hardv",      required_argument, NULL, 13 },
+		{ "softv",        required_argument, NULL, 14 },
+		{ NULL, 0, NULL, 0 }
+	};
+
+	PSEUDO_TRACE("Entering");
+
+	arg_v[arg_c] = strndup("error", strlen("error"));
+	if (!arg_v[arg_c]) {
+		PSEUDO_ERROR("Failed to allocate memory");
+		fprintf(stderr, "Failed to allocate memory\n");
+		goto out;
+	}
+	arg_c++;
+
+	/* Tokenize the value of VE_LIMIT_OPT environment variable */
+	while (token != NULL) {
+		arg_v[arg_c] = strndup(token, strlen(token));
+		if (!arg_v[arg_c]) {
+			PSEUDO_ERROR("Failed to allocate memory");
+			fprintf(stderr, "Failed to allocate memory\n");
+			goto out;
+		}
+		token = strtok(NULL, " ");
+		arg_c++;
+	}
+	arg_v[arg_c] = '\0';
+	optind = 1;
+	/* Check the option specified with VE_LIMIT_OPT */
+	while ((opt = getopt_long(arg_c, arg_v, "+:c:d:i:m:s:t:v:",
+					longopts, NULL)) != -1) {
+		/* If valid option is specified and no option
+		 * argument is missing */
+		if (opt != '?' && opt != ':') {
+			lim_val = 0;
+			retval = get_value(optarg, &lim_val);
+			if (0 > retval) {
+				PSEUDO_ERROR("VE_LIMIT_OPT: Error in parsing resource limit value");
+				fprintf(stderr, "VE_LIMIT_OPT: Error in parsing resource limit value\n");
+				goto out_err;
+			}
+		}
+		/* Validate RLIMIT_CPU resource limit's minimum value*/
+		if(((opt == 't') || (opt == SOFTT)) && lim_val == 0){
+                        lim_val = 1;
+                }
+		/* Validate the resource limit values*/
+		if (opt == 'c' || opt == 'd' || opt == 'i' ||
+				opt == 'm' || opt == 's' ||
+				opt == 't' || opt == 'v') {
+			len_optind_arg = strlen(arg_v[optind - 1]);
+			len_optarg = strlen(optarg);
+			if (strncmp(arg_v[optind-1], optarg,
+						(len_optind_arg > len_optarg ?
+						len_optind_arg : len_optarg)))
+				goto out_err;
+		}
+		/*Resource limit value should not be greater than
+		* than MAX_RESOURCE_LIMIT for c, d, m, s and
+		* v resources */
+		if (opt != HARDI && opt != SOFTI &&
+			opt != HARDT && opt != SOFTT &&
+			opt != 'i' && opt != 't' &&
+			(optarg != NULL && strncmp(optarg, "unlimited", sizeof("unlimited")))) {
+			if (lim_val > MAX_RESOURCE_LIMIT) {
+				PSEUDO_ERROR("VE_LIMIT_OPT: Resource limit out of range");
+				fprintf(stderr, "VE_LIMIT_OPT: Resource limit out of range\n");
+				goto out_err;
+			}
+			lim_val = lim_val * KB;
+		}
+		/* Only consider the first value if the same resource limit
+		 * mentioned repeatedly */
+		if (opt < VE_RLIM_CNT) {
+			if (!repeat_lim[opt])
+				repeat_lim[opt] = 1;
+			else
+				continue;
+		}
+		switch (opt) {
+		case 1:
+			ve_rlim[RLIMIT_CORE].rlim_max = lim_val;
+			break;
+		case 2:
+			ve_rlim[RLIMIT_CORE].rlim_cur = lim_val;
+			break;
+		case 3:
+			ve_rlim[RLIMIT_DATA].rlim_max = lim_val;
+			break;
+		case 4:
+			ve_rlim[RLIMIT_DATA].rlim_cur = lim_val;
+			break;
+		case 5:
+			ve_rlim[RLIMIT_SIGPENDING].rlim_max = lim_val;
+			break;
+		case 6:
+			ve_rlim[RLIMIT_SIGPENDING].rlim_cur = lim_val;
+			break;
+		case 7:
+			ve_rlim[RLIMIT_RSS].rlim_max = lim_val;
+			break;
+		case 8:
+			ve_rlim[RLIMIT_RSS].rlim_cur = lim_val;
+			break;
+		case 9:
+			ve_rlim[RLIMIT_STACK].rlim_max = lim_val;
+			break;
+		case 10:
+			ve_rlim[RLIMIT_STACK].rlim_cur = lim_val;
+			break;
+		case 11:
+			ve_rlim[RLIMIT_CPU].rlim_max = lim_val;
+			break;
+		case 12:
+			ve_rlim[RLIMIT_CPU].rlim_cur = lim_val;
+			break;
+		case 13:
+			ve_rlim[RLIMIT_AS].rlim_max = lim_val;
+			break;
+		case 14:
+			ve_rlim[RLIMIT_AS].rlim_cur = lim_val;
+			break;
+		case 'c':
+			if (!repeat_lim[SOFTC]) {
+				ve_rlim[RLIMIT_CORE].rlim_cur = lim_val;
+				repeat_lim[SOFTC] = 1;
+			}
+			if (!repeat_lim[HARDC]) {
+				ve_rlim[RLIMIT_CORE].rlim_max = lim_val;
+				repeat_lim[HARDC] = 1;
+			}
+			break;
+		case 'd':
+			if (!repeat_lim[SOFTD]) {
+				ve_rlim[RLIMIT_DATA].rlim_cur = lim_val;
+				repeat_lim[SOFTD] = 1;
+			}
+			if (!repeat_lim[HARDD]) {
+				ve_rlim[RLIMIT_DATA].rlim_max = lim_val;
+				repeat_lim[HARDD] = 1;
+			}
+			break;
+		case 'i':
+			if (!repeat_lim[SOFTI]) {
+				ve_rlim[RLIMIT_SIGPENDING].rlim_cur = lim_val;
+				repeat_lim[SOFTI] = 1;
+			}
+			if (!repeat_lim[HARDI]) {
+				ve_rlim[RLIMIT_SIGPENDING].rlim_max = lim_val;
+				repeat_lim[HARDI] = 1;
+			}
+			break;
+		case 'm':
+			if (!repeat_lim[SOFTM]) {
+				ve_rlim[RLIMIT_RSS].rlim_cur = lim_val;
+				repeat_lim[SOFTM] = 1;
+			}
+			if (!repeat_lim[HARDM]) {
+				ve_rlim[RLIMIT_RSS].rlim_max = lim_val;
+				repeat_lim[HARDM] = 1;
+			}
+			break;
+		case 's':
+			if (!repeat_lim[SOFTS]) {
+				ve_rlim[RLIMIT_STACK].rlim_cur = lim_val;
+				repeat_lim[SOFTS] = 1;
+			}
+			if (!repeat_lim[HARDS]) {
+				ve_rlim[RLIMIT_STACK].rlim_max = lim_val;
+				repeat_lim[HARDS] = 1;
+			}
+			break;
+		case 't':
+			if (!repeat_lim[SOFTT]) {
+				ve_rlim[RLIMIT_CPU].rlim_cur = lim_val;
+				repeat_lim[SOFTT] = 1;
+			}
+			if (!repeat_lim[HARDT]) {
+				ve_rlim[RLIMIT_CPU].rlim_max = lim_val;
+				repeat_lim[HARDT] = 1;
+			}
+			break;
+		case 'v':
+			if (!repeat_lim[SOFTV]) {
+				ve_rlim[RLIMIT_AS].rlim_cur = lim_val;
+				repeat_lim[SOFTV] = 1;
+			}
+			if (!repeat_lim[HARDV]) {
+				ve_rlim[RLIMIT_AS].rlim_max = lim_val;
+				repeat_lim[HARDV] = 1;
+			}
+			break;
+		case '?':
+			PSEUDO_ERROR("VE_LIMIT_OPT: Unrecognized option");
+			fprintf(stderr, "VE_LIMIT_OPT: Unrecognized option\n");
+			goto out_err;
+		case ':':
+			PSEUDO_ERROR("VE_LIMIT_OPT: Missing option argument");
+			fprintf(stderr, "VE_LIMIT_OPT: Missing option argument\n");
+			goto out_err;
+		}
+	}
+	/* For error checking, if any value is specified without any option */
+	if (arg_v[optind]) {
+		PSEUDO_ERROR("arg_v[optind] - [address]: %p, [value]: %s",
+			arg_v[optind], arg_v[optind]);
+		fprintf(stderr, "VE_LIMIT_OPT: invalid input\n");
+		goto out_err;
+	}
+	/* To validate that hard limit should be greater than its soft limit */
+	for (limit = 0; limit < RLIM_NLIMITS; limit++) {
+		if (ve_rlim[limit].rlim_cur > ve_rlim[limit].rlim_max) {
+			PSEUDO_DEBUG("lim: %d, soft lim: %llu, hard lim: %llu",
+				limit,
+				(unsigned long long)ve_rlim[limit].rlim_cur,
+				(unsigned long long)ve_rlim[limit].rlim_max);
+			PSEUDO_ERROR("Soft limit is greater than hard limit");
+			fprintf(stderr, "VE_LIMIT_OPT: soft limit cannot exceed hard limit\n");
+			goto out_err;
+		}
+		PSEUDO_DEBUG("limit: %d, soft lim: %llu, hard lim: %llu", limit,
+				(unsigned long long)ve_rlim[limit].rlim_cur,
+				(unsigned long long)ve_rlim[limit].rlim_max);
+	}
+	retval = 0;
+	goto out;
+out_err:
+	retval = -1;
+	PSEUDO_ERROR("Invalid input in VE_LIMIT_OPT");
+out:
+	arg_c--;
+	while (arg_c >= 0) {
+		free(arg_v[arg_c]);
+		arg_c--;
+	}
+	PSEUDO_TRACE("Exiting");
+	return retval;
+}
+
+/**
+* @brief Fetch the resource limit as set by VE_LIMIT_OPT environment or
+* "ulimit" command, giving VE_LIMIT_OPT the higher priority.
 * Function gets the resource limit as set by "ulimit" command for
 * pseudo process. When pseudo process creates VE process, resource
 * limit of pseudo process is copied for VE process. As VE process
@@ -135,6 +445,10 @@ void ve_get_rlimit(struct rlimit *ve_rlim)
 	char *endptr =  NULL;
 	char *env_stack_limit = getenv("VE_STACK_LIMIT");
 	uint64_t tmp_stack_limit = DEFAULT_STACK_LIMIT;
+	int limit_opt_length = 0;
+	int retval = 0;
+	char *limit_opt = NULL;
+	struct rlimit *limit = ve_rlim;
 
 	PSEUDO_TRACE("Entering");
 	while (resource < RLIM_NLIMITS) {
@@ -160,10 +474,10 @@ void ve_get_rlimit(struct rlimit *ve_rlim)
 				/*Setting Default limit as unlimited */
 			} else {
 				tmp_stack_limit = strtol(env_stack_limit, &endptr, 10);
-				if (0 == strcmp(env_stack_limit, "unlimited") ||
-						0 == strcmp(env_stack_limit, "UNLIMITED")) {
+				if (0 == strcmp(env_stack_limit, "unlimited")){
 					PSEUDO_INFO("STACK LIMIT IS SET TO UNLIMITED");
 					tmp_stack_limit = DEFAULT_STACK_LIMIT;
+
 				} else if (0 >= tmp_stack_limit || '\0' != *endptr) {
 					/* Default stack unlimited */
 					PSEUDO_INFO("Setting default stack limit as unlimited");
@@ -186,6 +500,23 @@ void ve_get_rlimit(struct rlimit *ve_rlim)
 	ve_rlim++;
 	resource++;
 	}
+	ve_rlim = limit;
+	/* Check for VE_LIMIT_OPT environment variable */
+	limit_opt = getenv("VE_LIMIT_OPT");
+	if (limit_opt) {
+		limit_opt_length = strlen(limit_opt);
+		char tmp[limit_opt_length+1];
+		memcpy(tmp, limit_opt, limit_opt_length);
+		tmp[limit_opt_length] = '\0';
+
+		/* Parse the VE_LIMIT_OPT environment variable */
+		retval = get_ve_limit_opt(tmp, ve_rlim);
+		if (retval < 0) {
+			PSEUDO_ERROR("VE_LIMIT_OPT parsing failed");
+			fprintf(stderr, "ve process setup failed\n");
+			pseudo_abort();
+		}
+	}
 	PSEUDO_TRACE("Exiting");
 }
 
@@ -200,6 +531,9 @@ void usage(char *ve_exec_path)
 							"VE process is to be"
 							"executed\n"
 			"  --localmembind	Memory policy is set MPOL_BIND\n"
+			"  --show-limit         Display the applicable soft and hard\n"
+						"resource limits of VE process supported\n"
+						"by VE_LIMIT_OPT environment variable\n"
 			"  -h,--help		Display help version information\n"
 			"  -V,--version		Display ve_exec version information\n"
 			"   --			End of options (Requires if binary name "
@@ -639,14 +973,14 @@ int main(int argc, char *argv[], char *envp[])
 				break;
 			case 'h':
 				usage(argv[0]);
-				pseudo_abort();
+				exit(0);
 			case 'V':
 				PSEUDO_INFO("%s (%s) %s\n",
 						PROGRAM_NAME, PACKAGE,
 						PACKAGE_VERSION);
 				fprintf(stderr, "%s (%s) %s\n",
 					PROGRAM_NAME, PACKAGE, PACKAGE_VERSION);
-				pseudo_abort();
+				exit(0);
 			default:
 				usage(argv[0]);
 				PSEUDO_ERROR("Invalid command line argument received");
@@ -795,7 +1129,8 @@ int main(int argc, char *argv[], char *envp[])
 	/* Get the basename of the VE executable */
 	exe_base_name = basename(exe_name);
 
-	/* Get rlimit of pseudo process set from bash "ulimit" command */
+	/* Get rlimit of pseudo process set from bash "ulimit" command
+	 * and check for VE_LIMIT_OPT environment variable */
 	memset(ve_rlim, -1, sizeof(ve_rlim));
 	ve_get_rlimit(ve_rlim);
 
@@ -950,7 +1285,7 @@ int main(int argc, char *argv[], char *envp[])
 		PSEUDO_DEBUG("failed to send start VE process request, %d",
 				retval);
 		/* FATAL ERROR: Exiting pseudo process */
-		fprintf(stderr, "VE process setup failed\n");
+		fprintf(stderr, "ve process setup failed\n");
 		pseudo_abort();
 	} else {
 		/* Waiting for ACK from PSM */

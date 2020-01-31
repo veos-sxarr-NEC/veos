@@ -32,6 +32,7 @@
 #include "task_mgmt.h"
 #include "mm_type.h"
 #include "mempolicy.h"
+#include "ve_swap.h"
 
 #define REQUEST_FOR_PROCESS_SHARED     1
 #define REQUEST_FOR_PROCESS_PRIVATE    2
@@ -100,12 +101,16 @@ struct ve_mm_struct {
 		start_stack, arg_start,
 		arg_end, env_start,
 		env_end, rss_max, crss_max,
-		rsslim, rss_cur,
-		shared_rss, pgsz,
-		rss_data, rss_stack,
-		vm_size;
+		rsslim, shared_rss,
+		pgsz, rss_data,
+		rss_stack, vm_size;
 	uint64_t anon;
 	uint64_t anonhuge;
+	struct list_head list_file_backed_mem; /*!< list of the mapped pages */
+	struct list_head list_mmap_mem; /*!< list of the shared 
+							anonymous mapped pages*/
+	struct list_head mmap_page_priv; /*!< list to the 
+						can't shared mmaped page*/
 	int	argc;	/* argc of VE */
 	char	cr_dump_fname[FILENAME_MAX];
         uint64_t argv_addr;	/* argv of VE */
@@ -113,6 +118,7 @@ struct ve_mm_struct {
         uint64_t auxv_addr;	/* aux of VE */
         uint64_t auxv_size;	/* aux of VE */
 	enum mempolicy mem_policy;         /* memory policy*/
+	enum swap_progress dmaatb_progress;
 };
 
 

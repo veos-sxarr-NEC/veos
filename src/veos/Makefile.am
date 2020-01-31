@@ -25,6 +25,7 @@ veos_LDADD = \
 	./vemm/libveosvemm.a \
 	./amm/libveamm.a \
 	./main/libvecommon.a \
+	./pps/libvepps.a \
 	$(top_builddir)/lib/libived/libived.a \
 	$(top_builddir)/lib/libveosprotoc/libveosprotoc.la
-SUBDIRS = main dma amm psm external ptrace ived vemm
+SUBDIRS = main dma amm psm external ptrace ived vemm pps

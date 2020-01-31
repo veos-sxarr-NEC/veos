@@ -65,7 +65,9 @@ enum exit_elf_type {
 	EXIT_THREAD = 0,
 	EXIT_PROCESS,
 	EXIT_EXECVE_VH,
-	EXIT_EXECVE_VE
+	EXIT_EXECVE_VE,
+	EXIT_ZOMBIE
+
 };
 
 /**
@@ -402,12 +404,11 @@ struct ve_sigaction_info {
 	int action; /*!< if signal action needs to updated or not*/
 };
 
-
 typedef struct veos_thread_arg {
 	int socket_descriptor;  /*!< descriptor to read/write */
 	int flag;
-	pid_t client_pid;       /*!< pid connected to this thread */
-	int pidfd;
+	pid_t saved_pseudo_pid;
+	pid_t saved_host_pid;
 	void *pseudo_proc_msg;
 	struct ucred cred;	/*!< credential */
 } veos_thread_arg_t;
@@ -519,6 +520,29 @@ struct rlimit_info {
 	int resource;           /*!< Resource of rlimit */
 	struct rlimit rlim;     /*!< structure of rlimit */
 };
+
+/* To support VE_LIMIT_OPT for resourec limit */
+enum ve_rlim {
+	HARDC = 1,
+	SOFTC,
+	HARDD,
+	SOFTD,
+	HARDI,
+	SOFTI,
+	HARDM,
+	SOFTM,
+	HARDS,
+	SOFTS,
+	HARDT,
+	SOFTT,
+	HARDV,
+	SOFTV,
+	VE_RLIM_CNT
+};
+
+#define MAX_RESOURCE_LIMIT 18014398509481983    /*!< Maximum limit for
+                                                *resource s, v, m, c, d
+                                                */
 
 /**
  * @brief Structure having information regarding set user register

@@ -87,6 +87,7 @@ struct shm *amm_get_shm_segment(key_t key, int shmid, size_t size,
 		goto err_exit;
 	}
 
+	shm_ent->header = PRIVATE_SHM;
 	shm_ent->key = key;
 	shm_ent->shmid = shmid;
 	shm_ent->size = size;
@@ -94,6 +95,7 @@ struct shm *amm_get_shm_segment(key_t key, int shmid, size_t size,
 	shm_ent->pgmod =  (flag & SHM_2MB) ? PG_2M : PG_HP;
 	shm_ent->flag = (uint64_t)flag;
 	shm_ent->flag |= SHM_AVL;
+	shm_ent->nproc = 0;
 	shm_ent->ipc_namespace = ipc_namespace;
 
 	pthread_mutex_init(&shm_ent->shm_lock, NULL);
@@ -165,8 +167,8 @@ int alloc_shm_pages(struct shm *shm, int mempolicy, int numa_node)
 	ret = alloc_ve_pages(count, page_map, shm->pgmod,
 				mempolicy, numa_node, NULL);
 	if (0 > ret) {
-		VEOS_DEBUG("Error (%s) during VE page allocation \
-				to shm segment key(%d):id(%d)",
+		VEOS_DEBUG("Error (%s) during VE page allocation"
+				"to shm segment key(%d):id(%d)",
 				strerror(-ret), shm->key, shm->shmid);
 		goto err_exit;
 	}
@@ -224,14 +226,15 @@ int amm_do_shmat(key_t key, int shmid, vemva_t shmaddr, size_t size,
 	dir_t dirs[ATB_DIR_NUM] = {0}, prv_dir = -1;
 	dir_t dir_num = 0;
 	int i = 0;
+	uint64_t rss_cur = 0;
 
 	struct ve_node_struct *vnode = VE_NODE(0);
 	int index = 0;
 
 	VEOS_TRACE("invoked");
 
-	VEOS_DEBUG("attach shm key(%d):id(%d) \
-		of size(%lx), perm(%lx) at vemva(%lx) for tsk:pid(%d)",
+	VEOS_DEBUG("attach shm key(%d):id(%d)"
+		"of size(%lx), perm(%lx) at vemva(%lx) for tsk:pid(%d)",
 		key, shmid, size, perm, shmaddr, tsk->pid);
 
 	memset(dirs, -1, sizeof(dirs));
@@ -248,7 +251,14 @@ int amm_do_shmat(key_t key, int shmid, vemva_t shmaddr, size_t size,
 	if (tsk->sighand->rlim[RLIMIT_AS].rlim_cur <
 			(rlim_t)(tsk->p_ve_mm->vm_size + size)) {
 		VEOS_DEBUG("tsk address space limit exceeds current map"
-				"request");
+								"request");
+		ret = -ENOMEM;
+		goto shmat_err;
+	}
+
+	if (tsk->sighand->rlim[RLIMIT_RSS].rlim_cur < (get_uss(tsk->p_ve_mm) +
+					get_pss(tsk->p_ve_mm) + size)) {
+		VEOS_DEBUG("Can't get memories more than resource limit");
 		ret = -ENOMEM;
 		goto shmat_err;
 	}
@@ -346,9 +356,9 @@ int amm_do_shmat(key_t key, int shmid, vemva_t shmaddr, size_t size,
 
 	pthread_mutex_lock_unlock(&shm_ent->shm_lock, LOCK,
 			"Failed to acquire shm lock");
-	for (ent = 0; ent < count; ent++) {
+	shm_ent->nproc += 1;	/* increment the value of sharing process*/
+	for (ent = 0; ent < count; ent++)
 		shm_ent->nattch += 1;
-	}
 	pthread_mutex_lock_unlock(&shm_ent->shm_lock, UNLOCK,
 			"Failed to release shm lock");
 
@@ -370,11 +380,10 @@ int amm_do_shmat(key_t key, int shmid, vemva_t shmaddr, size_t size,
 			shm_ent->nattch);
 
 	mm->shared_rss += shm_ent->size;
-	mm->rss_cur += shm_ent->size;
 	mm->vm_size += shm_ent->size;
-
-	if (mm->rss_max < mm->rss_cur)
-		mm->rss_max = mm->rss_cur;
+	rss_cur = get_uss(mm) + get_pss(mm);
+	if (mm->rss_max < rss_cur)
+		mm->rss_max = rss_cur;
 
 	pthread_mutex_lock_unlock(&mm->thread_group_mm_lock, UNLOCK,
 			"Failed to release thread-group-mm-lock");
@@ -548,6 +557,8 @@ int amm_do_shmdt(vemva_t shmaddr, struct ve_task_struct *tsk,
 		goto shmdt_ret;
 	}
 
+	pthread_mutex_lock_unlock(&shm_segment->shm_lock, LOCK,
+			"Failed to acquire shm lock");
 	pgmod = shm_segment->pgmod;
 	pgsz = (size_t)((pgmod == PG_2M) ? PAGE_SIZE_2MB :
 		PAGE_SIZE_64MB);
@@ -555,6 +566,9 @@ int amm_do_shmdt(vemva_t shmaddr, struct ve_task_struct *tsk,
 	shm_info->size = shm_segment->size;
 	shm_info->shmid = shm_segment->shmid;
 	count = shm_segment->size / pgsz;
+	shm_segment->nproc -= 1;
+	pthread_mutex_lock_unlock(&shm_segment->shm_lock, UNLOCK,
+			"Failed to release shm lock");
 
 	for (ent = 0; ent < count; ent++) {
 		pgaddr = __veos_virt_to_phy(shmaddr,
@@ -578,18 +592,19 @@ int amm_do_shmdt(vemva_t shmaddr, struct ve_task_struct *tsk,
 			goto detach_directly;
 		}
 
+		pthread_mutex_lock_unlock(&shm_segment->shm_lock, LOCK,
+				"Failed to acquire shm lock");
 		if (((VE_PAGE(vnode, pgno)->flag & PG_SHM) != PG_SHM) ||
 				(shm_segment->vemaa[ent] != pgno)) {
 			shmaddr += pgsz;
+			pthread_mutex_lock_unlock(&shm_segment->shm_lock, UNLOCK,
+				"Failed to release shm lock");
 			continue;
 		}
 		mm->shared_rss -= pgsz;
-		mm->rss_cur -= pgsz;
 		mm->vm_size -= pgsz;
 
 		/* Update shm_segment natach*/
-		pthread_mutex_lock_unlock(&shm_segment->shm_lock, LOCK,
-				"Failed to acquire shm lock");
 		shm_segment->nattch -= 1;
 		if (!shm_segment->nattch)
 			shmrm = 1;
@@ -822,7 +837,7 @@ int is_capable(proc_t *proc_info, int *key_id, bool is_key)
 					*key_id = s_shm->shmid;
 				goto f_return;
 			} else {
-				VEOS_DEBUG("does not have required capability "
+				VEOS_DEBUG("does not have required capability"
 						"to delete the segment");
 				if (is_key)
 					*key_id = s_shm->shmid;
@@ -907,16 +922,15 @@ int rm_or_ls_segment(proc_t *proc_info, bool is_ipcs, struct ve_mapheader *heade
 	struct shm *shm_trav = NULL, *shm_tmp = NULL;
 	struct shm_summary summary = {0};
 	size_t info_sz = 0;
-        char *file_base_name = NULL;
-        char *filename = NULL;
+	char *file_base_name = NULL;
+	char *filename = NULL;
 
 	VEOS_TRACE("Entering");
 
 	/*Get node specific shm memory information*/
 	ve_shm_summary(&summary, proc_info->ns[IPCNS]);
 
-	VEOS_DEBUG("Total Number of shm segment on VE[%d]",
-			summary.used_ids);
+	VEOS_DEBUG("Total Number of shm segment on VE[%d]", summary.used_ids);
 
 	if (!summary.used_ids) {
 		VEOS_DEBUG("Total Number of shm segment on VE[%d]",
@@ -934,50 +948,50 @@ int rm_or_ls_segment(proc_t *proc_info, bool is_ipcs, struct ve_mapheader *heade
 		goto f_return;
 	}
 
-        sprintf(filename, "%s/veos%d-tmp/rpm_cmd_XXXXXX",
-                        VEOS_SOC_PATH, header->node_id);
+	sprintf(filename, "%s/veos%d-tmp/rpm_cmd_XXXXXX",
+		VEOS_SOC_PATH, header->node_id);
 
-        VEOS_DEBUG("File path: %s", filename);
+	VEOS_DEBUG("File path: %s", filename);
 
-        /* create a unique temporary file and opens it */
-        fd =  mkstemp(filename);
-        if (fd < 0) {
-                ret = -errno;
-                VEOS_DEBUG("mkstemp fails: %s", strerror(errno));
-                goto f_return;
-        }
+	/* create a unique temporary file and opens it */
+	fd =  mkstemp(filename);
+	if (fd < 0) {
+		ret = -errno;
+		VEOS_DEBUG("mkstemp fails: %s", strerror(errno));
+		goto f_return;
+	}
 
-        if (fchown(fd, proc_info->ruid, proc_info->rgid)) {
-                ret = -errno;
-                VEOS_DEBUG("fail to change file onwer: %s", strerror(errno));
-                close(fd);
-                unlink(filename);
-                goto f_return;
-        }
+	if (fchown(fd, proc_info->ruid, proc_info->rgid)) {
+		ret = -errno;
+		VEOS_DEBUG("fail to change file onwer: %s", strerror(errno));
+		close(fd);
+		unlink(filename);
+		goto f_return;
+	}
 
-        /* truncate file to size PAGE_SIZE_4KB */
-        ret = ftruncate(fd, info_sz * summary.used_ids);
-        if (-1 == ret) {
-                ret = -errno;
-                VEOS_DEBUG("ftruncate fails: %s", strerror(errno));
-                close(fd);
-                unlink(filename);
-                goto f_return;
-        }
+	/* truncate file to size PAGE_SIZE_4KB */
+	ret = ftruncate(fd, info_sz * summary.used_ids);
+	if (-1 == ret) {
+		ret = -errno;
+		VEOS_DEBUG("ftruncate fails: %s", strerror(errno));
+		close(fd);
+		unlink(filename);
+		goto f_return;
+	}
 
-        shm_data = mmap(NULL,
-                        info_sz * summary.used_ids,
-                        PROT_READ|PROT_WRITE,
-                        MAP_SHARED,
-                        fd,
-                        0);
-        if ((void *)-1 == shm_data) {
-                ret = -errno;
-                VEOS_DEBUG("VHOS mmap failed for pmap: %s", strerror(errno));
-                close(fd);
-                unlink(filename);
-                goto f_return;
-        }
+	shm_data = mmap(NULL,
+			info_sz * summary.used_ids,
+			PROT_READ|PROT_WRITE,
+			MAP_SHARED,
+			fd,
+			0);
+	if ((void *)-1 == shm_data) {
+		ret = -errno;
+		VEOS_DEBUG("VHOS mmap failed for pmap: %s", strerror(errno));
+		close(fd);
+		unlink(filename);
+		goto f_return;
+	}
 
 	file_base_name = basename(filename);
 	header->length = summary.used_ids;
@@ -1030,18 +1044,18 @@ int rm_or_ls_segment(proc_t *proc_info, bool is_ipcs, struct ve_mapheader *heade
 	pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,
 			"Failed to release node shm lock");
 
-        if (msync(shm_data, info_sz * summary.used_ids, MS_SYNC)) {
-                ret = -errno;
-                unlink(filename);
-                VEOS_DEBUG("VHOS msync failed : %s", strerror(errno));
-        }
+	if (msync(shm_data, info_sz * summary.used_ids, MS_SYNC)) {
+		ret = -errno;
+		unlink(filename);
+		VEOS_DEBUG("VHOS msync failed : %s", strerror(errno));
+	}
 
-        if (munmap(shm_data, info_sz * summary.used_ids)) {
-                ret = -errno;
-                unlink(filename);
-                VEOS_DEBUG("VHOS munmap() failed");
-        }
-        close(fd);
+	if (munmap(shm_data, info_sz * summary.used_ids)) {
+		ret = -errno;
+		unlink(filename);
+		VEOS_DEBUG("VHOS munmap() failed");
+	}
+	close(fd);
 
 f_return:
 	if (filename)
@@ -1151,4 +1165,102 @@ query_done:
 	pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,
 			"Failed to release  node shm lock");
 	VEOS_TRACE("Returned");
+}
+
+/**
+* @brief The function for calculating pss(proportional set size).
+*
+* @param[in] mm veos memory management structure.
+*
+* @return if success returns pss.
+*		mm is NULL, veos abort.
+**/
+uint64_t get_pss(struct ve_mm_struct *mm)
+{
+	double pss_add = 0;
+	uint64_t pss = 0;
+	struct shm_map *shm_map = NULL;
+	struct shm *shm_segment = NULL;
+	struct file_backed_mem *file_backed_mem = NULL;
+	struct file_desc *file_desc = NULL;
+	struct mmap_mem *mmap_mem = NULL;
+	struct mmap_desc *mmap_desc = NULL;
+
+	if (mm == NULL)
+		veos_abort("Error: ve_mm_struct is NULL");
+
+	/* calculate system V shared memory*/
+	list_for_each_entry(shm_map, &mm->shm_head, shm_list) {
+		shm_segment = shm_map->shm_segment;
+		pthread_mutex_lock_unlock(&shm_segment->shm_lock, LOCK,
+			"Failed to acquire shm lock");
+		pss_add += (double)(shm_segment->size) / shm_segment->nproc;
+		pthread_mutex_lock_unlock(&shm_segment->shm_lock, UNLOCK,
+			"Failed to release shm lock");
+	}
+
+	/* calculate shared file backed memory*/
+	list_for_each_entry(file_backed_mem,
+				&mm->list_file_backed_mem, list_map_pages) {
+		file_desc = file_backed_mem->file_descripter;
+		pthread_mutex_lock_unlock(&file_desc->f_desc_lock, LOCK,
+			"Failed to acquire file desc lock");
+		if (file_desc->sum_virt_pages != 0) {
+			pss_add += (double)(file_desc->pgsz *
+				file_backed_mem->virt_pages *
+				file_desc->in_mem_pages) /
+				file_desc->sum_virt_pages;
+		}
+		pthread_mutex_lock_unlock(&file_desc->f_desc_lock, UNLOCK,
+			"Failed to release file desc lock");
+	}
+
+	/* calculate shared anonymous mmaped memory */
+	list_for_each_entry(mmap_mem, &mm->list_mmap_mem, list_mmap_pages) {
+		mmap_desc = mmap_mem->mmap_descripter;
+		pthread_mutex_lock_unlock(&mmap_desc->mmap_desc_lock, LOCK,
+			"Failed to acquire mmap desc lock");
+		if (mmap_desc->sum_virt_pages != 0) {
+			pss_add += (double)(mmap_desc->pgsz *
+				mmap_mem->virt_page *
+				mmap_desc->in_mem_pages) /
+				mmap_desc->sum_virt_pages;
+		}
+		pthread_mutex_lock_unlock(&mmap_desc->mmap_desc_lock, UNLOCK,
+			"Failed to release mmap desc lock");
+	}
+
+	/*Round off the pss_add*/
+	pss = (uint64_t)(pss_add + 0.5);
+	return pss;
+}
+
+/**
+* @brief The function for calculating uss(unique set size).
+*
+* @param[in] mm veos memory management structure.
+*
+* @return if success returns pss.
+*		mm is NULL, veos abort.
+**/
+uint64_t get_uss(struct ve_mm_struct *mm)
+{
+	uint64_t uss = 0;
+	struct mmap_desc *mdesc = NULL;
+	struct mmap_mem *mmem = NULL;
+
+	if (mm == NULL)
+		veos_abort("Error: ve_mm_struct is NULL");
+	else {
+		uss = mm->brk - mm->start_brk;
+		list_for_each_entry(mmem, &mm->mmap_page_priv, list_mmap_pages) {
+			mdesc = mmem->mmap_descripter;
+			pthread_mutex_lock_unlock(&mdesc->mmap_desc_lock, LOCK,
+					"Failed to get mmap desc lock");
+			uss += mdesc->in_mem_pages * mdesc->pgsz;
+			pthread_mutex_lock_unlock(&mdesc->mmap_desc_lock, UNLOCK,
+					"Failed to release mmap desc lock");
+		}
+	}
+	return uss;
 }

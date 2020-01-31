@@ -705,6 +705,15 @@ int64_t veos_free_dmaatb_entry_tsk(struct ve_task_struct *req_tsk,
 	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
 			"Failed to release node dmaatb lock");
 	amm_dump_dmaatb(req_tsk, true);
+	if (dir_num >= noc) {
+		pthread_mutex_lock_unlock(&(vnode->swap_request_pids_lock),
+				LOCK, "Failed to aqcuire swap_request lock");
+		vnode->resource_freed = true;
+		pthread_cond_broadcast(&(vnode->swap_request_pids_cond));
+		pthread_mutex_lock_unlock(&(vnode->swap_request_pids_lock),
+				UNLOCK, "Failed to release swap_request lock");
+	}
+
 #if DEBUG
 	VEOS_DEBUG("Dumping DMAATB from free_dmaatb_entry");
 	amm_dump_dmaatb(NULL, 0);
@@ -725,65 +734,92 @@ err_handle:
  * @brief free the dmaatb of specified process.
  *
  * @param[in] dmaatb pointer to DMAATB structure.
+ * @param[in] dmaatb_progress Progress of Swap-out of DMAATB
+ *
+ * @note Acquire thread_group_mm_lock before invoking this.
  */
-void veos_free_dmaatb(dmaatb_reg_t *dmaatb)
+void veos_free_dmaatb(dmaatb_reg_t *dmaatb, enum swap_progress dmaatb_progress)
 {
-	int i = 0, ret = 0, entry = 0, core_num = 0;
-	pgno_t pb = 0;
-	int pg_type = 0, pgmod = 0;;
-	vemaa_t vemaa = 0;
+	int dir, ent, pg_type, ret, core_num;
 	system_common_reg_t *cnt_regs_addr = VE_CORE_CNT_REG_ADDR(0);
 	vedl_handle *handle = VE_HANDLE(0);
 	struct ve_node_struct *vnode = VE_NODE(0);
+	pgno_t pb;
+	vemaa_t vemaa;
 
 	VEOS_TRACE("Invoked");
 
 	core_num = vnode->nr_avail_cores;
-	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, LOCK,
-			"Failed to acquire node dmaatb lock");
-
-	for (i = core_num; i < DMAATB_DIR_NUM; i++) {
-		if (ps_isvalid(&dmaatb->dir[i])) {
-			VEOS_DEBUG("%d : Partial Space Offset %p",
-					i, (void *)dmaatb->dir[i].data);
-			pgmod = ps_getpgsz(&dmaatb->dir[i]);
-			ps_invalid(&dmaatb->dir[i]);
-			ps_clrdir(&vnode->dmaatb.dir[i]);
-			ps_invalid(&vnode->dmaatb.dir[i]);
-			for (entry = 0; entry <
-					DMAATB_ENTRY_MAX_SIZE; entry++) {
-
-				if (pg_isvalid(&(dmaatb->entry[i][entry]))) {
-					pg_type = pg_gettype(&(dmaatb->entry[i][entry]));
-					if (pg_type == VE_ADDR_VEMAA) {
-						VEOS_TRACE("Dec pages ref count");
-						pb = pg_getpb(&(dmaatb->entry[i][entry]), pgmod);
-						vemaa = pbaddr(pb, pgmod);
-						VEOS_DEBUG("vemaa = 0x%lx", vemaa);
-						amm_put_page(vemaa);
-					}
-				}
-
-				pg_invalid(&(dmaatb->entry[i][entry]));
-				pg_invalid(&(vnode->dmaatb.entry[i][entry]));
-				pg_unsetprot(&(dmaatb->entry[i][entry]));
-				pg_unsetprot(&(vnode->dmaatb.entry[i][entry]));
-				pg_unsettype(&(dmaatb->entry[i][entry]));
-				pg_unsettype(&(vnode->dmaatb.entry[i][entry]));
-				pg_clearpfn(&(dmaatb->entry[i][entry]));
-				pg_clearpfn(&(vnode->dmaatb.entry[i][entry]));
-			}
-			hw_dma_map[i].count = 0;
-		} else  {
-			VEOS_TRACE("DIR: %d is invalid.", i);
+	for (dir = core_num; dir < DMAATB_DIR_NUM; dir++) {
+		if (!ps_isvalid(&dmaatb->dir[dir]))
 			continue;
+
+		/* Clear registered memory with DMAATB along process soft copy */
+		VEOS_DEBUG("Clear DMAATB dir %d", dir);
+		ps_clrdir(&dmaatb->dir[dir]);
+		ps_invalid(&dmaatb->dir[dir]);
+		for (ent = 0; ent < DMAATB_ENTRY_MAX_SIZE; ent++) {
+			while (pg_isvalid(&(dmaatb->entry[dir][ent]))) {
+				pg_type = pg_gettype(
+						&(dmaatb->entry[dir][ent]));
+				if (pg_type != VE_ADDR_VEMAA)
+					break;
+
+				pb = pg_getpb(
+					&(dmaatb->entry[dir][ent]), PG_2M);
+				if (pb == PG_BUS)
+					break;
+				vemaa = pbaddr(pb, PG_2M);
+				VEOS_DEBUG(
+					"free registered memory 0x%lx", vemaa);
+				amm_put_page(vemaa);
+				break;
+			}
+			pg_invalid(&(dmaatb->entry[dir][ent]));
+			pg_unsetprot(&(dmaatb->entry[dir][ent]));
+			pg_unsettype(&(dmaatb->entry[dir][ent]));
+			pg_clearpfn(&(dmaatb->entry[dir][ent]));
 		}
+
+		/* If dmaatb_progress is 'SWAPPED', all directories and entries
+		 * of node soft copy already have been freed.
+		 */
+		if (dmaatb_progress == SWAPPED)
+			continue;
+
+		pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, LOCK,
+					"Failed to acquire node dmaatb lock");
+		VEOS_DEBUG("Clear node's DMAATB dir %d", dir);
+		ps_clrdir(&vnode->dmaatb.dir[dir]);
+		ps_invalid(&vnode->dmaatb.dir[dir]);
+
+		for (ent = 0; ent < DMAATB_ENTRY_MAX_SIZE; ent++) {
+			pg_invalid(&vnode->dmaatb.entry[dir][ent]);
+			pg_unsetprot(&vnode->dmaatb.entry[dir][ent]);
+			pg_unsettype(&vnode->dmaatb.entry[dir][ent]);
+			pg_clearpfn(&vnode->dmaatb.entry[dir][ent]);
+		}
+
+		hw_dma_map[dir].count = 0;
 		ret = vedl_update_dmaatb_dir(handle, cnt_regs_addr,
-				&(vnode->dmaatb), i);
-		if (0 > ret) {
-			VEOS_DEBUG("vedl_update_dmaatb_dir Failed");
+							&(vnode->dmaatb), dir);
+		if (ret < 0) {
+			VEOS_ERROR("vedl_update_dmaatb_dir failed (%d)", ret);
 			veos_abort("failed to sync dmaatb");
-			goto error;
+		}
+		pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
+					"Failed to release node dmaatb lock");
+
+		if (terminate_flag == NOT_REQUIRED) {
+			pthread_mutex_lock_unlock(&(vnode->
+				swap_request_pids_lock),
+				LOCK, "Failed to aqcuire swap_request lock");
+			vnode->resource_freed = true;
+			pthread_cond_broadcast(
+					&(vnode->swap_request_pids_cond));
+			pthread_mutex_lock_unlock(&(vnode->
+				swap_request_pids_lock),
+				UNLOCK, "Failed to release swap_request lock");
 		}
 	}
 
@@ -792,9 +828,6 @@ void veos_free_dmaatb(dmaatb_reg_t *dmaatb)
 	amm_dump_dmaatb(NULL, 0);
 #endif
 	VEOS_TRACE("returned");
-error:
-	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
-			"Failed to release node dmaatb lock");
 	return;
 }
 

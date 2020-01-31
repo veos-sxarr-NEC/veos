@@ -909,7 +909,6 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 	int perm;
 	struct attaching_veshm_info *entry, *newent = NULL;
 	uint64_t pgsize = 0;
-	uint64_t add_another_mapping = -1;
 	int renewed_veshm = 0;		/* 1: VESHM had been renewed */
 	int create_new_attach = 0;	/* 1: Create a new attaching_veshm_info */
 	int veshm_paddr_chk_err  = 0;   /* 1: Paddr check is failed 
@@ -1083,6 +1082,14 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 		IVED_DEBUG(log4cat_veos_ived, 
 			   "VESHM owner process (%d) is not found",
 			   req_owner_pid);
+	} else if ((owner_tsk != NULL) &&
+			(isset_flag(stat_check_val, VE_REGISTER_VEHVA))){
+		/* If an owner process and user process exists on the same node,
+		 * user process can't attach VESHM by DMAATB. */
+		IVED_DEBUG(log4cat_veos_ived,
+			"VESHM attaching: VESHM by DMAATB on same node");
+		put_ve_task_struct(owner_tsk);
+		goto err_ret_invalid_arg;
 	}
 
 	user_tsk = find_ve_task_struct(req_user_pid);
@@ -1233,6 +1240,16 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 			(&owner_ived_resource->ived_resource_lock);
 		assert(ret == 0);
 
+		if (owner_ived_resource->is_swap_out == true) {
+			IVED_DEBUG(log4cat_veos_ived, 
+				   "VESHM owner process (%d) is swapped",
+					   req_owner_pid);
+			reply->error = -EAGAIN;
+			pthread_rwlock_unlock
+				(&owner_ived_resource->ived_resource_lock);
+			goto err_ret_cancel_req;
+		}
+
 		/* Check physical address change */
 		veshm_entry = pickup_owned_veshm_addr
 			(owner_ived_resource, 
@@ -1312,22 +1329,14 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 				goto err_ret_clear_reply;
 
 			}
-			if (entry->ref_cnt_vehva != 0){
-				attached_addr = entry->vehva;
-				entry->ref_cnt_vehva++;
-				goto ret_existing;
-			} else {
-				/* The VESHM was mapped to VEMVA and
-				 * this request wants to map it to VEHVA. 
-				 * The VESHM must be on local node. */
-				if (pgsize != -1){
-					reply->error  = -EINVAL;
-					IVED_DEBUG(log4cat_veos_ived, 
-						   "VESHM exists on a remote node");
-					goto err_ret_clear_reply;
-				}
-				add_another_mapping = VE_REGISTER_VEHVA;
-			}
+			/* In this case, target VESHM always exists on remote node,
+			 * because this function has already checked
+			 * that owner process doesn't exist on local node
+			 * when VE_REGISTER_VEHVA is specified.
+			 */
+			attached_addr = entry->vehva;
+			entry->ref_cnt_vehva++;
+			goto ret_existing;
 		} else {
 			/* Case of req_mode_flag == VE_REGISTER_VEMVA */
 			if ((unsigned int)entry->ref_cnt_vemva + 1 > INT_MAX){
@@ -1336,21 +1345,20 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 				reply->error  = -ENOMEM;
 				goto err_ret_clear_reply;
 			}
+			/* In this case, target VESHM exists on local node
+			 * or remote node.
+			 */
 			if (entry->ref_cnt_vemva != 0){
+				/* Target VESHM exists on local node. */
 				attached_addr = entry->vemva;
 				entry->ref_cnt_vemva++;
 				goto ret_existing;
 			} else {
-				/* The VESHM was mapped to VEHVA and
-				 * this request wants to map it to VEMVA. 
-				 * The VESHM must be on local node. */
-				if (pgsize != -1){
-					reply->error  = -EINVAL;
-					IVED_DEBUG(log4cat_veos_ived, 
+				/* Target VESHM exists on remote node. */
+				reply->error  = -EINVAL;
+				IVED_DEBUG(log4cat_veos_ived, 
 						   "VESHM exists on a remote node");
-					goto err_ret_clear_reply;
-				}
-				add_another_mapping = VE_REGISTER_VEMVA;
+				goto err_ret_clear_reply;
 			}
 		} 
 	} else if ( entry != NULL && renewed_veshm == 1){
@@ -1404,33 +1412,20 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 	perm = conv_modeflag_prot(req_mode_flag);
 
 	if ( isset_flag(req_mode_flag, VE_REGISTER_VEHVA) ){
-		if (pgsize == -1){
-			/* It may be better to use 
-			 * veos_alloc_dmaatb_entry_for_aa for an internal 
-			 * attating too. */
-
-			/* Same node */
-			attached_addr = veos_alloc_dmaatb_entry_for_vemva
-				(req_user_pid, req_owner_pid,
-				 req_owner_vemva, req_size, perm, false);
-			if (attached_addr < 0){
-				IVED_ERROR(log4cat_veos_ived, 
-					   "VEHVA allocation failed");
-				reply->error = -ENOMEM;
-				goto err_ret_free_info;
-			}
-		} else {
-			/* External node */
-			/* Create DMAATB image and update */
-			attached_addr = get_dmaatb_for_attaching
+		/* In this case, target VESHM always exists on remote node
+		 * (External node), because this function has already checked
+		 * that owner process doesn't exist on local node
+		 * when VE_REGISTER_VEHVA is specified.
+		 */
+		/* Create DMAATB image and update */
+		attached_addr = get_dmaatb_for_attaching
 				(req_user_pid, target_addr, n_pci_address,
 				 pgsize, perm);
-			if (attached_addr < 0){
-				IVED_ERROR(log4cat_veos_ived, 
+		if (attached_addr < 0){
+			IVED_ERROR(log4cat_veos_ived, 
 					   "VEHVA allocation failed");
-				reply->error = -ENOMEM;
-				goto err_ret_free_info;
-			}
+			reply->error = -ENOMEM;
+			goto err_ret_free_info;
 		}
 		entry->ref_cnt_vehva++; /* = 1 */
 		entry->vehva = attached_addr;
@@ -1452,13 +1447,11 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 		attached_addr = req_user_vemva;
 	}
 
-	if (add_another_mapping == -1){
-		/* Add an entry to a list */
-		/* attach_veshm_num is equal to the number of linked 
-		 * attaching_veshm_info data. */
-		user_ived_resource->attach_veshm_num++;
-		list_add(&entry->list, &user_ived_resource->attach_veshm_list);
-	}
+	/* Add an entry to a list */
+	/* attach_veshm_num is equal to the number of linked 
+	 * attaching_veshm_info data. */
+	user_ived_resource->attach_veshm_num++;
+	list_add(&entry->list, &user_ived_resource->attach_veshm_list);
 
 ret_success_mem_local:
 	dump_attach_veshm(entry);

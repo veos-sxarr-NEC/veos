@@ -135,7 +135,8 @@ int veos_pidstat_info(pid_t pid, struct velib_pidstat *pidstat)
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
 	pidstat->vsize = get_vm_size(tsk->p_ve_mm); /*In Bytes*/
-	pidstat->rss = (tsk->p_ve_mm->rss_cur)/1024; /*In KBytes*/
+	pidstat->rss = (get_uss(tsk->p_ve_mm) +	get_pss(tsk->p_ve_mm))/1024;
+								/*In KBytes*/
 	pidstat->startcode = tsk->p_ve_mm->start_code;
 	pidstat->endcode = tsk->p_ve_mm->end_code;
 	pidstat->rsslim = tsk->sighand->rlim[RLIMIT_RSS].rlim_cur; /*In Bytes*/
@@ -181,8 +182,8 @@ uint64_t get_vm_size(struct ve_mm_struct *mm)
 						max_vm += PAGE_SIZE_64MB;
 				} else {
 					if (pg_getpb(&(atb->
-							entry[dir_cntr][entry_cntr]),
-							PG_2M)) {
+						entry[dir_cntr][entry_cntr]),
+						PG_2M)) {
 						if (type == PG_2M)
 							max_vm += PAGE_SIZE_2MB;
 						else if (type == PG_HP)
@@ -215,7 +216,7 @@ int veos_pidstatm_info(int pid, struct velib_pidstatm *pidstatm)
 	VEOS_TRACE("invoked for tsk:pid(%d) and pidstat %p", pid, pidstatm);
 
 	if (NULL == pidstatm) {
-		ret = EINVAL;
+		ret = -EINVAL;
 		VEOS_DEBUG("Invalid input argument");
 		goto error;
 	}
@@ -230,11 +231,12 @@ int veos_pidstatm_info(int pid, struct velib_pidstatm *pidstatm)
 	}
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
-	pidstatm->size = tsk->p_ve_mm->rss_cur; /*In Bytes*/
-	pidstatm->resident = tsk->p_ve_mm->rss_cur; /*In Butes*/
+	pidstatm->size = tsk->p_ve_mm->vm_size; /*In Bytes*/
+	pidstatm->resident = get_uss(tsk->p_ve_mm) + get_pss(tsk->p_ve_mm);
+								/*In Bytes*/
 	pidstatm->share = tsk->p_ve_mm->shared_rss; /* In Bytes */
 	pidstatm->trs = ALIGN(tsk->p_ve_mm->end_code, tsk->p_ve_mm->pgsz) -
-			tsk->p_ve_mm->start_code; /*In Bytes*/
+				tsk->p_ve_mm->start_code;/*In Bytes*/
 	pidstatm->drs = pidstatm->size - pidstatm->trs; /*In Bytes*/
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, UNLOCK,
 			"Failed to release thread-group-mm-lock");
@@ -278,15 +280,17 @@ int veos_meminfo(struct velib_meminfo *mem_info)
 		numa_mp = vnode->numa[i].mp;
 		/* Total VE memory used in Bytes */
 		mem_info->kb_main_used += (numa_mp->small_page_used +
-			 (HUGE_PAGE_IDX * numa_mp->huge_page_used)) * PAGE_SIZE_2MB;
+			 (HUGE_PAGE_IDX * numa_mp->huge_page_used)) *
+			 PAGE_SIZE_2MB;
 
 		/* Total VE memory free in Bytes*/
 		mem_info->kb_main_free += (numa_mp->total_pages -
-					  (numa_mp->small_page_used +
-			   (HUGE_PAGE_IDX * numa_mp->huge_page_used))) * PAGE_SIZE_2MB;
+			(numa_mp->small_page_used + (HUGE_PAGE_IDX *
+			 numa_mp->huge_page_used))) * PAGE_SIZE_2MB;
 
 		/*Total VE memory used by HUGEPAGE in Bytes*/
-		mem_info->kb_hugepage_used += (numa_mp->huge_page_used * PAGE_SIZE_64MB);
+		mem_info->kb_hugepage_used += (numa_mp->huge_page_used *
+			 PAGE_SIZE_64MB);
 	}
 
 	for (i = 0; i < vnode->nr_pages; i++) {
@@ -326,7 +330,8 @@ int veos_getrusage(int who, struct ve_rusage *ve_r,
 	} else if (who == RUSAGE_THREAD) {
 		ve_r->ru_maxrss = tsk->p_ve_mm->rss_max/1024; /*In KBytes*/
 	} else if (who == RUSAGE_CHILDREN) {
-			VEOS_DEBUG ("pid = %d crss_max = %ld", tsk->pid, tsk->p_ve_mm->crss_max);
+			VEOS_DEBUG("pid = %d crss_max = %ld", tsk->pid,
+					tsk->p_ve_mm->crss_max);
 			ve_r->ru_maxrss = tsk->p_ve_mm->crss_max/1024;
 	} else {
 		ret = -EINVAL;
@@ -448,36 +453,45 @@ int veos_pmap(pid_t pid, uid_t gid, uid_t uid, struct ve_mapheader *header)
 		pmap_entry.start = ve_map->begin;
 		pmap_entry.end = ve_map->end;
 		pmap_entry.size = (ve_map->end - ve_map->begin)/KB; /*In KBytes*/
-		pmap_entry.rss	= get_map_attr(ve_map->begin, (size_t)(pmap_entry.size*KB),
+		pmap_entry.rss	= get_map_attr(ve_map->begin,
+				(size_t)(pmap_entry.size*KB),
 				tsk->p_ve_mm, "rss")/KB;/*In KBytes*/
 		pmap_entry.inode = ve_map->inode;
 		pmap_entry.offset = ve_map->foo;
-		pmap_entry.mmu_pagesize = get_map_attr(ve_map->begin, (size_t)(pmap_entry.size*KB),
+		pmap_entry.mmu_pagesize = get_map_attr(ve_map->begin,
+				(size_t)(pmap_entry.size*KB),
 				tsk->p_ve_mm, "page_size")/KB; /*In KBytes*/
 		pmap_entry.pagesize = pmap_entry.mmu_pagesize; /*In KBytes*/
 
-		pmap_entry.anon_hugepage = get_map_attr(ve_map->begin, (size_t)(pmap_entry.size*KB),
+		pmap_entry.anon_hugepage = get_map_attr(ve_map->begin,
+				(size_t)(pmap_entry.size*KB),
 				tsk->p_ve_mm, "anon_hugepg")/KB; /*In KBytes*/
 
-		pmap_entry.anonymous = get_map_attr(ve_map->begin, (size_t)(pmap_entry.size*KB),
+		pmap_entry.anonymous = get_map_attr(ve_map->begin,
+				(size_t)(pmap_entry.size*KB),
 				tsk->p_ve_mm, "anonymous")/KB; /*In KBytes*/
 
 		pmap_entry.dev_major = strtol(ve_map->dev, NULL, 16);
 		pmap_entry.dev_minor = strtol(ve_map->dev+3, NULL, 16);
-		pmap_entry.pss = get_map_attr(ve_map->begin, (size_t)(pmap_entry.size * KB),
+		pmap_entry.pss = get_map_attr(ve_map->begin,
+				(size_t)(pmap_entry.size * KB),
 				tsk->p_ve_mm, "pss")/KB; /*In KBytes*/
 		if (ve_map->vmflags[0]) {
 			/*Removed Vmflags which are not supported*/
 			parse_vmflags(pmap_entry.vmflags, ve_map->vmflags);
 			/*check whether mapping is for stack*/
-			if (check_flag(ve_map->begin, MAP_STACK, tsk->p_ve_mm)) {
+			if (check_flag(ve_map->begin, MAP_STACK,
+						tsk->p_ve_mm)) {
 				str_len = strlen(pmap_entry.vmflags);
-				strncpy((pmap_entry.vmflags + (str_len-1)), " gd", strlen(" gd"));
+				strncpy((pmap_entry.vmflags + (str_len-1)),
+						" gd", strlen(" gd"));
 			}
 			/*check whether maping is with huge page*/
-			if (check_flag(ve_map->begin, MAP_64MB, tsk->p_ve_mm)) {
+			if (check_flag(ve_map->begin, MAP_64MB,
+						tsk->p_ve_mm)) {
 				str_len = strlen(pmap_entry.vmflags);
-				strncpy((pmap_entry.vmflags + (str_len-1)), " ht", strlen(" ht"));
+				strncpy((pmap_entry.vmflags + (str_len-1)),
+						" ht", strlen(" ht"));
 			}
 		} else {
 			memcpy(pmap_entry.vmflags, " ", 1);
@@ -486,7 +500,8 @@ int veos_pmap(pid_t pid, uid_t gid, uid_t uid, struct ve_mapheader *header)
 		if (ve_map->mapname[0])
 			memcpy(pmap_entry.map_desc, ve_map->mapname, 128);
 		else
-			memcpy(pmap_entry.map_desc, "[anon]", strlen("[anon]")+1);
+			memcpy(pmap_entry.map_desc, "[anon]",
+							strlen("[anon]")+1);
 
 		memcpy(shmaddr+(i*sizeof(pmap_entry)),
 				&pmap_entry, sizeof(pmap_entry));
@@ -567,7 +582,8 @@ size_t get_map_attr(vemva_t vemap, size_t map_sz, struct ve_mm_struct *mm, char 
 		}
 
 		pgno = pfnum(phy, PG_2M);
-		pg_sz = (size_t)((pgmod == PG_2M) ? PAGE_SIZE_2MB : PAGE_SIZE_64MB);
+		pg_sz = (size_t)((pgmod == PG_2M) ?
+					PAGE_SIZE_2MB : PAGE_SIZE_64MB);
 
 		if (!strcasecmp(attr, "pss")) {
 			if (map_sz < pg_sz) {
@@ -575,7 +591,7 @@ size_t get_map_attr(vemva_t vemap, size_t map_sz, struct ve_mm_struct *mm, char 
 					size += pg_sz;
 				} else {
 					if (VE_PAGE(vnode, pgno)->ref_count)
-						size = map_sz/VE_PAGE(vnode, pgno)->ref_count;
+						size = map_sz /	VE_PAGE(vnode, pgno)->ref_count;
 				}
 				break;
 			} else {
@@ -583,7 +599,7 @@ size_t get_map_attr(vemva_t vemap, size_t map_sz, struct ve_mm_struct *mm, char 
 					size += pg_sz;
 				} else {
 					if (VE_PAGE(vnode, pgno)->ref_count)
-						size += (pg_sz/VE_PAGE(vnode, pgno)->ref_count);
+						size += (pg_sz  / VE_PAGE(vnode, pgno)->ref_count);
 				}
 			}
 		} else if (!strcasecmp(attr, "rss")) {
@@ -620,7 +636,8 @@ void parse_vmflags(char *parsed, char *toparse)
 	memset(tmp_parse, '\0', VMFLAGS_LENGTH);
 	strncpy(tmp_parse, toparse, VMFLAGS_LENGTH);
 
-	/*Explicitly adding null character at the end to prevent buffer overrun*/
+	/* Explicitly adding null character
+	 * at the end to prevent buffer overrun*/
 	tmp_parse[VMFLAGS_LENGTH - 1] = '\0';
 
 	VEOS_TRACE("invoked");
@@ -630,8 +647,10 @@ void parse_vmflags(char *parsed, char *toparse)
 		strcpy(parsed, tmp_parse);
 		strloc = strstr(parsed, unsupported_vmflgas[idx]);
 		if (strloc != NULL) {
-			strcpy(strloc, (strloc + strlen(unsupported_vmflgas[idx]) + 1));
-			VEOS_DEBUG("Vmflags(%s) removed", unsupported_vmflgas[idx]);
+			strcpy(strloc, (strloc +
+					strlen(unsupported_vmflgas[idx]) + 1));
+			VEOS_DEBUG("Vmflags(%s) removed",
+						unsupported_vmflgas[idx]);
 		}
 		strcpy(tmp_parse, parsed);
 		idx++;
@@ -743,11 +762,11 @@ int veos_set_mempolicy(struct ve_task_struct *ve_task, int mempolicy)
 		goto error;
 	}
 
-	pthread_mutex_lock_unlock(&ve_task->p_ve_mm->thread_group_mm_lock, LOCK,
-			"Failed to acquire thread-group-mm-lock");
+	pthread_mutex_lock_unlock(&ve_task->p_ve_mm->thread_group_mm_lock,
+			LOCK, "Failed to acquire thread-group-mm-lock");
 	ve_task->p_ve_mm->mem_policy = mempolicy;
-	pthread_mutex_lock_unlock(&ve_task->p_ve_mm->thread_group_mm_lock, UNLOCK,
-			"Failed to release thread-group-mm-lock");
+	pthread_mutex_lock_unlock(&ve_task->p_ve_mm->thread_group_mm_lock,
+			UNLOCK,	"Failed to release thread-group-mm-lock");
 	VEOS_DEBUG("Setting mempolicy %d", mempolicy);
 error:
 	VEOS_TRACE("returned");
@@ -759,8 +778,8 @@ error:
  *
  * @param[in] ve_task Pointer of struct ve_task_struct
  *
- * @return if success returns memory policy of ve_task (MPOL_DEFAULT or MPOL_BIND)
- *         else  negative of errno.
+ * @return if success returns memory policy of
+ *		ve_task (MPOL_DEFAULT or MPOL_BIND) else  negative of errno.
  */
 int veos_get_mempolicy(struct ve_task_struct *ve_task)
 {
@@ -826,12 +845,14 @@ int veos_numa_meminfo(struct velib_meminfo *mem_info, size_t size)
 
 		/* Total VE memory used in Bytes */
 		mem_info[index].kb_main_used = (numa_mp->small_page_used +
-			(HUGE_PAGE_IDX * numa_mp->huge_page_used)) * PAGE_SIZE_2MB;
+			(HUGE_PAGE_IDX * numa_mp->huge_page_used)) *
+						PAGE_SIZE_2MB;
 
 		/* Total VE memory free in Bytes*/
 		mem_info[index].kb_main_free = (numa_mp->total_pages -
 				(numa_mp->small_page_used +
-			(HUGE_PAGE_IDX * numa_mp->huge_page_used))) * PAGE_SIZE_2MB;
+			(HUGE_PAGE_IDX * numa_mp->huge_page_used))) *
+						PAGE_SIZE_2MB;
 
 		/*Total VE memory used by HUGEPAGE in Bytes*/
 		mem_info[index].kb_hugepage_used =

@@ -24,6 +24,7 @@ libveosvemm_a_CPPFLAGS = \
 	-I$(top_srcdir)/src/veos/main \
 	-I$(top_srcdir)/src/veos/dma \
 	-I$(top_srcdir)/src/veos/ived \
+	-I$(top_srcdir)/src/veos/pps \
 	-I$(top_srcdir)/lib/libived \
 	-I$(top_srcdir)/include \
 	-I$(top_builddir)/lib/libveosprotoc \

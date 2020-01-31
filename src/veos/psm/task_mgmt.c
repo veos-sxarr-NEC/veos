@@ -63,6 +63,7 @@
 #include "locking_handler.h"
 #include "psm_stat.h"
 #include "veos_sock.h"
+#include "ve_swap.h"
 
 /**
  * @brief Maps the LHM/SHM area of pseudo process in veos
@@ -154,7 +155,7 @@ int psm_get_regval(struct ve_task_struct *tsk,
 {
 	int i, regid;
 	int retval = -1;
-	int node_id = -1, core_id = -1;
+	int core_id = -1;
 	struct ve_task_struct *curr_ve_task = NULL;
 	struct ve_core_struct *p_ve_core = NULL;
 	bool should_stop_core = false, core_stopped = false;
@@ -162,7 +163,6 @@ int psm_get_regval(struct ve_task_struct *tsk,
 
 	VEOS_TRACE("Entering");
 
-	node_id = tsk->node_id;
 	core_id = tsk->core_id;
 	p_ve_core = tsk->p_ve_core;
 	curr_ve_task = p_ve_core->curr_ve_task;
@@ -216,8 +216,8 @@ int psm_get_regval(struct ve_task_struct *tsk,
 				!(regid >= SAR && regid <= PMCR03)) {
 			VEOS_DEBUG("Getting reg[%d] on core[%d]",
 				   regid, core_id);
-			retval = vedl_get_usr_reg(VE_HANDLE(node_id),
-				VE_CORE_USR_REG_ADDR(node_id, core_id),
+			retval = vedl_get_usr_reg(VE_HANDLE(0),
+				VE_CORE_USR_REG_ADDR(0, core_id),
 						  regid,
 						  &data[i]);
 			if (0 != retval) {
@@ -312,6 +312,14 @@ void psm_set_task_state(struct ve_task_struct *task_struct,
 			|| new_state == P_INVAL || curr_state == P_INVAL)
 		goto hndl_return1;
 
+	if ((new_state == STOP) || (new_state == ZOMBIE))
+		task_struct->sstatus = ACTIVE;
+	else
+		task_struct->sstatus = INVALID;
+
+	VEOS_DEBUG("Update sstatus of PID:%d to %d",
+					task_struct->pid, task_struct->sstatus);
+
 	if (curr_state == ZOMBIE) {
 		if (new_state == EXIT_DEAD)
 			task_struct->ve_task_state = new_state;
@@ -339,6 +347,7 @@ hndl_return1:
 						p_ve_core->nr_active,
 						task_struct->pid,
 						task_struct->ve_task_state);
+
 hndl_return:
 	VEOS_TRACE("Exiting");
 	return;
@@ -788,8 +797,12 @@ int psm_terminate_all(int node_id)
                         VEOS_DEBUG("Deleting PID : %d. "
 					"Getting reference for group leader",
                                         tmp_pid);
-			get_ve_task_struct(tmp);
-			psm_do_process_cleanup(tmp, tmp, EXIT_EXECVE_VH);
+			if(tmp->ve_task_state == ZOMBIE)
+				psm_do_process_cleanup(tmp, tmp, EXIT_ZOMBIE);
+			else {
+				get_ve_task_struct(tmp);
+				psm_do_process_cleanup(tmp, tmp, EXIT_EXECVE_VH);
+			}
                         VEOS_INFO("Sending SIGKILL to PID: %d",
                                         tmp_pid);
                         kill(tmp_pid, SIGKILL);
@@ -945,9 +958,20 @@ int alloc_ve_task_data(struct ve_task_struct *tsk)
 	}
 	memset(tsk->thread_sched_bitmap, 0, sizeof(uint64_t));
 
+	tsk->ipc_sync = ve_alloc_ipc_sync();
+	VEOS_DEBUG("TASK : %d, ipc_sync : %p", tsk->pid, tsk->ipc_sync);
+	if (tsk->ipc_sync == NULL) {
+		VEOS_ERROR("Failed to initialize ipc_sync");
+		retval = -EFAULT;
+		goto hndl_free_sched_bitmap;
+	}
 
 	retval = 0;
 	goto hndl_return;
+
+hndl_free_sched_bitmap:
+	free(tsk->thread_sched_bitmap);
+	tsk->thread_sched_bitmap = NULL;
 
 free_sched_count:
 	free(tsk->thread_sched_count);
@@ -1301,6 +1325,45 @@ hndl_return:
 }
 
 /**
+ * @brief This function will wake up swap thread.
+ */
+void send_notice_to_swap_thread(void)
+{
+	struct ve_node_struct *vnode = VE_NODE(0);
+	struct list_head *p, *n;
+	struct ve_task_struct *tmp = NULL;
+
+	pthread_rwlock_lock_unlock(&init_task_lock, WRLOCK,
+				"Failed to acquire init_task write lock");
+	if (!list_empty(&ve_init_task.tasks)) {
+		list_for_each_safe(p, n, &ve_init_task.tasks) {
+			tmp = list_entry(p, struct ve_task_struct, tasks);
+			pthread_mutex_lock_unlock(
+					&(tmp->ve_task_lock), LOCK,
+					"Failed to acquire task lock [PID = %d]",
+					tmp->pid);
+			ve_unlock_swapped_proc_lock(tmp);
+			pthread_mutex_lock_unlock(
+					&(tmp->ve_task_lock), UNLOCK,
+					"Failed to release task lock [PID = %d]",
+					tmp->pid);
+		}
+	} else {
+		VEOS_DEBUG("No VE process exist");
+	}
+	pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
+				"Failed to release init_task lock");
+
+	/* send notice to Swap-Thread for pps */
+	pthread_mutex_lock_unlock(&(vnode->swap_request_pids_lock),
+				LOCK, "Failed to aqcuire swap_request lock");
+	pthread_cond_broadcast(&vnode->swap_request_pids_cond);
+	pthread_mutex_lock_unlock(&(vnode->swap_request_pids_lock),
+				UNLOCK, "Failed to release swap_request lock");
+
+}
+
+/**
  * @brief Set thae state of the task as EXITING for process termination.
  *
  * @param[in] task VE task which is to be terminated
@@ -1324,6 +1387,7 @@ void set_state(struct ve_task_struct *task)
 	task->exit_status = EXITING;
 	pthread_mutex_lock_unlock(&task->ref_lock, UNLOCK,
 		"Failed to acquire task reference lock");
+
 	VEOS_TRACE("Exiting");
 }
 
@@ -1651,7 +1715,7 @@ hndl_return:
  */
 void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 {
-	int node_id = -1, core_id = -1;
+	int core_id = -1;
 	int sig = 1;
 
 	VEOS_TRACE("Entering");
@@ -1662,7 +1726,6 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 	struct ve_task_struct *tmp = NULL;
 	struct ve_task_struct *del_task_real_parent = NULL;
 
-	node_id = del_task_struct->node_id;
 	core_id = del_task_struct->core_id;
 
 	/* During execve(), Change the signal disposition
@@ -1813,14 +1876,14 @@ skip_wakeup:
 	del_task_struct->wake_up_parent = false;
 
 	pthread_mutex_lock_unlock(&(del_task_struct->ve_task_lock), UNLOCK,
-			"Failed to acquire task lock");
+			"Failed to release task lock");
 
 	/* If Task to be deleted is current task, mark the curr_task
 	 * as NULL
 	 */
-	pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
+	pthread_rwlock_lock_unlock(&(VE_CORE(0, core_id)->ve_core_lock),
 			WRLOCK, "Failed to acquire ve core write lock");
-	if (del_task_struct == VE_CORE(node_id, core_id)->curr_ve_task) {
+	if (del_task_struct == VE_CORE(0, core_id)->curr_ve_task) {
 		if (del_task_struct->reg_dirty) {
 			VEOS_DEBUG("Get process context");
 			psm_save_current_user_context(del_task_struct);
@@ -1830,7 +1893,7 @@ skip_wakeup:
 		psm_unassign_migrate_task(del_task_struct);
 		del_task_struct->reg_dirty = false;
 	}
-	pthread_rwlock_lock_unlock(&(VE_CORE(node_id, core_id)->ve_core_lock),
+	pthread_rwlock_lock_unlock(&(VE_CORE(0, core_id)->ve_core_lock),
 			UNLOCK,	"Failed to release ve core lock");
 
 	/* freeing cr data*/
@@ -2008,7 +2071,7 @@ void psm_acct_collect(int exit_code, struct ve_task_struct *tsk)
 
 	/* In case of thread group */
 	if (tsk->group_leader == tsk) {
-		pacct->ac_mem += amm_get_rss_in_kb(tsk->p_ve_mm);
+		pacct->ac_mem = (get_pss(tsk->p_ve_mm) + get_uss(tsk->p_ve_mm)) / 1024;
 		pacct->ac_exitcode = exit_code;
 	}
 
@@ -2060,7 +2123,8 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 				char *exe_path,
 				int *numa_node,
 				int mem_policy,
-				pid_t real_parent_pid)
+				pid_t real_parent_pid,
+				pid_t proc_pid)
 {
 	pid_t host_pid = -1;
 	int retval = -1, ret = -1;
@@ -2141,6 +2205,7 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	strncpy(tsk->ve_comm, exe_name, ACCT_COMM);
 	strncpy(tsk->ve_exec_path, exe_path, PATH_MAX);
 	tsk->pid = pid;
+	tsk->tgid = pid;
 	tsk->namespace_pid = namespace_pid;
 	tsk->priority = VE_DEF_SCHED_PRIORITY;
 	tsk->sched_class = 0;
@@ -2172,10 +2237,12 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	tsk->assign_task_flag = TSK_UNASSIGN;
 	tsk->dummy_task = true;
 	tsk->real_parent_pid = real_parent_pid;
+	tsk->proc_pid = proc_pid;
 	/* Allocate time slice to VE task, however when scheduled
 	 * this value will be initialised again. We are initializing it
 	 * so that it does not contain any junk value. */
 	tsk->time_slice = veos_time_slice;
+	tsk->sstatus = INVALID;
 
 	if (!rpm_task_create)
 		memcpy(tsk->sighand->rlim, velim, sizeof(tsk->sighand->rlim));
@@ -2197,6 +2264,7 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	INIT_LIST_HEAD(&tsk->siblings);
 	INIT_LIST_HEAD(&tsk->thread_group);
 	INIT_LIST_HEAD(&tsk->tasks);
+	INIT_LIST_HEAD(&tsk->swapped_pages);
 	ve_init_sigpending(&tsk->pending);
 	sigemptyset(&tsk->blocked);
 
@@ -2355,7 +2423,6 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 		host_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
 				tracer_pid);
 		if (host_pid <= 0) {
-			VEOS_ERROR("Conversion of namespace to host pid fails");
 			VEOS_DEBUG("PID conversion failed, host: %d"
 					" namespace: %d"
 					" error: %s",
@@ -2394,11 +2461,18 @@ remove_from_core:
 	remove_task_from_core_list(tsk->node_id, tsk->core_id,
 			tsk);
 free_dma_data:
+	if (ve_put_ipc_sync(tsk->ipc_sync) != 0)
+		VEOS_ERROR("Failed to clean ipc_sync");
 	if (veos_clean_ived_proc_property(tsk) != 0)
 		VEOS_ERROR("Failed to clean ived property");
 	free(tsk->core_dma_desc);
+	tsk->core_dma_desc = NULL;
 	psm_free_udma_context_region(tsk);
 	veos_free_jid(tsk);
+	free(tsk->thread_sched_count);
+	tsk->thread_sched_count = NULL;
+	free(tsk->thread_sched_bitmap);
+	tsk->thread_sched_bitmap = NULL;
 destroy_mutex_2:
        ret = pthread_mutex_destroy(&(tsk->ref_lock));
        if (ret != 0) {
@@ -3800,15 +3874,14 @@ int psm_handle_set_reg_req(struct ve_task_struct *tsk, usr_reg_name_t regid,
 {
 	int retval = -1;
 	reg_t old_regval = 0;
-	int node_id = -1, core_id = -1;
+	int core_id = -1;
 	struct ve_core_struct *p_ve_core = NULL;
 	bool sync_reg = false;
 
 	VEOS_TRACE("Entering");
 
-	node_id = tsk->node_id;
 	core_id = tsk->core_id;
-	p_ve_core = VE_CORE(node_id, core_id);
+	p_ve_core = VE_CORE(0, core_id);
 
 	VEOS_DEBUG("Reg: %d New Regval: %lx Mask: %lx",
 			regid, regval, mask);
@@ -3827,8 +3900,8 @@ int psm_handle_set_reg_req(struct ve_task_struct *tsk, usr_reg_name_t regid,
 	if (regid == PSW) {
 		if (sync_reg && !GET_BIT(tsk->pmr_context_bitmap, 0)) {
 			VEOS_DEBUG("Getting PSW from Core: %d", core_id);
-			retval = vedl_get_usr_reg(VE_HANDLE(node_id),
-					VE_CORE_USR_REG_ADDR(node_id, core_id),
+			retval = vedl_get_usr_reg(VE_HANDLE(0),
+					VE_CORE_USR_REG_ADDR(0, core_id),
 					PSW,
 					&(tsk->p_ve_thread->PSW));
 			if (retval) {
@@ -3850,8 +3923,8 @@ int psm_handle_set_reg_req(struct ve_task_struct *tsk, usr_reg_name_t regid,
 	if (regid == PMMR) {
 		if (sync_reg && !GET_BIT(tsk->pmr_context_bitmap, 1)) {
 			VEOS_DEBUG("Getting PMMR from Core: %d", core_id);
-			retval = vedl_get_usr_reg(VE_HANDLE(node_id),
-					VE_CORE_USR_REG_ADDR(node_id, core_id),
+			retval = vedl_get_usr_reg(VE_HANDLE(0),
+					VE_CORE_USR_REG_ADDR(0, core_id),
 					PMMR,
 					&(tsk->p_ve_thread->PMMR));
 			if (retval) {
@@ -3887,8 +3960,8 @@ int psm_handle_set_reg_req(struct ve_task_struct *tsk, usr_reg_name_t regid,
 					((regid - PMCR00) + 2))) {
 			VEOS_DEBUG("Getting PMCR0%d from Core: %d",
 					regid - PMCR00, core_id);
-			retval = vedl_get_usr_reg(VE_HANDLE(node_id),
-					VE_CORE_USR_REG_ADDR(node_id, core_id),
+			retval = vedl_get_usr_reg(VE_HANDLE(0),
+					VE_CORE_USR_REG_ADDR(0, core_id),
 					regid,
 					&(tsk->p_ve_thread->PMCR[regid - PMCR00]));
 			if (retval) {
@@ -3913,8 +3986,8 @@ int psm_handle_set_reg_req(struct ve_task_struct *tsk, usr_reg_name_t regid,
 					((regid - PMC00) + 6))) {
 			VEOS_DEBUG("Getting PMC%d from Core: %d",
 					regid - PMC00, core_id);
-			retval = vedl_get_usr_reg(VE_HANDLE(node_id),
-					VE_CORE_USR_REG_ADDR(node_id, core_id),
+			retval = vedl_get_usr_reg(VE_HANDLE(0),
+					VE_CORE_USR_REG_ADDR(0, core_id),
 					regid,
 					&(tsk->p_ve_thread->PMC[regid - PMC00]));
 			if (retval) {

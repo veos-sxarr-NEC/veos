@@ -675,6 +675,7 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 	char exe_path[PATH_MAX] = {0};
 	int numa_node = -1;
 	pid_t real_parent_pid = -1;
+	pid_t proc_pid = -1;
 	int mem_policy = MPOL_DEFAULT;
 
 	VEOS_TRACE("Entering");
@@ -712,6 +713,7 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 	numa_node = ve_proc.numa_node;
 	mem_policy = ve_proc.mem_policy;
 	real_parent_pid = ve_proc.real_parent_pid;
+	proc_pid = pti->cred.pid;
 
 	retval = amm_dma_xfer(VE_DMA_VHVA, ve_proc.exec_path, pid, VE_DMA_VHVA,
 				(uint64_t)exe_path, getpid(), PATH_MAX, 0);
@@ -737,14 +739,6 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 		tsk->gid = gid;
 		tsk->uid = uid;
 		strncpy(tsk->ve_exec_path, exe_path, PATH_MAX);
-
-		/* Populate the resource limit if task created through RPM */
-		if (tsk->rpm_create_task) {
-			if (tsk->rpm_preserve_task != 2)
-				memcpy(tsk->sighand->rlim , ve_proc.lim,
-						sizeof(ve_proc.lim));
-		}
-
 		tsk->atb_dirty = 0;
 		tsk->crd_dirty = 0;
 		tsk->exit_code = 0;
@@ -808,7 +802,7 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 			ve_proc.shm_lhm_addr,
 			ve_proc.sfile_name,
 			ve_proc.lim, gid, uid, false, exe_path,
-			&numa_node, mem_policy, real_parent_pid);
+			&numa_node, mem_policy, real_parent_pid, proc_pid);
 	if (0 > retval) {
 		VEOS_ERROR("Failed to create new process");
 		VEOS_DEBUG("Creation of new process(PID: %d) failed", pid);
@@ -944,7 +938,6 @@ int psm_handle_delete_ve_proc_req(struct veos_thread_arg *pti)
 		}
 		pthread_mutex_lock_unlock(&group_leader->p_ve_mm->thread_group_mm_lock,
 				UNLOCK, "Failed to release thread-group-mm-lock");
-
 		put_ve_task_struct(ve_task_curr);
 		break;
 	case EXIT_EXECVE_VH:
@@ -954,12 +947,13 @@ int psm_handle_delete_ve_proc_req(struct veos_thread_arg *pti)
 			group_leader = find_ve_task_struct(group_leader->pid);
 		}
 		/* We have taken reference for group_leader
-		 * and ve_task_curr */
+		 * and ve_task_curr. */
 		psm_do_process_cleanup(group_leader,
 				ve_task_curr,
 				exit_req.clean_all_thread);
 		break;
 	}
+
 	retval = 0;
 #ifdef VE_OS_DEBUG
 	/* Added for debugging to list all the VE process
@@ -1155,7 +1149,6 @@ int psm_handle_clone_ve_proc_req(veos_thread_arg_t *pti)
 	fork_info.child_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
 			ve_clone_info.child_pid);
 	if (fork_info.child_pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
 		VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",
@@ -1222,7 +1215,6 @@ int psm_handle_fork_ve_proc_req(struct veos_thread_arg *pti)
 	fork_info.parent_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
 			ve_fork_info.parent_pid);
 	if (fork_info.parent_pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
 		VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",
@@ -1666,7 +1658,6 @@ int psm_handle_signal_req(struct veos_thread_arg *pti)
 	/* Convert namespace pid to host pid */
 	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, signal_info.tid);
 	if (pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
 		VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",
@@ -2685,7 +2676,6 @@ int psm_handle_clk_cputime_req(struct veos_thread_arg *pti)
 	/* Convert namespace pid to host pid */
 	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, clockinfo.pid);
 	if (pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
 		VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",
@@ -2919,7 +2909,6 @@ int psm_handle_get_interval_req(struct veos_thread_arg *pti)
 	/* Convert namespace pid to host pid */
 	ve_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, namespace_ve_pid);
 	if (ve_pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
 		VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",
@@ -2986,7 +2975,6 @@ int psm_handle_get_rlimit_req(struct veos_thread_arg *pti)
 	/* Convert namespace pid to host pid */
 	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, rlimit.pid);
 	if (pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
 		VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",
@@ -3120,7 +3108,6 @@ int psm_handle_set_rlimit_req(struct veos_thread_arg *pti)
 	/* Convert namespace pid to host pid */
 	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, rlimit_msg->pid);
 	if (pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
 		VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",
@@ -3317,7 +3304,6 @@ int psm_handle_getaffinity_req(struct veos_thread_arg *pti)
 	/* Convert namespace pid to host pid */
 	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, ve_req.pid);
 	if (pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
 		VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",
@@ -3383,7 +3369,6 @@ int psm_handle_setaffinity_req(struct veos_thread_arg *pti)
 	/* Convert namespace pid to host pid */
 	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, ve_req.pid);
 	if (pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
 		VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",

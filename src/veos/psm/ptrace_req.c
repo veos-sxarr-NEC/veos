@@ -178,13 +178,16 @@ hndl_return:
  * @param[in] tracer_gid GID of Tracer
  * @param[in] use_seize Determines attach using seize or not
  *
- * @return 0 on success, -1 on failure.
+ * @retval 0 on success
+ * @retval PROCES_UNDER_SWAPPING on failure because process is under swapping.
+ * @retval -1 on failure due to other reasons.
  */
 int psm_attach_ve_process(struct ve_task_struct *p_ve_task,
 		pid_t tracer_pid, uid_t tracer_uid,
 		gid_t tracer_gid, bool use_seize)
 {
 	int retval = -1;
+	int sstatus;
 	bool attach = true;
 	bool copy_ops = false;
 	uint64_t p_ops = 0;
@@ -237,7 +240,25 @@ ok:
 	}
 	/*MEMSET*/
 	memset(ptrace_info, '\0', sizeof(struct ve_ptrace_info));
+
+	/* To prevent PTRACE request from overlapping with Swap-out Procedure,
+	 * Check sstatus */
+	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK,
+					"Failed to acquire ve_task_lock");
+	sstatus = p_ve_task->sstatus;
+	if ((sstatus != ACTIVE) && (sstatus != INVALID)) {
+		VEOS_ERROR("Swap-out/in procedure against VE task: %d "
+						"is on going", p_ve_task->pid);
+		pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK,
+					"Failed to release ve_task_lock");
+		free(ptrace_info);
+		retval = -PROCES_UNDER_SWAPPING;
+		goto hndl_return;
+	}
 	p_ve_task->ptraced = true;
+	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK,
+					"Failed to release ve_task_lock");
+
 	ptrace_info->tracer_pid = tracer_pid;
 	ptrace_info->syscall_trace = false;
 	ptrace_info->is_seized = use_seize;
@@ -828,7 +849,7 @@ hndl_return:
 int psm_get_ice_regval(int pid, uint64_t *ice)
 {
 	int retval = -1;
-	int node_id = -1, core_id = -1;
+	int core_id = -1;
 	struct ve_task_struct *tsk = NULL;
 	struct ve_core_struct *p_ve_core = NULL;
 
@@ -841,14 +862,13 @@ int psm_get_ice_regval(int pid, uint64_t *ice)
 		goto hndl_return;
 	}
 
-	node_id = tsk->node_id;
 	core_id = tsk->core_id;
 	p_ve_core = tsk->p_ve_core;
 
 	if (tsk == p_ve_core->curr_ve_task) {
 		VEOS_DEBUG("Getting ICE from core: %d", core_id);
-		retval = vedl_get_usr_reg(VE_HANDLE(node_id),
-				VE_CORE_USR_REG_ADDR(node_id, core_id),
+		retval = vedl_get_usr_reg(VE_HANDLE(0),
+				VE_CORE_USR_REG_ADDR(0, core_id),
 				ICE,
 				ice);
 		if (0 != retval) {

@@ -4,7 +4,7 @@ Release:	@RELEASE@%{?dist}
 Summary:	VE Operating System
 Group:		System Environment/Daemons
 License:	GPLv2+ and (LGPLv2+ and BSD and MIT)
-#URL:		
+#URL:
 Source0:	@PACKAGE@-@VERSION@.tar.gz
 Vendor:		NEC Corporation
 BuildArch:	x86_64
@@ -77,7 +77,8 @@ include them.
   --with-vemm-agent-includedir=@VEMM_AGENT_INCLUDEDIR@ \
   --with-binfmtdir=@binfmtdir@ \
   --with-limitsdir=@limitsdir@ \
-  --with-sysctldir=@sysctldir@
+  --with-sysctldir=@sysctldir@ \
+  --with-veldconfdir=@veldconfdir@
 make %{?_smp_mflags}
 
 %install
@@ -142,8 +143,10 @@ fi
 %config @binfmtdir@/ve.conf
 %config @sysctldir@/10-veos.conf
 %config @limitsdir@/10-veos.conf
+%config @veldconfdir@/veos.conf
 @ve_os_launcher_confdir@/ve-ived.options
 @ve_os_launcher_confdir@/veos_timer.options
+%config(noreplace) @ve_os_launcher_confdir@/veswap.options
 @ve_bindir@/*
 # GPLv2+
 %{_sbindir}/*

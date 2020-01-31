@@ -56,10 +56,14 @@
 #define SHM_2MB         ((uint32_t)1 << 22)
 #define SHM_64MB        ((uint32_t)1 << 23)
 
+/* For judgement the contents of private_data*/
+#define PRIVATE_SHM	1
+
 /**
 * @brief Shared memory data structure maintained in veos.
 */
 struct shm {
+	uint64_t header;/*!< the header for judgement the private_data's contents*/
 	key_t key;	/*!< key for shared memory segment*/
 	int shmid;	/*!< id for shared memory segment*/
 	int64_t perm;	/*!< permissions for shared memory segment*/
@@ -72,6 +76,7 @@ struct shm {
 	struct shmid_ds ipc_stat; /*!<shared memory statistics*/
 	pthread_mutex_t shm_lock;  /*!< lock fot shared memory segment*/
 	struct list_head shm_list; /*!< global list for shared memory segment*/
+	uint64_t nproc; /*!< the number of sharing process*/
 	long ipc_namespace;	/*!< namespace of the shared memory */
 };
 
@@ -104,4 +109,6 @@ int rm_or_ls_segment(proc_t *, bool, struct ve_mapheader *);
 void veos_key_id_query(int shmid, bool *shmid_valid, bool is_key, long);
 int is_capable(proc_t *, int *, bool);
 int get_shm_info(int, sdata_t *, long);
+uint64_t get_pss(struct ve_mm_struct *);
+uint64_t get_uss(struct ve_mm_struct *);
 #endif

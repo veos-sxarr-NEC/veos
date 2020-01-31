@@ -617,6 +617,7 @@ veos_init_ived_proc_property(struct ve_task_struct *tsk)
 	newdata->owned_veshm_num    = 0;
 	newdata->attach_veshm_num   = 0;
 	newdata->pid		    = tsk->pid;
+	newdata->is_swap_out	    = false;
 	uuid_generate(newdata->uuid_proc);
 
 	/* Initialize a resource information about VHSHM */

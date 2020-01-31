@@ -33,6 +33,7 @@
 #include "libved.h"
 #include "mm_common.h"
 #include "ve_mem.h"
+#include "ve_swap.h"
 
 #define PG_TYP_MSK (uint64_t)0x7
 
@@ -50,7 +51,7 @@ int amm_acquire_dmaatb(struct ve_task_struct *);
 int veos_schedulein_dmaatb(struct ve_task_struct *tsk);
 int veos_scheduleout_dmaatb(struct ve_task_struct *tsk);
 
-void veos_free_dmaatb(dmaatb_reg_t *);
+void veos_free_dmaatb(dmaatb_reg_t *, enum swap_progress);
 int64_t veos_free_dmaatb_entry(pid_t, vehva_t, size_t);
 int64_t veos_free_dmaatb_entry_tsk(struct ve_task_struct *, vehva_t, size_t);
 

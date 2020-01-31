@@ -59,6 +59,38 @@ int get_perm(char *prm)
 }
 
 /**
+ * @brief Detect the page is swap out target or not
+ *
+ * @param[in] tsk is the pointer to ve_task_struct
+ * @param[in] dir_num ATB directory number
+ * @param[in] ent_num ATB entry number
+ * @param[out] Flag of Swapped-out VE page
+ *
+ * @return true when page is swap out target,
+ * and false when page is not swap out target
+ */
+static bool is_swap_out_page(struct ve_task_struct *tsk, int dir_num, int ent_num,
+						uint64_t *page_flag)
+{
+	struct list_head *p = NULL, *n = NULL;
+	struct ve_swapped_virtual *tmp = NULL;
+	int ret = false;
+
+	VEOS_DEBUG("Entering is_swap_out_page()");
+	list_for_each_safe(p, n, &(tsk->group_leader->swapped_pages)) {
+		tmp = list_entry(p, struct ve_swapped_virtual, pages);
+		if ((tmp->dir == dir_num) && (tmp->ent == ent_num)) {
+			*page_flag = tmp->phy->flag;
+				ret = true;
+				break;
+		}
+	}
+	VEOS_DEBUG("page_flag is %ld", *page_flag);
+
+	return ret;
+}
+
+/**
  * @brief Detect the virtual address is heap or not
  *
  * @param[in] vaddr is virtual addr for VE process
@@ -75,6 +107,7 @@ int8_t isheap(uint64_t vaddr, struct ve_task_struct *tsk, int pgmod)
 	int64_t pgoff = 0;
 	pgno_t pgno = 0;
 	struct ve_page *ve_page = NULL;
+	uint64_t swap_page_flag = 0;
 	struct ve_node_struct *vnode = VE_NODE(0);
 
 	dir_num =  __get_pgd(vaddr, (void *)&tsk->p_ve_mm->atb[0], -1, false);
@@ -95,9 +128,18 @@ int8_t isheap(uint64_t vaddr, struct ve_task_struct *tsk, int pgmod)
 		pgno = pg_getpb(&(tsk->p_ve_mm->atb[0].entry[dir_num][pgoff]),
 				PG_2M);
 		if ((!pgno) || (pgno == PG_BUS)) {
-			VEOS_DEBUG("Invalid page");
-			ret = -EINVAL;
-			goto end;;
+			if (is_swap_out_page(tsk, dir_num, pgoff,
+						&swap_page_flag)) {
+				if (swap_page_flag & MAP_ADDR_SPACE) {
+					ret = 0;
+				} else {
+					ret = 1;
+				}
+			} else {
+				VEOS_DEBUG("Invalid page");
+				ret = -EINVAL;
+			}
+			goto end;
 		}
 		ve_page = VE_PAGE(vnode, pgno);
 		if (ve_page->flag & MAP_ADDR_SPACE)
@@ -137,6 +179,7 @@ int8_t isstack(uint64_t vaddr,	struct ve_task_struct *tsk, int pgmod)
 	int64_t pgoff = 0;
 	pgno_t pgno = 0;
 	struct ve_page *ve_page = NULL;
+	uint64_t swap_page_flag = 0;
 	struct ve_node_struct *vnode = VE_NODE(0);
 
 	dir_num =  __get_pgd(vaddr, (void *)&tsk->p_ve_mm->atb[0], -1, false);
@@ -157,8 +200,17 @@ int8_t isstack(uint64_t vaddr,	struct ve_task_struct *tsk, int pgmod)
 		pgno = pg_getpb(&(tsk->p_ve_mm->atb[0].entry[dir_num][pgoff]),
 				PG_2M);
 		if ((!pgno) || (pgno == PG_BUS)) {
-			VEOS_DEBUG("Invalid page");
-			ret = -EINVAL;
+			if (is_swap_out_page(tsk, dir_num, pgoff,
+						&swap_page_flag)) {
+				if (swap_page_flag & MAP_STACK) {
+					ret = 0;
+				} else {
+					ret = 1;
+				}
+			} else {
+				VEOS_DEBUG("Invalid page");
+				ret = -EINVAL;
+			}
 			goto end;;
 		}
 		ve_page = VE_PAGE(vnode, pgno);

@@ -42,6 +42,8 @@
 #include "velayout.h"
 #include "veos.h"
 #include "veos_handler.h"
+#include "locking_handler.h"
+#include "ve_swap.h"
 
 int nr_thrds = 0;
 pthread_spinlock_t nr_thrds_lock;
@@ -105,10 +107,14 @@ int pseudo_proc_veos_handler(veos_thread_arg_t *pti)
 	int sd = 0, rwl = -1, ret = -1;
 	socklen_t len = 0;
 	bool rw_lock = false;
+	bool is_need_lock = false;
 	pthread_t tid = pthread_self();
 	PseudoVeosMessage *pseudo_msg = NULL;
 	char cmd_buff[MAX_PROTO_MSG_SIZE];
 	pid_t host_pid = -1;
+	struct ve_task_struct *ve_task = NULL;
+	struct ve_ipc_sync *ipc_sync = NULL;
+	bool pid_checked = false;
 
 	VEOS_TRACE("Entering");
 
@@ -160,35 +166,80 @@ int pseudo_proc_veos_handler(veos_thread_arg_t *pti)
 		goto hndl_error;
 	}
 
-	/* Convert namespace pid to host pid */
-	host_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
-			pseudo_msg->pseudo_pid);
-	if (host_pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
-		VEOS_DEBUG("PID conversion failed, host: %d"
+	if (pti->saved_pseudo_pid &&
+		pti->saved_pseudo_pid == pseudo_msg->pseudo_pid)
+		host_pid = pti->saved_host_pid;
+	else {
+		/* Convert namespace pid to host pid */
+		host_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
+					pseudo_msg->pseudo_pid);
+		if (host_pid <= 0) {
+			VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",
 				pti->cred.pid,
 				pseudo_msg->pseudo_pid,
 				strerror(errno));
-		goto hndl_error;
+			goto hndl_error;
+		}
 	}
 
-	pseudo_msg->pseudo_pid = host_pid;
-	ret = syscall(SYS_tgkill, pti->cred.pid, pseudo_msg->pseudo_pid, 0);
-	if (ret == -1) {
-		VEOS_ERROR("Authentication failure");
-		VEOS_DEBUG("PID: %d is not a valid process cred pid: %d",
-				pseudo_msg->pseudo_pid, pti->cred.pid);
-		goto hndl_error;
+	/*
+	 * We acquire ve_relocate_lock then invoke
+	 * find_ve_task_struct(), because ve_task_struct is removed
+	 * from a core and added to another core during relocation.
+	 */
+	ret = pthread_rwlock_rdlock(&(VE_NODE(0)->ve_relocate_lock));
+	if (0 > ret) {
+		VEOS_ERROR("Failed to acquire relocate lock, retval %d", ret);
+		veos_abort("Failed to acquire relocate lock");
 	}
+	ve_task = find_ve_task_struct(host_pid);
+	ret = pthread_rwlock_unlock(&(VE_NODE(0)->ve_relocate_lock));
+	if (0 > ret) {
+		VEOS_ERROR("Failed to release relocate lock, retval %d", ret);
+		veos_abort("Failed to release relocate lock");
+	}
+	if (ve_task != NULL) {
+		if (ve_task->group_leader->pid == host_pid)
+			pid_checked = true;
+		ipc_sync = ve_get_ipc_sync(ve_task);
+		put_ve_task_struct(ve_task);
+		if (ipc_sync != NULL) {
+			is_need_lock = true;
+			/*
+			 * We acquire handling_request_lock_task to wait
+			 * swap-in if the VE process is swapped out.
+			 * Note ve_task_struct will be removed if
+			 * VE process terminates.
+			 */
+			pthread_rwlock_lock_unlock(
+				&(ipc_sync->handling_request_lock_task),
+				RDLOCK,
+				"Failed to acquire handling_request_lock_task");
+		}
+	}
+
+	if (!pid_checked) {
+		ret = syscall(SYS_tgkill, pti->cred.pid, host_pid, 0);
+		if (ret == -1) {
+			VEOS_ERROR("Authentication failure");
+			VEOS_DEBUG("PID: %d is not a valid process cred pid: %d",
+				pseudo_msg->pseudo_pid, pti->cred.pid);
+			goto hndl_error;
+		}
+	}
+
+	pti->saved_pseudo_pid = pseudo_msg->pseudo_pid;
+	pti->saved_host_pid = host_pid;
+	pseudo_msg->pseudo_pid = host_pid;
+	pti->pseudo_proc_msg = pseudo_msg;
 
 	VEOS_DEBUG("PID[%ld] VEOS received request %s for pseudo pid: %d",
 			syscall(SYS_gettid),
 			pseudo_veos_cmd[pseudo_msg->pseudo_veos_cmd_id].cmdname,
 			pseudo_msg->pseudo_pid);
 
-	pti->pseudo_proc_msg = pseudo_msg;
 
 	/* Get ipc read lock */
 	ret = pthread_rwlock_rdlock(&(VE_NODE(0)->ve_relocate_lock));
@@ -223,6 +274,13 @@ hndl_error:
 hndl_return:
 	if (pseudo_msg != NULL)
 		pseudo_veos_message__free_unpacked(pseudo_msg, NULL);
+
+	if (is_need_lock) {
+		pthread_rwlock_lock_unlock(
+			&(ipc_sync->handling_request_lock_task),
+			UNLOCK, "Failed to release handling_request_lock_task");
+		ve_put_ipc_sync(ipc_sync);
+	}
 
 	if (rw_lock == true) {
 		rwl = pthread_rwlock_unlock(&handling_request_lock);

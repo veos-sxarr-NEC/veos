@@ -36,6 +36,7 @@
 #define SYSCALL_TRACE_OFFSET	(0x8)
 #define PTRACE_OPTION_OFFSET	(0x10)
 #define PSW_SINGLESTEP		(0x4000000000000000)
+#define PROCES_UNDER_SWAPPING	(2)
 
 #ifndef PTRACE_O_EXITKILL
 /* Only defined in Linux Kernel 3.8 or later.  */

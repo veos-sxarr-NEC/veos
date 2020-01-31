@@ -86,6 +86,24 @@
 #define MAP_64MB		((uint64_t)1<<23)
 #define MAP_VDSO                ((uint64_t)1<<32)
 
+/* Macro for judging the type of pages */
+#define FILE_DESC(flags, perm) (!(PG_PTRACE & flags) && !(MAP_ANON & flags) && \
+	!(PG_SHM & flags) && ((MAP_SHARED & flags) || (!(perm & PROT_WRITE))))
+
+#define MMAP_DESC_PRIVATE(flag, perm) (MMAP_DESC(flag, perm) &&\
+			(perm & PROT_WRITE) && (flag & MAP_PRIVATE))
+#define MMAP_DESC(flag, perm) (!__MMAP_DESC_VDSO(flag) &&\
+				!__MMAP_DESC_SHM(flag) &&\
+	(__MMAP_DESC_ANON(flag) || __MMAP_DESC_FILE_BACKED(flag, perm)))
+
+#define __MMAP_DESC_VDSO(flag) (MAP_VDSO & flag)
+#define __MMAP_DESC_SHM(flag)  (PG_SHM & flag)
+#define __MMAP_DESC_ANON(flag) (MAP_ANON & flag)
+#define __MMAP_DESC_FILE_BACKED(flag, perm) \
+		((!(MAP_ANON & flag) && (PG_PTRACE & flag)) ||\
+		(!(MAP_ANON & flag) && (MAP_PRIVATE & flag) && (PROT_WRITE & perm)))
+
+
 /* Macro For Address alignment */
 #define IS_ALIGNED(x, a)	(((x) & ((typeof(x))(a) - 1)) == 0)
 #define ALIGN(x, a)		__ALIGN_MASK(x, (typeof(x))(a) - 1)
@@ -131,6 +149,10 @@
 #define LEFT(X)         (2*X+1)
 #define RIGHT(X)        (2*X+2)
 
+/* For judgement the contents of private_data*/
+#define PRIVATE_FILE	2
+#define PRIVATE_MMAP	3
+
 /**
  * @brief Structure For File Backed handling.
  *
@@ -145,9 +167,21 @@ struct file_desc {
 	struct stat stat;		/*!< file specific information*/
 	uint64_t pgsz;          	/*!< information of page size*/
 	uint64_t in_mem_pages;		/*!< Number of pages in memory*/
+	uint64_t sum_virt_pages;	/*!< Sum of mapped pages*/
 	pthread_mutex_t f_desc_lock; 	/*!< mutex lock*/
 	int numa_num;                   /*!< numa node number*/
 	flag_t flags;                   /*!< mapping flag*/
+};
+
+/**
+ * @brief structure for calculating the sum of mapped file backed memory
+ * 		pages by a process. 
+ */
+struct file_backed_mem{
+	struct list_head list_map_pages;/*!< list of
+						the file_backed_mem struct */
+	struct file_desc* file_descripter;	/*!< fd mapped by a process*/
+	uint64_t virt_pages;		/*!< Sum of mapped pages*/
 };
 
 /**
@@ -179,6 +213,8 @@ struct shm;
 *	each struct file_desc.
 */
 struct mapping_desc {
+	uint64_t header;		/*!< the header for judgement 
+					 * the private_data's contents*/
 	struct list_head mapping_list;	/*!< list head for file specific map*/
 	off_t offset_start;		/*!< file offset start for mapping*/
 	off_t offset_end;		/*!< file offset end for mapping*/
@@ -205,6 +241,26 @@ struct mapping_attri {
 	off_t offset_end;		/*!< offset end  for new mapping*/
 };
 
+/* Mmaped page structure */
+struct mmap_desc{
+	uint64_t header;		/*!< the header for judgement 
+					 * the private_data's contents*/
+	uint64_t pgsz; /*!< information of page size*/
+	uint64_t in_mem_pages; /*!< Number of pages in memory*/
+	uint64_t reference_count; /*!< For PPS, Number for judgement 
+						to delete this structure.*/
+	uint64_t sum_virt_pages; /*!<Sum of mapped pages*/
+	pthread_mutex_t mmap_desc_lock; 
+};
+
+/* The list of mmaped page structure*/
+struct mmap_mem{
+	struct list_head list_mmap_pages; /*!< list of the mmapped pages */
+	struct mmap_desc* mmap_descripter; /*!< pointer to
+							mmaped page structure*/
+	uint64_t virt_page; /*!< size of mapped pages*/
+};
+
 /**
 * @brief contain ve page details
 */
@@ -221,6 +277,9 @@ struct ve_page {
 	struct ve_task_struct *owner;/*!< It will be Used in PG_PTRACE case*/
 	int buddy_order;	/*!< order of buddy in which page belongs*/
 	pthread_mutex_t ve_page_lock; /*!< mutex lock*/
+	uint64_t pci_count;     /*!< Registration counter for PCIATB */
+	struct ve_swapped_physical *swapped_info;
+				/*!< Information about Swapped-out VE page */
 };
 
 /* for NUMA */
@@ -240,7 +299,7 @@ int amm_update_atb_dir(vedl_handle *, int,
 /*File Backed Handling Related APIs*/
 ret_t amm_do_file_back_handling(vemva_t, struct file_desc *,
 		off_t, off_t, int, struct ve_task_struct *,
-		pgno_t *);
+		pgno_t *, uint64_t);
 struct file_desc *init_file_desc(struct file_stat *);
 struct file_desc *scan_global_list(struct file_stat *file, flag_t, int);
 struct mapping_desc *init_mapping_desc(struct mapping_attri *);
@@ -281,6 +340,7 @@ int amm_rw_check_permission(struct ve_task_struct *tsk,
 		struct ve_rw_check_iovec rw_agrs);
 int ve_node_page_free_count(int);
 uint64_t ve_node_page_used_count(int);
+int alloc_ve_pages_for_swapin(uint64_t, pgno_t *, int, int, int, int *);
 int alloc_ve_pages(uint64_t, pgno_t *, int, int, int, int *);
 int calc_usable_dirty_page(struct ve_node_struct *vnode,
 			   size_t mem_sz, int pgmod,
@@ -288,8 +348,7 @@ int calc_usable_dirty_page(struct ve_node_struct *vnode,
 void amm_wake_alloc_page(void);
 void invalidate_atb(atb_reg_t *atb);
 void invalidate_dmaatb(dmaatb_reg_t *atb);
-int amm_copy_atb_private(atb_reg_t *, atb_reg_t *,
-			 struct veshm_struct *i, int, int);
+int amm_copy_atb_private(struct ve_mm_struct *, struct ve_mm_struct *, int);
 void amm_copy_atb_vfork(atb_reg_t *, atb_reg_t *, struct veshm_struct *);
 int amm_copy_phy_page(uint64_t, uint64_t, uint64_t);
 ret_t amm_clear_page(uint64_t, size_t);
@@ -302,7 +361,8 @@ int veos_get_page(vemaa_t);
 int veos_put_page(vemaa_t);
 int amm_get_page(vemaa_t *);
 int amm_put_page(vemaa_t);
-int common_get_put_page(vemaa_t, uint8_t, bool);
+int amm_do_get_page(vemaa_t, bool);
+int amm_do_put_page(vemaa_t, bool);
 int veos_free_page(vemaa_t);
 int64_t veos_virt_to_phy(vemva_t, pid_t, bool, int *);
 void veos_amm_fini(void);
@@ -314,11 +374,17 @@ int amm_recv_data(pid_t, vemva_t, size_t, void *);
 void calc_addr(struct addr_struct *);
 void amm_copy_mm_data(struct ve_mm_struct *, struct ve_mm_struct *);
 ret_t copy_shm_list(struct ve_mm_struct *, struct ve_mm_struct *);
+ret_t copy_list_map_page(struct ve_mm_struct *, struct ve_mm_struct *, int);
 void amm_atb_cleanup(atb_reg_t *, int, int);
 int dirty_page_init(struct ve_node_struct *vnode, pthread_t *th);
 int add_dirty_page(pgno_t pgno, size_t pgsz, int pgmod);
 void veos_amm_clear_mem_thread(void);
 int clear_and_dealloc_page(pgno_t pgno, size_t pgsz, int pgmod);
+struct mmap_desc *init_mmap_desc(void);
+struct mmap_mem *init_mmap_mem(void);
+int amm_do_mmap_handling(struct ve_mm_struct *, size_t, flag_t, prot_t,
+			uint64_t, pgno_t *);
+int decrement_virt_page(struct ve_page *,struct ve_mm_struct *);
 
 /*VEMVA share*/
 int veos_share_vemva_region(pid_t, vemva_t, pid_t,
@@ -355,11 +421,17 @@ uint64_t *amm_get_pgmod_info(vemva_t, struct ve_task_struct *,
 void amm_dump_atb(struct ve_task_struct *);
 int amm_do_set_tproc(struct ve_jid_cmd cmd, struct ve_task_struct *tsk);
 int veos_handle_ptrace_poke_req(struct ve_task_struct *, vemva_t);
-int copy_entry(atb_entry_t *, atb_entry_t *, int, int, int);
-pgno_t __replace_page(atb_entry_t *, int, int);
+int copy_entry(atb_entry_t *, atb_entry_t *, int, int, int, struct ve_mm_struct *);
+pgno_t __replace_page(atb_entry_t *, struct ve_mm_struct *, int);
 int64_t replace_page(vemva_t, struct ve_task_struct *);
 
 ret_t amm_mem_clear(size_t);
 ret_t dma_clear_page(uint64_t);
 int amm_update_atb_dir(vedl_handle *, int, struct ve_task_struct *, int);
+
+/*
+ * For Partial Process Swapping
+ */
+int amm_update_rss_swapin(struct ve_page *);
+int amm_free_private_data(void *, uint64_t , uint64_t );
 #endif

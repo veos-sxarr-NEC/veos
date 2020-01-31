@@ -1573,6 +1573,22 @@ return_hndl:
 }
 
 /**
+ * @brief Copy VEOS handler.
+ *
+ * @param handle VEOS handle
+ */
+veos_handle *veos_handle_copy(veos_handle *handle)
+{
+	if (handle == NULL) {
+		PSEUDO_ERROR("Failed to copy VEOS handler");
+		errno = EINVAL;
+		return NULL;
+	}
+	return veos_handle_create(handle->device_name,
+			handle->veos_sock_name, NULL, -1);
+}
+
+/**
  * @brief Destructor routine for VEOS handler.
  *
  *     This routine first closes the vedl_handle and then frees

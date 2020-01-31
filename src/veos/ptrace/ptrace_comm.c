@@ -335,11 +335,11 @@ int veos_ptrace_attach(struct veos_thread_arg *pti, pid_t pid)
 	/* Attach the VE process for tracing */
 	retval = psm_attach_ve_process(p_ve_task, tracer_pid, pti->cred.uid,
 			pti->cred.gid, false);
-	if (-1 == retval) {
+	if (0 > retval) {
 		VEOS_ERROR("Ptrace attach failed for pid: %d", pid);
-
 		/* Change the VE process state */
-		psm_ve_start_process(p_ve_task);
+		if (retval != -PROCES_UNDER_SWAPPING)
+			psm_ve_start_process(p_ve_task);
 		retval = -EPERM;
 		goto hndl_return1;
 	}
@@ -1081,7 +1081,7 @@ int veos_ptrace_seize(struct veos_thread_arg *pti, pid_t pid, uint64_t data)
 	/* Attach(SEIZE) the VE process for tracing */
 	retval = psm_attach_ve_process(p_ve_task, tracer_pid, pti->cred.uid,
 			pti->cred.gid, true);
-	if (-1 == retval) {
+	if (0 > retval) {
 		VEOS_ERROR("PTRACE_SEIZE failed for pid: %d", pid);
 		retval = -EPERM;
 		goto hndl_return1;
@@ -1411,7 +1411,6 @@ int veos_handle_ptrace_req(struct veos_thread_arg *pti)
 	/* Convert namespace pid to host pid */
 	host_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, pt_req.pid);
 	if (host_pid <= 0) {
-		VEOS_ERROR("Conversion of namespace to host pid fails");
 		VEOS_DEBUG("PID conversion failed, host: %d"
 				" namespace: %d"
 				" error: %s",

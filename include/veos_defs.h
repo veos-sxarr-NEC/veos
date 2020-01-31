@@ -27,6 +27,7 @@
 #define _VEOS_DEFS_H
 
 #include <sys/types.h>
+#include <inttypes.h>
 
 /* VE specific system calls */
 #define SYS_sysve	316

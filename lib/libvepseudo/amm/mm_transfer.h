@@ -49,12 +49,12 @@ struct addr_struct {
 
 extern pthread_rwlock_t sync_fork_dma;
 
-int amm_dma_xfer_req(uint8_t *, veos_handle *, pid_t tid);
+int amm_dma_xfer_req(uint8_t *, veos_handle *, pid_t);
 int ve_send_data(veos_handle *, uint64_t, size_t, void *);
 int ve_recv_data(veos_handle *, uint64_t, size_t, void *);
-int ve_send_data_tid(veos_handle *, uint64_t, size_t, void *, pid_t tid);
-int ve_recv_data_tid(veos_handle *, uint64_t, size_t, void *, pid_t tid);
+int ve_send_data_tid(veos_handle *, uint64_t, size_t, void *, pid_t);
+int ve_recv_data_tid(veos_handle *, uint64_t, size_t, void *, pid_t);
 int ve_recv_string(veos_handle *, uint64_t, char *, size_t);
-int __ve_send_data(veos_handle *, uint64_t, size_t, void *, pid_t tid);
-int __ve_recv_data(veos_handle *, uint64_t, size_t, void *, pid_t tid);
+int __ve_send_data(veos_handle *, uint64_t, size_t, void *, pid_t);
+int __ve_recv_data(veos_handle *, uint64_t, size_t, void *, pid_t);
 #endif

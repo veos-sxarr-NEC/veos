@@ -99,6 +99,8 @@ int init_ve_node_struct(struct ve_node_struct *p_ve_node, int node_id,
 	p_ve_node->vdso_pfn = -1;
 	p_ve_node->vdso_pcientry = -1;
 	p_ve_node->cnt_regs_addr = NULL;
+	p_ve_node->swap_request_pids_enable = false;
+	p_ve_node->pps_buf_size = 0;
 	INIT_LIST_HEAD(&(p_ve_node->ve_sys_load_head));
 	gettimeofday(&(p_ve_node->sched_stime), NULL);
 
@@ -537,28 +539,10 @@ int veos_init_ve_node(void)
 
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "In Func");
 
-	/* Allocates and initialize struct ve_node_vh and sets its address */
-	p_ve_nodes_vh = (struct ve_nodes_vh *)
-					malloc(sizeof(struct ve_nodes_vh));
-	if (p_ve_nodes_vh == NULL) {
-		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-					"Malloc for p_ve_nodes_vh failed: %s",
-					strerror(errno));
-		goto hndl_return;
-	}
-	memset(p_ve_nodes_vh, 0, sizeof(struct ve_nodes_vh));
-
 	/* Allocates and initialize struct ve_node_struct */
-	p_ve_node = (struct ve_node_struct *)
-					malloc(sizeof(struct ve_node_struct));
-	if (p_ve_node == NULL) {
-		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-					"Malloc for ve_node_struct failed: %s",
-					strerror(errno));
-		goto hndl_vh;
-	}
+	p_ve_node = &ve_node;
 	memset(p_ve_node, 0, sizeof(struct ve_node_struct));
-	p_ve_nodes_vh->p_ve_nodes[0] = p_ve_node;
+
 	if (init_ve_node_struct(p_ve_node, 0, drv_sock_file) != 0)
 		goto hndl_ve;
 
@@ -635,12 +619,6 @@ hndl_core:
 	vedl_close_ve(p_ve_node->handle);
 
 hndl_ve:
-	if (p_ve_node != NULL)
-		free(p_ve_node);
-
-hndl_vh:
-	if (p_ve_nodes_vh != NULL)
-		free(p_ve_nodes_vh);
 hndl_return:
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
 	return retval;
@@ -934,7 +912,7 @@ int veos_init(void)
 						"Failed to initialize DMA manager");
 		goto hndl_free;
 	}
-	p_ve_nodes_vh->p_ve_nodes[0]->dh = dh;
+	ve_node.dh = dh;
 
 	/* remove all tasks relating to the VE node */
 	if (vedl_delete_all_ve_task(VE_HANDLE(0)) != 0) {
@@ -1329,7 +1307,7 @@ int veos_set_pcisync_option(int index, char *pcisy_val)
  * @author VEOS main
  */
 
-int64_t veos_convert_sched_options(char *value, int min, int max)
+int64_t veos_convert_sched_options(char *value, int64_t min, int64_t max)
 {
 	char *end_ptr = NULL;
 
@@ -1349,7 +1327,7 @@ int64_t veos_convert_sched_options(char *value, int min, int max)
 	}
 
 	if ((tmp < min) || (tmp > max)) {
-		fprintf(stderr, "Value must be between %d and %d\n",
+		fprintf(stderr, "Value must be between %ld and %ld\n",
 								min, max);
 		goto hndl_return;
 	}
@@ -1528,7 +1506,7 @@ static int veos_make_numa_core_map(
 			goto hndl_return;
 		}
 
-		memset(tmp, '0', LINE_MAX);
+		memset(tmp, '\0', LINE_MAX);
 
 		ret = (int)read(fd, tmp, LINE_MAX - 1);
 		if (ret <= 0) {
