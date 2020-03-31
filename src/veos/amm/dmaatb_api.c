@@ -775,6 +775,8 @@ void veos_free_dmaatb(dmaatb_reg_t *dmaatb, enum swap_progress dmaatb_progress)
 				amm_put_page(vemaa);
 				break;
 			}
+			pg_unsetro(&(dmaatb->entry[dir][ent]));
+			pg_unsetido(&(dmaatb->entry[dir][ent]));
 			pg_invalid(&(dmaatb->entry[dir][ent]));
 			pg_unsetprot(&(dmaatb->entry[dir][ent]));
 			pg_unsettype(&(dmaatb->entry[dir][ent]));
@@ -794,6 +796,8 @@ void veos_free_dmaatb(dmaatb_reg_t *dmaatb, enum swap_progress dmaatb_progress)
 		ps_invalid(&vnode->dmaatb.dir[dir]);
 
 		for (ent = 0; ent < DMAATB_ENTRY_MAX_SIZE; ent++) {
+			pg_unsetro(&vnode->dmaatb.entry[dir][ent]);
+			pg_unsetido(&vnode->dmaatb.entry[dir][ent]);
 			pg_invalid(&vnode->dmaatb.entry[dir][ent]);
 			pg_unsetprot(&vnode->dmaatb.entry[dir][ent]);
 			pg_unsettype(&vnode->dmaatb.entry[dir][ent]);
@@ -1071,6 +1075,8 @@ int veos_release_dmaatb_entry(struct ve_task_struct *tsk)
 
 	for (ps_entry = 0; ps_entry <
 			ATB_ENTRY_MAX_SIZE; ps_entry++) {
+		pg_unsetro(&(vnode->dmaatb.entry[dir_num][ps_entry]));
+		pg_unsetido(&(vnode->dmaatb.entry[dir_num][ps_entry]));
 		pg_unsetprot(&(vnode->dmaatb.entry[dir_num][ps_entry]));
 		pg_unsettype(&(vnode->dmaatb.entry[dir_num][ps_entry]));
 		pg_clearpfn(&(vnode->dmaatb.entry[dir_num][ps_entry]));
@@ -1078,6 +1084,8 @@ int veos_release_dmaatb_entry(struct ve_task_struct *tsk)
 	}
 
 	for (ps_entry = 3; ps_entry < 6; ps_entry++) {
+		pg_unsetro(&(dmaatb->entry[0][ps_entry]));
+		pg_unsetido(&(dmaatb->entry[0][ps_entry]));
 		pg_unsetprot(&(dmaatb->entry[0][ps_entry]));
 		pg_unsettype(&(dmaatb->entry[0][ps_entry]));
 		pg_clearpfn(&(dmaatb->entry[0][ps_entry]));

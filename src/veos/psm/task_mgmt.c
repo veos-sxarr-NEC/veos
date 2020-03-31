@@ -65,6 +65,8 @@
 #include "veos_sock.h"
 #include "ve_swap.h"
 
+bool veos_term ;
+
 /**
  * @brief Maps the LHM/SHM area of pseudo process in veos
  *
@@ -779,11 +781,12 @@ int psm_terminate_all(int node_id)
 	 *      b. Invoke psm_handle_delete_ve_process()
 	 * to VE process.
 	 */
-        VEOS_DEBUG("Delete VE processes and free their resources");
-        if (!list_empty(&ve_init_task.tasks)) {
-                list_for_each_safe(p, n, &ve_init_task.tasks) {
-                        tmp = list_entry(p, struct ve_task_struct, tasks);
-                        tmp_pid = tmp->pid;
+	VEOS_DEBUG("Delete VE processes and free their resources");
+	if (!list_empty(&ve_init_task.tasks)) {
+		veos_term = true;
+		list_for_each_safe(p, n, &ve_init_task.tasks) {
+			tmp = list_entry(p, struct ve_task_struct, tasks);
+			tmp_pid = tmp->pid;
 			pthread_mutex_lock_unlock(
 					&(tmp->ve_task_lock), LOCK,
 					"Failed to acquire task lock [PID = %d]",
@@ -794,22 +797,23 @@ int psm_terminate_all(int node_id)
 					&(tmp->ve_task_lock), UNLOCK,
 					"Failed to release task lock [PID = %d]",
 					tmp->pid);
-                        VEOS_DEBUG("Deleting PID : %d. "
+			VEOS_DEBUG("Deleting PID : %d. "
 					"Getting reference for group leader",
-                                        tmp_pid);
+					tmp_pid);
 			if(tmp->ve_task_state == ZOMBIE)
 				psm_do_process_cleanup(tmp, tmp, EXIT_ZOMBIE);
 			else {
 				get_ve_task_struct(tmp);
 				psm_do_process_cleanup(tmp, tmp, EXIT_EXECVE_VH);
 			}
-                        VEOS_INFO("Sending SIGKILL to PID: %d",
-                                        tmp_pid);
-                        kill(tmp_pid, SIGKILL);
-                }
-        } else {
-                VEOS_DEBUG("No VE process exist");
-        }
+
+			VEOS_INFO("Sending SIGKILL to PID: %d",
+					tmp_pid);
+			kill(tmp_pid, SIGKILL);
+		}
+	} else {
+		VEOS_DEBUG("No VE process exist");
+	}
 
 	VEOS_TRACE("Exiting");
 	return retval;
@@ -3104,6 +3108,18 @@ int psm_handle_un_block_request(struct ve_task_struct *tsk,
 	} else {
 		/* Release semaphor lock */
 		sem_post(&p_ve_core->core_sem);
+
+		/* current task on core is in wait state so invoke scheduler
+		 * with scheduler_expiry false
+		 * */
+		if (p_ve_core->nr_active == 1)
+			psm_find_sched_new_task_on_core(p_ve_core, false, false);
+
+		/* current task on core is in running state so invoke scheduler
+		 * with scheduler_expiry true
+		 * */
+		else if (p_ve_core->nr_active > 1)
+			psm_find_sched_new_task_on_core(p_ve_core, true, false);
 	}
 hndl_return:
 	VEOS_TRACE("Exiting");

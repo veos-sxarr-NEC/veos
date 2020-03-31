@@ -540,7 +540,6 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 {
 	struct ve_task_struct *new_task = NULL;
 	int retval = -1, ret = -1;
-
 	VEOS_TRACE("Entering");
 
 	if (!fork_info) {
@@ -770,33 +769,11 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 				"Failed to release ve_task lock [PID: %d]",
 				current->pid);
 
-		list_add_tail(&new_task->thread_group,
-				&new_task->group_leader->thread_group);
-
 		pthread_mutex_lock_unlock(&new_task->p_ve_mm->thread_group_mm_lock,
 				UNLOCK, "Failed to release thread-group-mm-lock");
 
 		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
 				"Failed to release tasklist_lock lock");
-
-	} else {
-		/* Add an entry of this process in its parent's children list */
-		VEOS_DEBUG("Acquiring tasklist_lock");
-		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
-				"Failed to acquire tasklist_lock lock");
-
-		list_add_tail(&new_task->siblings,
-				&new_task->parent->children);
-
-		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
-				"Failed to release tasklist_lock lock");
-
-		/* Add an entry of this process in INIT task list */
-		pthread_rwlock_lock_unlock(&init_task_lock, WRLOCK,
-				"Failed to acquire init_task write lock");
-		list_add_tail(&new_task->tasks, &ve_init_task.tasks);
-		pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
-				"Failed to release init_task lock");
 
 	}
 
@@ -865,6 +842,46 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 		new_task->ptraced = false;
 		new_task->p_ve_ptrace = NULL;
 	}
+
+	if (clone_flags & CLONE_THREAD) {
+
+		VEOS_DEBUG("Acquiring tasklist_lock");
+		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
+				"Failed to acquire tasklist_lock lock");
+
+		VEOS_DEBUG("Acquiring thread group lock");
+		pthread_mutex_lock_unlock(&new_task->p_ve_mm->thread_group_mm_lock,
+				LOCK, "Failed to acquire thread-group-mm-lock");
+
+		list_add_tail(&new_task->thread_group,
+				&new_task->group_leader->thread_group);
+
+		pthread_mutex_lock_unlock(&new_task->p_ve_mm->thread_group_mm_lock,
+				UNLOCK, "Failed to release thread-group-mm-lock");
+
+		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
+				"Failed to release tasklist_lock lock");
+
+	} else {
+		/* Add an entry of this process in its parent's children list */
+		VEOS_DEBUG("Acquiring tasklist_lock");
+		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
+				"Failed to acquire tasklist_lock lock");
+
+		list_add_tail(&new_task->siblings,
+				&new_task->parent->children);
+
+		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
+				"Failed to release tasklist_lock lock");
+
+		/* Add an entry of this process in INIT task list */
+		pthread_rwlock_lock_unlock(&init_task_lock, WRLOCK,
+				"Failed to acquire init_task write lock");
+		list_add_tail(&new_task->tasks, &ve_init_task.tasks);
+		pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
+				"Failed to release init_task lock");
+
+	}
 	goto hndl_return;
 
 destroy_mutex2:
@@ -881,6 +898,7 @@ destroy_mutex:
 		VEOS_DEBUG("Failed to destroy task lock, return value %d",
 				-ret);
 	}
+
 free_mm_struct:
 	amm_del_mm_struct(new_task);
 free_sighand:

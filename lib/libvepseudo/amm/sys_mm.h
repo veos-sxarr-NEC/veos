@@ -63,6 +63,15 @@
 #endif
 struct pseudo_proc_request;
 
+typedef enum ve_grow_err_t
+{
+       VE_GROW_INVALID_REQUEST,
+       VE_GROW_IN_ALT_STACK,
+       VE_GROW_STACK_LIMIT,
+       VE_GROW_IN_GUARD_AREA,
+       VE_GROW_NO_ERR
+}ve_grow_err;
+
 /* mmap syscall function prototypes */
 ret_t ve_mmap(int syscall_num, char *syscall_name, veos_handle *handle);
 ret_t ve_munmap(int syscall_num, char *syscall_name,

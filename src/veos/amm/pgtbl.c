@@ -1081,6 +1081,8 @@ dir_t validate_vehva(vemva_t vaddr, int rw, pgno_t pgno,
 
 	if (pg_isvalid(&pte[pgoff])) {
 		if (vehva_flag & VEHVA_MAP_FIXED) {
+			pg_unsetro(&pte[pgoff]);
+			pg_unsetido(&pte[pgoff]);
 			pg_unsetprot(&pte[pgoff]);
 			pg_unsettype(&pte[pgoff]);
 			pg_clearpfn(&pte[pgoff]);
@@ -1110,6 +1112,8 @@ dir_t validate_vehva(vemva_t vaddr, int rw, pgno_t pgno,
 	else if (-1 == rw)
 		pg_invalid(&pte[pgoff]);
 
+	pg_setro(&pte[pgoff]);
+	pg_setido(&pte[pgoff]);
 	pg_settype(&pte[pgoff], type);
 
 	mm = (struct ve_mm_struct *)container_of(pdt,
@@ -1375,6 +1379,8 @@ dir_t invalidate_vehva(vemva_t vaddr, void *pdt, jid_t jid)
 	}
 
 	/* DMAATB use LCC. So bypass bit unsetting unnecessary. */
+	pg_unsetro(&pte[pgoff]);
+	pg_unsetido(&pte[pgoff]);
 	pg_unsettype(&pte[pgoff]);
 	pg_clearpfn(&pte[pgoff]);
 	pg_invalid(&pte[pgoff]);
@@ -1393,6 +1399,8 @@ dir_t invalidate_vehva(vemva_t vaddr, void *pdt, jid_t jid)
 			}
 		}
 
+		pg_unsetro(&node_pte[pgoff]);
+		pg_unsetido(&node_pte[pgoff]);
 		pg_invalid(&node_pte[pgoff]);
 		pg_unsetprot(&node_pte[pgoff]);
 		pg_unsettype(&node_pte[pgoff]);

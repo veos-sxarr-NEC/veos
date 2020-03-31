@@ -733,6 +733,8 @@ veos_do_swap_out_dmaatb(struct ve_task_struct *tsk, int dir, int ent,
 	}
 
 hndl_free:
+	pg_unsetro(&(sync_copy->entry[dir][ent]));
+	pg_unsetido(&(sync_copy->entry[dir][ent]));
 	pg_unsettype(&(sync_copy->entry[dir][ent]));
 	pg_clearpfn(&(sync_copy->entry[dir][ent]));
 	pg_invalid(&(sync_copy->entry[dir][ent]));

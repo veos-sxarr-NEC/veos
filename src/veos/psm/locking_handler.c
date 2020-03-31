@@ -58,6 +58,7 @@ void pthread_mutex_lock_unlock(pthread_mutex_t *lock,
 		if (retval != 0) {
 			VEOS_DEBUG(message_str, "return value %s",
 					strerror(retval));
+			VEOS_DEBUG("return value %s", strerror(retval));
 			goto abort;
 		}
 		break;

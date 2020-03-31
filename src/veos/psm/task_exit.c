@@ -769,7 +769,6 @@ resume:
 				list_entry(p,
 						struct ve_task_struct,
 						tasks);
-
 			if (tmp->pid == del_task_struct->pid) {
 				list_del(p);
 				break;
@@ -793,7 +792,7 @@ resume:
 
 	/* If the thread to be deleted is the main thread, cleanup of all the ZOMBIE
 	 * child processes */
-	if (thread_group_leader(del_task_struct))
+	if (thread_group_leader(del_task_struct) && (!veos_term))
 		psm_traverse_children_for_zombie(group_leader);
 	if (!list_empty(&del_task_struct->pending.list)) {
 		list_for_each_safe(p, n, &del_task_struct->pending.list) {

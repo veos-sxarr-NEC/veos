@@ -1684,6 +1684,9 @@ veos_veshm_detach_common(RpcVeshmSubDetach *request_detach, IvedReturn *reply)
 		goto err_ret_nolock;
 	}
 
+	if (request_detach->address == (uint64_t)UNUSED)
+		goto ret_success;
+
 	user_ived_resource = user_tsk->ived_resource;
 	ret = pthread_rwlock_wrlock(&user_ived_resource->ived_resource_lock);
 	assert(ret == 0);

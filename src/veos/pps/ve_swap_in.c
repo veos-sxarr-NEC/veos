@@ -390,6 +390,8 @@ cleanup_allocate_dirs(uint64_t new_allocate_dirs)
 		ps_clrdir(&(vnode->dmaatb.dir[dir]));
 		ps_invalid(&(vnode->dmaatb.dir[dir]));;
 		for (ent = 0; ent < DMAATB_ENTRY_MAX_SIZE; ent++) {
+			pg_unsetro(&(vnode->dmaatb.entry[dir][ent]));
+			pg_unsetido(&(vnode->dmaatb.entry[dir][ent]));
 			pg_invalid(&(vnode->dmaatb.entry[dir][ent]));
 			pg_unsetprot(&(vnode->dmaatb.entry[dir][ent]));
 			pg_unsettype(&(vnode->dmaatb.entry[dir][ent]));

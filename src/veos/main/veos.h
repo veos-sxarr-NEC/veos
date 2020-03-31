@@ -286,6 +286,7 @@ extern sem_t terminate_sem;
 extern char ived_sock_file[PATH_MAX];
 extern int no_update_os_state;
 
+extern bool veos_term;
 /* Used for log4c logging in veos module */
 
 #define CAT_OS_CORE cat_os_core

@@ -46,6 +46,14 @@
 
 
 
+char * const ve_grow_err_str[VE_GROW_NO_ERR] =
+{
+       "Requested Stack grow with invalid agruement\n" /* VE_GROW_INVALID_REQUEST */ ,
+       "Requested Stack grow in alternate stack\n" /* VE_GROW_IN_ALT_STACK */,
+       "Stack Limit Reached\n" /* VE_GROW_STACK_LIMIT */,
+       "Requested Stack grow in guard area\n" /* VE_GROW_IN_GUARD_AREA */,
+};
+
 /**
  * @brief This interface will reserve the space for "signal trampoline' code and
  *        store the trampoline code at reserve space.There will be different
@@ -1202,6 +1210,7 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 	pid_t pid = getpid();
 	unsigned long alt_stk_sp = 0;
 	size_t alt_stk_sz = 0;
+	ve_grow_err grow_err = VE_GROW_NO_ERR;
 
 	PSEUDO_TRACE("invoked");
 
@@ -1273,6 +1282,7 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 	if (new_bottom >= old_bottom) {
 		PSEUDO_DEBUG("new_bottom(0x%lx) is greater than old_bottom(0x%lx)",
 				new_bottom, old_bottom);
+		grow_err = VE_GROW_INVALID_REQUEST;
 		goto out;
 	}
 
@@ -1281,6 +1291,7 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 	 * */
 	if ((old_bottom >= alt_stk_sp) && (old_bottom - alt_stk_sp <= alt_stk_sz)) {
 		PSEUDO_ERROR("Alternate stack active. Behaviour will be undesirable");
+		grow_err = VE_GROW_IN_ALT_STACK;
 		goto out;
 	}
 
@@ -1311,6 +1322,7 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 		if (new_bottom < ve_info.stack_limit) {
 			PSEUDO_DEBUG("new stack(0x%lx) is crossing stack limit(0x%lx)",
 				new_bottom, ve_info.stack_limit);
+			grow_err = VE_GROW_STACK_LIMIT;
 			goto out;
 		}
 		if (new_bottom < ve_info.heap_top) {
@@ -1337,15 +1349,55 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 	size = (old_bottom - actual_new_bottom);
 	if (guard_addr && (actual_new_bottom < guard_addr)) {
 		size -= (guard_addr - actual_new_bottom);
+
+		/* As aligned requested new bottom + stack area for signal
+		 * handling is falling at the next page after guard addr
+		 * hence we will check if there is still space beyond the
+		 * aligned old_bottom.
+		 */
 		if ((int64_t)size <= 0)
+		{
+			/* This is the case where old bottom and guard addr
+			 * are aligned at same page boundary. Hence we can
+			 * not allocate further stack area. Now we will check
+			 * for the aligned requested stack bottom(i.e new bottom)
+			 * if it is beyond the guard address then we should
+			 * abort otherwise we can continue as we are left with
+			 * stack till guard address.
+			 */
+			if(new_bottom < guard_addr)
+			{
+				grow_err = VE_GROW_IN_GUARD_AREA;
+			}
 			goto out;
+		}
+		else
+		{
+			/* Although there is a space left beyond old_bottom but
+			 * as our new_bottom is beyond guard address hence we
+			 * can not allocate memory.
+			 */
+			if(new_bottom < guard_addr)
+			{
+				grow_err = VE_GROW_IN_GUARD_AREA;
+				goto out;
+			}
+			/* This is clear till now that memory cannot be allocated
+			 * for signal handler but there are still pages left for
+			 * ve stack to grow till guard address.
+			 */
+			actual_new_bottom = guard_addr;
+		}
+
 	}
 
 	/*
 	 * Check if actual_new_bottom address >= page aligned old_bottom address
 	 */
 	if (actual_new_bottom >= old_bottom)
+	{
 		goto out;
+	}
 
 	PSEUDO_DEBUG("actual new stack bottom(0x%lx)", actual_new_bottom);
 	PSEUDO_DEBUG("old stack bottom(0x%lx)", old_bottom);
@@ -1372,7 +1424,7 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 		 * we have failed to allocate stack area for signal.
 		 */
 		if ((requested_new_bottom - actual_new_bottom)
-			> STACK_AREA_FOR_SIGNAL)
+				> STACK_AREA_FOR_SIGNAL)
 			new_bottom = actual_new_bottom + STACK_AREA_FOR_SIGNAL;
 		else
 			new_bottom = actual_new_bottom;
@@ -1389,9 +1441,8 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 			goto out;
 
 		if (guard_addr && (new_bottom < guard_addr)) {
-			size -= (guard_addr - new_bottom);
-			if ((int64_t)size <= 0)
-				goto out;
+			grow_err = VE_GROW_INVALID_REQUEST;
+			goto out;
 		}
 
 		PSEUDO_DEBUG("new stack bottom(0x%lx)", new_bottom);
@@ -1406,10 +1457,20 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 			 */
 			if (pid == tid)
 				ve_info.stack_pointer_aligned = (uint64_t)new_bottom;
-		} else
+		} 
+		else
+		{
 			PSEUDO_DEBUG("Error while mapping new stack");
+		}
 	}
 out:
+	if(VE_GROW_NO_ERR != grow_err)
+	{
+		PSEUDO_DEBUG(ve_grow_err_str[grow_err]);
+		fprintf(stderr, "Unable to grow stack\n");
+		pseudo_abort();
+	}
+
 	new_stack_limit = new_bottom;
 
 	memset(&ve_page_info, '\0', sizeof(ve_page_info));
