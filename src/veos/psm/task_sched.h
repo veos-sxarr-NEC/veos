@@ -48,7 +48,7 @@
 #define CLEAR_BIT(bitmap, bit) (bitmap &= ~(1 << bit))
 
 #define HALT_CORE_MAX_TIME	30
-#define START_CORE_MAX_TIME	1
+#define START_CORE_MAX_TIME	2
 
 #define NANO_SECONDS 1
 #define MILLI_SECONDS (1000 * NANO_SECONDS)
