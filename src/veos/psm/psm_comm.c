@@ -1,4 +1,4 @@
-/**
+ /**
 * Copyright (C) 2017-2018 NEC Corporation
 * This file is part of the VEOS.
 *
@@ -671,7 +671,7 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 	struct new_ve_proc ve_proc;
 	struct ve_task_struct *tsk = NULL;
 	int length = -1;
-	char exe_name[ACCT_COMM+1] = {0};
+	char exe_name[ACCT_COMM] = {0};
 	char exe_path[PATH_MAX] = {0};
 	int numa_node = -1;
 	pid_t real_parent_pid = -1;
@@ -722,7 +722,7 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 		goto hndl_return;
 	}
 
-	strncpy(exe_name, ve_proc.exe_name, sizeof(ve_proc.exe_name));
+	memcpy(exe_name, ve_proc.exe_name, ACCT_COMM-1);
 
 	VEOS_DEBUG("VE Executable name: %s,"
 			" ve_exec path: %s,"
@@ -753,7 +753,7 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 				"Failed to release execve task's core write lock");
 
 		tsk->ptraced = ve_proc.traced_proc;
-		strncpy(tsk->ve_comm, exe_name, ACCT_COMM);
+		memcpy(tsk->ve_comm, exe_name, strlen(exe_name)+1);
 
 		/* map the LHM/SHM area of pseudo process in veos */
 		retval = psm_map_lhm_shm_area(tsk, node_id,

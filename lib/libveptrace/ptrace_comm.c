@@ -78,7 +78,7 @@ int veos_sock(int node)
 	}
 
 	sa.sun_family = AF_UNIX;
-	strncpy(sa.sun_path, veos_sock_name, strlen(veos_sock_name));
+	memcpy(sa.sun_path, veos_sock_name, strlen(veos_sock_name)+1);
 
 	/* Connect with VEOS */
 	if (-1 == connect(sockfd, (struct sockaddr *)&sa, sizeof(sa))) {

@@ -75,7 +75,6 @@ struct ve_ipc_sync
 {
 	struct ve_ipc_sync *ret_ptr = NULL;
 	int ret;
-	pthread_rwlockattr_t handling_request_lock_task_attr;
 
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
 
@@ -85,58 +84,51 @@ struct ve_ipc_sync
 						"due to %s", strerror(errno));
 		goto hndl_return;
 	}
-	PPS_DEBUG(cat_os_pps, "ipc_sync allocated : %p", ret_ptr);
 
 	/* Initial value '1' means reference from ve_task_struct.
 	 * So, it will be decremented when ve_task_struct is freed.
 	 */
 	ret_ptr->ref_count = 1;
+	ret_ptr->handling_request = 0;
+	ret_ptr->swapping = 0;
 
 	ret = pthread_mutex_init(&(ret_ptr->ref_lock), NULL);
 	if (ret != 0) {
 		PPS_ERROR(cat_os_pps, "Initialising ve_ipc_sync->ref_lock"
 						" due to %s", strerror(ret));
-		free(ret_ptr);
-		ret_ptr = NULL;
-		goto hndl_return;
+		goto hndl_free_return;
 	}
 
-	ret = pthread_rwlockattr_init(&handling_request_lock_task_attr);
+	ret = pthread_mutex_init(&(ret_ptr->swap_exclusion_lock), NULL);
 	if (ret != 0) {
-		PPS_ERROR(cat_os_pps, "Initialising attribute of "
-			"handling_request_lock_task failed %s", strerror(ret));
-		free(ret_ptr);
-		ret_ptr = NULL;
-		goto hndl_return;
+		PPS_ERROR(cat_os_pps, "Failed to init "
+				"ve_ipc_sync->swap_exclusion_lock due to %s",
+				strerror(ret));
+		goto hndl_free_return;
 	}
 
-	ret = pthread_rwlockattr_setkind_np(&handling_request_lock_task_attr,
-					PTHREAD_RWLOCK_PREFER_READER_NP);
+	ret = pthread_cond_init(&(ret_ptr->handling_request_cond), NULL);
 	if (ret != 0) {
-		PPS_ERROR(cat_os_pps, "Setting attribute of "
-			"handling_request_lock_task failed %s", strerror(ret));
-		free(ret_ptr);
-		ret_ptr = NULL;
-		goto hndl_destroy;
+		PPS_ERROR(cat_os_pps, "Failed to init "
+				"ve_ipc_sync->handling_request_cond due to %s",
+				strerror(ret));
+		goto hndl_free_return;
 	}
 
-	ret = pthread_rwlock_init(&(ret_ptr->handling_request_lock_task),
-					&handling_request_lock_task_attr);
+	ret = pthread_cond_init(&(ret_ptr->swapping_cond), NULL);
 	if (ret != 0) {
-		PPS_ERROR(cat_os_pps, "Initialising handling_request_lock_task"
-						" failed %s", strerror(ret));
-		free(ret_ptr);
-		ret_ptr = NULL;
+		PPS_ERROR(cat_os_pps, "Failed to init "
+					"ve_ipc_sync->swapping_cond due to %s",
+					strerror(ret));
+		goto hndl_free_return;
 	}
 
-hndl_destroy:
-	ret = pthread_rwlockattr_destroy(&handling_request_lock_task_attr);
-	if (ret != 0) {
-		PPS_ERROR(cat_os_pps, "Destroying attribute of "
-			"handling_request_lock_task failed %s", strerror(ret));
-		free(ret_ptr);
-		ret_ptr = NULL;
-	}
+	PPS_DEBUG(cat_os_pps, "ipc_sync allocated : %p", ret_ptr);
+	goto hndl_return;
+
+hndl_free_return:
+	free(ret_ptr);
+	ret_ptr = NULL;
 
 hndl_return:
 	PPS_TRACE(cat_os_pps, "Out %s", __func__);
@@ -144,8 +136,7 @@ hndl_return:
 }
 
 /**
- * @brief Unlock Swapped-out process's handling_request_lock_task, if its
- * process is going to be deleted.
+ * @brief Set 0 to ve_ipc_sync->swapping, if its process is going to be deleted.
  *
  * @param[in] tsk ve_task_struct of process which is going to be deleted.
  *
@@ -163,7 +154,8 @@ ve_unlock_swapped_proc_lock(struct ve_task_struct *tsk)
 
 	if (tsk == NULL) {
 		PPS_ERROR(cat_os_pps,
-			"Failed to unlock handling_request_lock_task");
+			"Failed to resume IPC request due to %s",
+			strerror(EINVAL));
 		goto hndl_return;
 	}
 
@@ -179,8 +171,7 @@ ve_unlock_swapped_proc_lock(struct ve_task_struct *tsk)
 	if (ipc_sync == NULL)
 		goto hndl_return;
 
-	pthread_rwlock_lock_unlock(&(ipc_sync->handling_request_lock_task),
-			UNLOCK, "Failed to release handling_request_lock_task");
+	ve_swap_in_finish(ipc_sync);
 
 	ve_put_ipc_sync(ipc_sync);
 	/* Decrement a ref_cnt because this is kept up until finishing Swap-in.
@@ -283,7 +274,8 @@ ve_put_ipc_sync (struct ve_ipc_sync *ipc_sync)
 
 	if (deleting_flag) {
 		PPS_DEBUG(cat_os_pps, "Freeing ipc_sync(%p)", ipc_sync);
-		pthread_rwlock_destroy(&(ipc_sync->handling_request_lock_task));
+		pthread_cond_destroy(&(ipc_sync->handling_request_cond));
+		pthread_cond_destroy(&(ipc_sync->swapping_cond));
 		free(ipc_sync);
 	}
 
@@ -293,6 +285,56 @@ hndl_return:
 	return retval;
 }
 
+/**
+ * @brief Stop IPC request e.g. system call request, to start swap-out.
+ *
+ * @param[in] ipc_sync Pointer to ve_ipc_sync structure related to process
+ *                     which is going to be swapped-out.
+ *                     Caller must ensure that this argument isn't NULL.
+ */
+void
+ve_swap_out_start(struct ve_ipc_sync *ipc_sync)
+{
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+	pthread_mutex_lock_unlock(&(ipc_sync->swap_exclusion_lock), LOCK,
+				"Failed to aqcuire swap_exclusion_lock");
+
+	while(ipc_sync->handling_request != 0) {
+		pthread_cond_wait(&(ipc_sync->handling_request_cond),
+					&(ipc_sync->swap_exclusion_lock));
+	}
+	ipc_sync->swapping = 1;
+
+	pthread_mutex_lock_unlock(&(ipc_sync->swap_exclusion_lock), UNLOCK,
+				"Failed to release swap_exclusion_lock");
+	PPS_DEBUG(cat_os_pps, "Stop IPC request handle to start Swap-out");
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+}
+
+/**
+ * @brief Resume IPC request e.g. system call request, after Swap-in finishs.
+ *
+ * @param[in] ipc_sync Pointer to ve_ipc_sync structure related to process
+ *                     which is going to be swapped-out.
+ *                     Caller must ensure that this argument isn't NULL.
+ */
+
+void
+ve_swap_in_finish(struct ve_ipc_sync *ipc_sync)
+{
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+	pthread_mutex_lock_unlock(&(ipc_sync->swap_exclusion_lock), LOCK,
+				  "Failed to aqcuire swap_exclusion_lock");
+
+	ipc_sync->swapping = 0;
+	pthread_cond_broadcast(&(ipc_sync->swapping_cond));
+
+	pthread_mutex_lock_unlock(&(ipc_sync->swap_exclusion_lock), UNLOCK,
+				"Failed to release swap_exclusion_lock");
+	PPS_DEBUG(cat_os_pps, "Resume IPC request handling because Swap-in"
+								"finishs");
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+}
 /**
  * @brief Check whether all thread's sub-status is expected or not.
  *

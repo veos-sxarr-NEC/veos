@@ -374,8 +374,8 @@ int veos_dump_cr(struct ve_task_struct *tsk, uint64_t mode_flag)
 				vnode->ve_cr_pages[cr_pgnum].tsk->pid : -1);
 			}
 		}
-		break;
 		VEOS_DEBUG("---------------------------------------------------------");
+		break;
 		case ALL:
 		for (cr_pgnum = 0; cr_pgnum <
 				MAX_CR_PAGE_PER_NODE; cr_pgnum++) {

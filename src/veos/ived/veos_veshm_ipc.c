@@ -2210,8 +2210,6 @@ veos_veshm_close_common(RpcVeshmSubClose *request_close, IvedReturn *reply,
 				}
 			}
 			veos_sync_r_bar2();
-
-			free(entry->pciatb_slot);
 		}
 
 		/* Even if reference count is larger than  0,

@@ -58,7 +58,7 @@ def os_register(sock, driverfile, subcmd):
     res = ived_pb2.ived_return()
     res.ParseFromString(data)
     if (res.retval != 0):
-        print "IVED returned failure: %s" % os.strerror(-res.error)
+        print("IVED returned failure: %s" % os.strerror(-res.error))
     return res.retval
 
 def release_remote_resource(driverfile, ivedsock):

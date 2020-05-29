@@ -483,15 +483,15 @@ int veos_pmap(pid_t pid, uid_t gid, uid_t uid, struct ve_mapheader *header)
 			if (check_flag(ve_map->begin, MAP_STACK,
 						tsk->p_ve_mm)) {
 				str_len = strlen(pmap_entry.vmflags);
-				strncpy((pmap_entry.vmflags + (str_len-1)),
-						" gd", strlen(" gd"));
+
+				memcpy((pmap_entry.vmflags + (str_len-1)), " gd", strlen(" gd"));
 			}
 			/*check whether maping is with huge page*/
 			if (check_flag(ve_map->begin, MAP_64MB,
 						tsk->p_ve_mm)) {
 				str_len = strlen(pmap_entry.vmflags);
-				strncpy((pmap_entry.vmflags + (str_len-1)),
-						" ht", strlen(" ht"));
+
+				memcpy((pmap_entry.vmflags + (str_len-1)), " ht", strlen(" ht"));
 			}
 		} else {
 			memcpy(pmap_entry.vmflags, " ", 1);

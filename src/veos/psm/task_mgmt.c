@@ -2026,7 +2026,7 @@ void veos_acct_ve_proc(struct ve_task_struct *tsk)
 	acct_info.ac_mem = veos_encode_comp_t(pacct->ac_mem);
 
 	/* Command name of the program */
-	strncpy(acct_info.ac_comm, tsk->ve_comm, sizeof(tsk->ve_comm));
+	memcpy(acct_info.ac_comm, tsk->ve_comm, strlen(tsk->ve_comm)+1);
 
 	/* Write struct ve_acct to file */
 	retval = write(veos_acct.fd, (char *)&acct_info,
@@ -2206,8 +2206,8 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	}
 
 	/* Populate ve_task_struct */
-	strncpy(tsk->ve_comm, exe_name, ACCT_COMM);
-	strncpy(tsk->ve_exec_path, exe_path, PATH_MAX);
+	memcpy(tsk->ve_comm, exe_name, strlen(exe_name) <= (ACCT_COMM-1) ? strlen(exe_name):(ACCT_COMM-1));
+	memcpy(tsk->ve_exec_path, exe_path, strlen(exe_path)+1);
 	tsk->pid = pid;
 	tsk->tgid = pid;
 	tsk->namespace_pid = namespace_pid;

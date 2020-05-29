@@ -209,8 +209,8 @@ int pse_load_binary(char *filename, veos_handle *handle,
 	char *head_interp = NULL;
 	Elf_Ehdr *ehdr  = NULL;
 	uint64_t ve_text_page = 0;
-	uint64_t addr[2];
-	uint64_t end_addr[2];
+	uint64_t addr[2] = {0,0};
+	uint64_t end_addr[2] = {0,0};
 	int executeonce = 1;
 	int ret = 0;
 
@@ -356,8 +356,8 @@ void ve_validate_gap(Elf_Ehdr *ehdr)
 	int i = 0;
 	Elf_Shdr *shdr = NULL;
 	offset_t diff_offset = 0;
-	Elf64_Addr sh_addr_ax = NULL;
-	Elf64_Addr sh_addr_wa = NULL;
+	Elf64_Addr sh_addr_ax = (long unsigned int)NULL;
+	Elf64_Addr sh_addr_wa = (long unsigned int)NULL;
 
 	if(NULL == ehdr)
 		return;
@@ -674,7 +674,7 @@ int init_stack(veos_handle *handle, int argc,
 	while (NULL != *arg_p) {
 		*areap_8b++ = (long long)ve_string_addr;
 		len = strlen(*arg_p);
-		strncpy(areap_1b, *arg_p, len + 1);
+		memcpy(areap_1b, *arg_p, len + 1);
 		PSEUDO_DEBUG(
 		 "|\t%llu\t%s", (unsigned long long)ve_string_addr, areap_1b);
 		ve_string_addr += len + 1;
@@ -688,7 +688,7 @@ int init_stack(veos_handle *handle, int argc,
 	while (NULL != *arg_p) {
 		*areap_8b++ = (long long)ve_string_addr;
 		len = strlen(*arg_p);
-		strncpy(areap_1b, *arg_p, len + 1);
+		memcpy(areap_1b, *arg_p, len + 1);
 		PSEUDO_DEBUG("|\t%p\t%s",
 				ve_string_addr, areap_1b);
 		ve_string_addr += len + 1;
@@ -742,7 +742,7 @@ int init_stack(veos_handle *handle, int argc,
 						arg_p)->a_type);
 			*areap_8b++ = (long long)ve_string_addr;
 			len = strlen(argv[0]);
-			strncpy(areap_1b, argv[0], len + 1);
+			memcpy(areap_1b, argv[0], len + 1);
 			PSEUDO_DEBUG("|\t%p\t%s",
 					ve_string_addr, areap_1b);
 			ve_string_addr += len + 1;

@@ -412,13 +412,39 @@ int rpm_handle_pidstat_info_req(struct veos_thread_arg *pti)
 	int pid = -1;
 	ProtobufCBinaryData rpm_pseudo_msg = {0};
 	struct velib_pidstat pidstat = {0};
+	pid_t namespace_pid = -1;
 
 	VEOS_TRACE("Entering");
 
 	if (!pti)
 		goto hndl_return1;
 
-	pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->ve_pid;
+	namespace_pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->ve_pid;
+
+	if (((PseudoVeosMessage *)pti->pseudo_proc_msg)->has_ve_pid &&
+			namespace_pid > 0) {
+		pid = vedl_host_pid(VE_HANDLE(0),
+				pti->cred.pid, namespace_pid);
+		if (pid <= 0) {
+			VEOS_ERROR("Conversion of namespace to host"
+					" pid fails");
+			VEOS_DEBUG("PID conversion failed, host: %d"
+					" namespace: %d"
+					" error: %s",
+					pti->cred.pid,
+					namespace_pid,
+					strerror(errno));
+			retval = -errno;
+
+			/* Send the failure response back to RPM command */
+			retval = veos_rpm_send_cmd_ack(
+					pti->socket_descriptor,
+					NULL, 0, retval);
+			goto hndl_return1;
+		}
+		((PseudoVeosMessage *)pti->pseudo_proc_msg)->ve_pid = pid;
+	}
+
 	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 		pseudo_msg;
 	if (sizeof pidstat != rpm_pseudo_msg.len) {
@@ -427,6 +453,7 @@ int rpm_handle_pidstat_info_req(struct veos_thread_arg *pti)
 		goto hndl_return1;
 	}
 	memcpy(&pidstat, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
+	pidstat.tgid = namespace_pid;
 
 	/* PSM will populate its corresponding fields of
 	 * struct velib_pidstat.
@@ -1872,18 +1899,15 @@ int rpm_handle_ve_swapout_req(struct veos_thread_arg *pti)
 					"Failed to release hread_group_mm_lock");
 			/* To delete ve_task_struct in  psm_do_execve_wait()
 			 * when VH binary is executed via evecve(),
-			 * Swap-out procedure must acquire handling_request_lock_task
+			 * Swap-out procedure must set 1 to ve_ipc_sync->swapping
 			 * without incrementing ref_cnt of ve_task_struct.
-			 * Swap-thread must release handling_request_lock_task,
+			 * Swap-thread must set 0 to ve_ipc_sync->swapping,
 			 * and must free ipc_sync, even if ve_task_struct
 			 * corresponding to process id wihch is in request
 			 * information, is not found.
 			 */
 			put_ve_task_struct(ve_task);
-			pthread_rwlock_lock_unlock(
-				&(ipc_sync->handling_request_lock_task),
-				WRLOCK,
-				"Failed to acquire handling_request_lock_task");
+			ve_swap_out_start(ipc_sync);
 			request_info->ipc_sync_array[valid_pid_num] = ipc_sync;
 			request_info->pid_array[valid_pid_num] = pid;
 			valid_pid_num++;
@@ -2026,10 +2050,10 @@ int rpm_handle_ve_swapin_req(struct veos_thread_arg *pti)
 		if (ve_task->ptraced) {
 			VEOS_DEBUG("ptraced is true, pid is %d", pid);
 			veos_operate_all_ve_task_lock(group_leader, UNLOCK);
-			put_ve_task_struct(ve_task);
 			pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
 				thread_group_mm_lock), UNLOCK,
 				"Failed to release thread_group_mm_lock");
+			put_ve_task_struct(ve_task);
 			continue;
 		}
 
@@ -2037,20 +2061,20 @@ int rpm_handle_ve_swapin_req(struct veos_thread_arg *pti)
 		retval = check_process_for_swap(pti, ve_task);
 		if (retval != 0) {
 			veos_operate_all_ve_task_lock(group_leader, UNLOCK);
-			put_ve_task_struct(ve_task);
 			pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
 				thread_group_mm_lock), UNLOCK,
 				"Failed to release thread_group_mm_lock");
+			put_ve_task_struct(ve_task);
 			continue;
 		}
 
 		request_info->pid_array[valid_pid_num] = pid;
 		valid_pid_num++;
 		veos_operate_all_ve_task_lock(group_leader, UNLOCK);
-		put_ve_task_struct(ve_task);
 		pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
 			thread_group_mm_lock), UNLOCK,
 			"Failed to release thread_group_mm_lock");
+		put_ve_task_struct(ve_task);
 	}
 	request_info->pid_array[valid_pid_num] = PPS_END_OF_PIDS;
 
@@ -2599,6 +2623,7 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 
 	/* Convert namespace pid to host pid */
 	if ((rpm_subcmd != VE_GET_RUSAGE) &&
+		(rpm_subcmd != VE_PIDSTAT_INFO) &&
 		((PseudoVeosMessage *)pti->pseudo_proc_msg)->has_ve_pid &&
 		namespace_pid > 0) {
 		host_pid = vedl_host_pid(VE_HANDLE(0),

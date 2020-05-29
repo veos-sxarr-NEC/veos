@@ -112,7 +112,7 @@ ret_t ve_rt_sigaction(int syscall_num, char *syscall_name, veos_handle *handle)
 	}
 	pseudo_act.sa_handler = act.handler;
 	pseudo_act.sa_flags = act.flags;
-	memcpy(&pseudo_act.sa_mask, &act.mask, sizeof(sigset_t));
+	memcpy(&pseudo_act.sa_mask, &act.mask, sizeof(act.mask));
 	sigdelset(&pseudo_act.sa_mask, SIGKILL);
 	sigdelset(&pseudo_act.sa_mask, SIGCONT);
 	sigdelset(&pseudo_act.sa_mask, SIGSTOP);

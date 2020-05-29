@@ -460,6 +460,7 @@ delete_owned_veshm_info(struct list_head *owner_list_head,
 		(*list_cnt)--;
 	list_del(&entry->list);
 	free(entry->paddr_array);
+	free(entry->pciatb_slot);
 	free(entry);
 
 	return (0);
@@ -782,7 +783,6 @@ ret_sucess:
  * before Swap-out and after Swap-in.
  * So, This function must be invoked in the beginning of Swap-out,
  * and must be invoked at the end of Swap-in, from "swap thread",
- * only with handling_request_lock_task@ve_task_struct,
  * with write lock of ived_resource_lock@ived_shared_resource_data
  *
  * @param [in] tsk	Target process

@@ -73,6 +73,7 @@ int64_t veos_time_slice = PSM_TIME_SLICE_SECS * 1000000 +
 int no_update_os_state = 0;
 struct ve_node_struct ve_node; /* the VE node */
 struct ve_node_struct *p_ve_node_global = &ve_node; /* the pointer to VE node */
+static char veos_abort_message[VE_ABORT_CAUSE_BUF_SIZE];
 
 /**
  * @brief This function releases all the resources
@@ -330,6 +331,7 @@ void veos_abort(const char *cause, ...)
 	va_end(ap);
 	VEOS_FATAL("VEOS aborted due to unrecoverable error: %s",
 			cause_str);
+	memcpy(veos_abort_message, cause_str, VE_ABORT_CAUSE_BUF_SIZE);;
 	abort();
 }
 

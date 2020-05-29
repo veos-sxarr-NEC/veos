@@ -951,8 +951,10 @@ int do_ve_fork(unsigned long clone_flags,
 	int retval = -1, ret = -1;
 	struct ve_task_struct *new_task = NULL;
 	struct ve_task_struct *current = NULL;
+	struct ve_ipc_sync *ipc_sync = NULL;
 	int child_core_id = -1;
 	int child_node_id = -1;
+	bool is_need_sync_pps = false;
 
 	VEOS_TRACE("Entering");
 
@@ -985,6 +987,24 @@ int do_ve_fork(unsigned long clone_flags,
 				fork_info->parent_pid);
 		retval = -ENOMEM;
 		goto hndl_return;
+	}
+
+	ipc_sync = ve_get_ipc_sync(current);
+	if (ipc_sync != NULL) {
+		is_need_sync_pps = true;
+		pthread_mutex_lock_unlock(
+				&(ipc_sync->swap_exclusion_lock), LOCK,
+				"Failed to aqcuire swap_exclusion_lock");
+		while(ipc_sync->swapping != 0) {
+			pthread_cond_wait(&(ipc_sync->swapping_cond),
+					&(ipc_sync->swap_exclusion_lock));
+		}
+		ipc_sync->handling_request++;
+		VEOS_DEBUG("ipc_sync(%p) : handling_request %d",
+					ipc_sync, ipc_sync->handling_request);
+		pthread_mutex_lock_unlock(
+				&(ipc_sync->swap_exclusion_lock), UNLOCK,
+				"Failed to release swap_exclusion_lock");
 	}
 
 	/* Duplicate task structure for new child process */
@@ -1120,6 +1140,18 @@ hndl_return1:
 	if (ret < 0)
 		VEOS_ERROR("Failed to delete new task");
 hndl_return:
+	if (is_need_sync_pps) {
+		pthread_mutex_lock_unlock(&(ipc_sync->swap_exclusion_lock),
+				LOCK, "Failed to aqcuire swap_exclusion_lock");
+		ipc_sync->handling_request--;
+		VEOS_DEBUG("ipc_sync(%p) : handling_request %d",
+					ipc_sync, ipc_sync->handling_request);
+		if (ipc_sync->handling_request == 0)
+			pthread_cond_signal(&(ipc_sync->handling_request_cond));
+		pthread_mutex_lock_unlock(&(ipc_sync->swap_exclusion_lock),
+				UNLOCK, "Failed to release swap_exclusion_lock");
+		ve_put_ipc_sync(ipc_sync);
+	}
 	if (current)
 		put_ve_task_struct(current);
 	VEOS_TRACE("Exiting");

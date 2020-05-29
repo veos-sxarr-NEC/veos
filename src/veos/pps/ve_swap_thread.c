@@ -93,8 +93,7 @@ del_all_swap_request_information(struct ve_node_struct *vnode)
 					tmp->pid_array[i]);
 				continue;
 			};
-			pthread_rwlock_unlock(&(ipc_sync->
-						handling_request_lock_task));
+			ve_swap_in_finish(ipc_sync);
 			ve_put_ipc_sync(ipc_sync);
 			put_ve_task_struct(ve_task);
 		}
@@ -129,7 +128,7 @@ del_doing_swap_request(struct veos_swap_request_info *request)
 			continue;
 		}
 
-		pthread_rwlock_unlock(&(ipc_sync->handling_request_lock_task));
+		ve_swap_in_finish(ipc_sync);
 		put_ve_task_struct(ve_task);
 	}
 
@@ -203,10 +202,7 @@ hndl_start:
 			ve_task = find_ve_task_struct(pid);
 			if (ve_task == NULL) {
 				PPS_DEBUG(cat_os_pps, "VE task with %d not found", pid);
-				pthread_rwlock_lock_unlock(&(ipc_sync->
-					handling_request_lock_task),  UNLOCK,
-					"Failed to release "
-					"handling_request_lock_task");
+				ve_swap_in_finish(ipc_sync);
 				ve_put_ipc_sync(ipc_sync);
 				continue;
 			}
@@ -235,10 +231,7 @@ hndl_start:
 				pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
 					thread_group_mm_lock), UNLOCK,
 					"Failed to release thread_group_mm_lock");
-				pthread_rwlock_lock_unlock(
-					&(ipc_sync->handling_request_lock_task),
-					UNLOCK, "Failed to release "
-					"handling_request_lock_task");
+				ve_swap_in_finish(ipc_sync);
 				ve_put_ipc_sync(ipc_sync);
 
 				put_ve_task_struct(ve_task);
@@ -262,11 +255,7 @@ hndl_start:
 						UNLOCK,
 						"Failed to release "
 						"thread_group_mm_lock");
-					pthread_rwlock_lock_unlock(
-						&(ipc_sync->
-						handling_request_lock_task),
-						UNLOCK, "Failed to release "
-						"handling_request_lock_task");
+					ve_swap_in_finish(ipc_sync);
 					ve_put_ipc_sync(ipc_sync);
 					put_ve_task_struct(ve_task);
 					continue;
@@ -282,11 +271,7 @@ hndl_start:
 
 				ret = ve_do_swapout(ve_task);
 				if (ret < 0) {
-					pthread_rwlock_lock_unlock(
-						&(ipc_sync->
-						handling_request_lock_task),
-						UNLOCK, "Failed to release "
-						"handling_request_lock_task");
+					ve_swap_in_finish(ipc_sync);
 					ve_put_ipc_sync(ipc_sync);
 					put_ve_task_struct(ve_task);
 					continue;
@@ -306,11 +291,7 @@ hndl_start:
 
 				ret = ve_do_swapin(ve_task);
 				if (ret < 0) {
-					pthread_rwlock_lock_unlock(
-						&(ipc_sync->
-						handling_request_lock_task),
-						UNLOCK, "Failed to release "
-						"handling_request_lock_task");
+					ve_swap_in_finish(ipc_sync);
 					ve_put_ipc_sync(ipc_sync);
 					kill(ve_task->pid, SIGKILL);
 					put_ve_task_struct(ve_task);
@@ -324,10 +305,7 @@ hndl_start:
 		for (k = 0; k < swapin_pids_num; k++) {
 			pid = tmp->pid_array[swapin_pids_idx[k]];
 			ipc_sync = tmp->ipc_sync_array[swapin_pids_idx[k]];
-			pthread_rwlock_lock_unlock(
-					&(ipc_sync->handling_request_lock_task),
-					UNLOCK, "Failed to release "
-					"handling_request_lock_task");
+			ve_swap_in_finish(ipc_sync);
 			ve_put_ipc_sync(ipc_sync);
 		}
 		free(tmp);

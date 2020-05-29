@@ -48,25 +48,16 @@ void pthread_mutex_lock_unlock(pthread_mutex_t *lock,
 	va_list ap;
 	char message_str[VEOS_ABORT_MESSAGE_BUF_SIZE] = {0};
 
-	va_start(ap, message);
-	vsnprintf(message_str, VEOS_ABORT_MESSAGE_BUF_SIZE, message, ap);
-	va_end(ap);
-
 	switch (flag) {
 	case LOCK:
 		retval = pthread_mutex_lock(lock);
 		if (retval != 0) {
-			VEOS_DEBUG(message_str, "return value %s",
-					strerror(retval));
-			VEOS_DEBUG("return value %s", strerror(retval));
 			goto abort;
 		}
 		break;
 	case UNLOCK:
 		retval = pthread_mutex_unlock(lock);
 		if (retval != 0) {
-			VEOS_DEBUG(message_str, "return value %s",
-					strerror(retval));
 			goto abort;
 		}
 		break;
@@ -75,7 +66,11 @@ void pthread_mutex_lock_unlock(pthread_mutex_t *lock,
 	}
 	return;
 abort:
-	veos_abort(message_str);
+	va_start(ap, message);
+	vsnprintf(message_str, VEOS_ABORT_MESSAGE_BUF_SIZE, message, ap);
+	va_end(ap);
+
+	veos_abort("%s: %s", message_str, strerror(retval));
 }
 
 /**
@@ -93,32 +88,22 @@ void pthread_rwlock_lock_unlock(pthread_rwlock_t *lock,
 	va_list ap;
 	char message_str[VEOS_ABORT_MESSAGE_BUF_SIZE] = {0};
 
-	va_start(ap, message);
-	vsnprintf(message_str, VEOS_ABORT_MESSAGE_BUF_SIZE, message, ap);
-	va_end(ap);
-
 	switch (flag) {
 	case RDLOCK:
 		retval = pthread_rwlock_rdlock(lock);
 		if (retval != 0) {
-			VEOS_DEBUG(message_str, "return value %s",
-					strerror(retval));
 			goto abort;
 		}
 		break;
 	case UNLOCK:
 		retval = pthread_rwlock_unlock(lock);
 		if (retval != 0) {
-			VEOS_DEBUG(message_str, "return value %s",
-					strerror(retval));
 			goto abort;
 		}
 		break;
 	case WRLOCK:
 		retval = pthread_rwlock_wrlock(lock);
 		if (retval != 0) {
-			VEOS_DEBUG(message_str, "return value %s",
-					strerror(retval));
 			goto abort;
 		}
 		break;
@@ -127,5 +112,9 @@ void pthread_rwlock_lock_unlock(pthread_rwlock_t *lock,
 	}
 	return;
 abort:
-	veos_abort(message_str);
+	va_start(ap, message);
+	vsnprintf(message_str, VEOS_ABORT_MESSAGE_BUF_SIZE, message, ap);
+	va_end(ap);
+
+	veos_abort("%s: %s", message_str, strerror(retval));
 }

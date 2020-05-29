@@ -57,9 +57,13 @@
 #include "pseudo_ptrace.h"
 #include "pseudo_ived_common.h"
 #include "sys_process_mgmt.h"
+#include "handle.h"
+#include <libudev.h>
+#include <libved.h>
 
 #define PROGRAM_NAME "ve_exec"
 #define ISDIGIT(c)      ((unsigned)c-'0' < 10)
+#define VE_ST_UNAVAILABLE 4	/*value of ve_state when it is unavailable as specified in vesysinit*/
 
 __thread sigset_t ve_proc_sigmask;
 __thread veos_handle *g_handle;
@@ -107,12 +111,59 @@ static int get_ve_node_num(char *s)
 void pseudo_abort()
 {
 	struct sigaction act = { {0} };
-
+	int fd = 0, ve_state_val = -1;
+	char filename[PATH_MAX] = {"ve_state"};
+	char filepath[PATH_MAX] = {0};
+	int ret = -1;
+	char buf[PATH_MAX];
+	int readlen = 0, node_num = -1;
 	/* Set SIGABRT action to DEFAULT */
 	act.sa_handler = SIG_DFL;
 	sigaction(SIGABRT, &act, NULL);
+	memset(&buf, -1, sizeof(buf));
+
+	node_num = get_ve_node_num(g_handle->veos_sock_name);
+	const char *sysfs_path = vedl_get_sysfs_path(g_handle->ve_handle);
+	if(sysfs_path){
+		ret = snprintf(filepath, PATH_MAX, "%s/%s", sysfs_path,
+								filename);
+		/*  ret doesn't include null termination. */
+		if (ret < 0 || ret > (sizeof(filepath) - 1)) {
+			PSEUDO_DEBUG("filename is too long");
+			goto err_abort;
+		}else {
+			fd = open(filepath, O_RDONLY);
+			if(fd < 0){
+				PSEUDO_ERROR("Failed to open %s: %s",
+						filepath, strerror(errno));
+				fprintf(stderr, "Failed to open %s: %s",
+						filepath, strerror(errno));
+				goto err_abort;
+			}
+			readlen = read(fd, buf, sizeof(buf));
+			if(readlen == -1){
+				PSEUDO_ERROR("Failed to read from file %s: %s",
+						filepath, strerror(errno));
+				fprintf(stderr, "Failed to read from file %s: %s",
+						filepath, strerror(errno));
+				close(fd);
+				goto err_abort;
+			}
+			ve_state_val = atoi(buf);
+			if(ve_state_val == VE_ST_UNAVAILABLE){
+				PSEUDO_DEBUG("Node %d is UNAVAILABLE",
+								node_num);
+				fprintf(stdout, "Node %d is UNAVAILABLE\n",
+								node_num);
+			}
+			close(fd);
+		}
+	} else
+		PSEUDO_ERROR("Failed to get sysfs path for node %d: %s",
+						node_num, strerror(errno));
 
 	/* Abort Pseudo Process */
+err_abort:
 	abort();
 }
 
@@ -1009,7 +1060,7 @@ int main(int argc, char *argv[], char *envp[])
 			}
 			/*MEMSET*/
 			memset(ve_argv[ve_argc], '\0', (strlen(argv[optind]) + 1) * sizeof(char));
-			strncpy(ve_argv[ve_argc], argv[optind],
+			memcpy(ve_argv[ve_argc], argv[optind],
 					strlen(argv[optind]) + 1);
 			ve_argc++;
 		}
@@ -1033,7 +1084,7 @@ int main(int argc, char *argv[], char *envp[])
 	}
 	/*MEMSET*/
 	memset( ve_argv[0], '\0', (strlen(exe_name) + 1) * sizeof(char));
-	strncpy(ve_argv[0], exe_name, strlen(exe_name) + 1);
+	memcpy(ve_argv[0], exe_name, strlen(exe_name) + 1);
 	for (i = 0; i < ve_argc; i++)
 		PSEUDO_DEBUG("ve_argv[%d] = %s\n", i, ve_argv[i]);
 
@@ -1160,10 +1211,10 @@ int main(int argc, char *argv[], char *envp[])
 	ve_proc.real_parent_pid = getppid();
 
 	file_name = basename(sfile_name);
-	memset(&(ve_proc.exe_name), '\0', ACCT_COMM + 1);
-	strncpy(ve_proc.exe_name, exe_base_name, ACCT_COMM);
+	memset(&(ve_proc.exe_name), '\0', ACCT_COMM);
+	strncpy(ve_proc.exe_name, exe_base_name, ACCT_COMM-1);
 	memcpy(ve_proc.lim, ve_rlim, sizeof(ve_rlim));
-	strncpy(ve_proc.sfile_name, file_name, S_FILE_LEN);
+	memcpy(ve_proc.sfile_name, file_name, strlen(file_name)+1);
 
 	/* Request to veos to create new VE process.
 	 * veos also create VE process task structure on VE driver

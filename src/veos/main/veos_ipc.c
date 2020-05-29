@@ -208,15 +208,24 @@ int pseudo_proc_veos_handler(veos_thread_arg_t *pti)
 		if (ipc_sync != NULL) {
 			is_need_lock = true;
 			/*
-			 * We acquire handling_request_lock_task to wait
+			 * We acquire swap_exclusion_lock to wait
 			 * swap-in if the VE process is swapped out.
 			 * Note ve_task_struct will be removed if
 			 * VE process terminates.
 			 */
-			pthread_rwlock_lock_unlock(
-				&(ipc_sync->handling_request_lock_task),
-				RDLOCK,
-				"Failed to acquire handling_request_lock_task");
+			pthread_mutex_lock_unlock(
+				&(ipc_sync->swap_exclusion_lock), LOCK,
+				"Failed to aqcuire swap_exclusion_lock");
+			while(ipc_sync->swapping != 0) {
+				pthread_cond_wait(&(ipc_sync->swapping_cond),
+					&(ipc_sync->swap_exclusion_lock));
+			}
+			ipc_sync->handling_request++;
+			VEOS_DEBUG("ipc_sync(%p) : handling_request %d",
+					ipc_sync, ipc_sync->handling_request);
+			pthread_mutex_lock_unlock(
+				&(ipc_sync->swap_exclusion_lock), UNLOCK,
+				"Failed to release swap_exclusion_lock");
 		}
 	}
 
@@ -276,9 +285,15 @@ hndl_return:
 		pseudo_veos_message__free_unpacked(pseudo_msg, NULL);
 
 	if (is_need_lock) {
-		pthread_rwlock_lock_unlock(
-			&(ipc_sync->handling_request_lock_task),
-			UNLOCK, "Failed to release handling_request_lock_task");
+		pthread_mutex_lock_unlock(&(ipc_sync->swap_exclusion_lock),
+				LOCK, "Failed to aqcuire swap_exclusion_lock");
+		ipc_sync->handling_request--;
+		VEOS_DEBUG("ipc_sync(%p) : handling_request %d",
+					ipc_sync, ipc_sync->handling_request);
+		if (ipc_sync->handling_request == 0)
+			pthread_cond_signal(&(ipc_sync->handling_request_cond));
+		pthread_mutex_lock_unlock(&(ipc_sync->swap_exclusion_lock),
+				UNLOCK, "Failed to release swap_exclusion_lock");
 		ve_put_ipc_sync(ipc_sync);
 	}
 

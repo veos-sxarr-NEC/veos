@@ -19,11 +19,18 @@ Requires:	libved >= 2.1.0-1
 Requires:	velayout
 Requires:	protobuf-c log4c systemd-libs libuuid
 Requires:	libcap
-Requires:	procps-ng
-Requires:	protobuf-python
+Requires:	procps-ng bc
+
+
 Requires:	libdhash
 Requires(pre):	systemd glibc
 Requires(preun):	systemd glibc
+%if 0%{?rhel} == 8
+Requires:	python3-protobuf
+%else
+Requires:	protobuf-python
+%endif
+
 
 %description
 VEOS is a set of daemons and commands providing operating system
@@ -69,8 +76,22 @@ include them.
 %define _sysconfdir @sysconfdir@
 %define _localstatedir @localstatedir@
 
+%if 0%{?rhel} == 8
+%define _veos_py0  %{_prefix}/lib/python%{python3_version}/site-packages/*
+%else
+%define _veos_py0  %{_prefix}/lib/python%{python2_version}/site-packages/*
+%define _veos_py1  %{_prefix}/lib/python%{python2_version}/site-packages/*/*
+%endif
+
+
 %prep
 %setup -q
+%if 0%{?rhel} == 8
+pathfix.py -pn -i /usr/bin/python3 $RPM_BUILD_DIR/$RPM_PACKAGE_NAME-$RPM_PACKAGE_VERSION/scripts \
+	   $RPM_BUILD_DIR/$RPM_PACKAGE_NAME-$RPM_PACKAGE_VERSION/scripts/ve_release_resource.in \
+	   $RPM_BUILD_DIR/$RPM_PACKAGE_NAME-$RPM_PACKAGE_VERSION/scripts/ve_delete_process.in \
+	   $RPM_BUILD_DIR/$RPM_PACKAGE_NAME-$RPM_PACKAGE_VERSION/scripts/ve_release_remote_resource.in
+%endif
 
 %build
 %configure \
@@ -83,6 +104,8 @@ make %{?_smp_mflags}
 
 %install
 make install DESTDIR=$RPM_BUILD_ROOT
+sh -c "rm -f ${RPM_BUILD_ROOT}%{_libdir}/lib*.a \
+      ${RPM_BUILD_ROOT}%{_libdir}/lib*.la"
 
 %pre
 for dev in /dev/veslot*; do
@@ -151,8 +174,8 @@ fi
 # GPLv2+
 %{_sbindir}/*
 @ve_libexecdir@/*
-%{_prefix}/lib/python2.7/site-packages/*
-%{_prefix}/lib/python2.7/site-packages/*/*
+%{?_veos_py0}
+%{?_veos_py1}
 %{_libexecdir}/ve_coredump_helper
 %{_libexecdir}/ve_release_resource
 # LGPLv2+ and BSD and MIT
@@ -166,8 +189,6 @@ fi
 %files devel
 %doc
 %{_includedir}/*.h
-%{_libdir}/*.a
-%{_libdir}/*.la
 %{_libdir}/*.so
 
 %files headers

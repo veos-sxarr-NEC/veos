@@ -174,7 +174,7 @@ static int ve_sys_get_pci_sync_req(int veos_sock_fd, uint8_t syncnum)
 	if (msg_len != pseudo_veos_message__pack(&req_syncnum, msg_buff)) {
 		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
 				"Failed to pack for GET_PCI_SYNC message");
-		fprintf(stderr, "Failed to pack for GET_PCI_SYNC message\n");
+		fputs("Failed to pack for GET_PCI_SYNC message\n",stderr);
 		pseudo_abort();
 	}
 
@@ -182,7 +182,7 @@ static int ve_sys_get_pci_sync_req(int veos_sock_fd, uint8_t syncnum)
 	if (ret < msg_len) {
 		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
 				"Failed to send GET_PCI_SYNC request");
-		fprintf(stderr, "Failed to send GET_PCI_SYNC request\n");
+		fputs("Failed to send GET_PCI_SYNC request\n",stderr);
 		pseudo_abort();
 	}
 
@@ -223,7 +223,7 @@ static int ve_sys_get_pci_sync_recv(int veos_sock_fd, struct pcisval *val)
 	if (ret < 0) {
 		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
 				"Failed to receive GET_PCI_SYNC response");
-		fprintf(stderr, "Failed to receive GET_PCI_SYNC response\n");
+		fputs("Failed to receive GET_PCI_SYNC response\n",stderr);
 		pseudo_abort();
 	}
 
@@ -232,14 +232,12 @@ static int ve_sys_get_pci_sync_recv(int veos_sock_fd, struct pcisval *val)
 	if (pseudo_msg == NULL) {
 		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
 			"Failed to unpack for GET_PCI_SYNC response");
-		fprintf(stderr,
-			"Failed to unpack for GET_PCI_SYNC response\n");
+		fputs("Failed to unpack for GET_PCI_SYNC response\n",stderr);
 		pseudo_abort();
 	} else if (!(pseudo_msg->has_syscall_retval)) {
 		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
 			"Failed to get retval for GET_PCI_SYNC response");
-		fprintf(stderr,
-			"Failed to get retval for GET_PCI_SYNC response\n");
+		fputs("Failed to get retval for GET_PCI_SYNC response\n",stderr);
 		pseudo_abort();
 	}
 
@@ -256,24 +254,21 @@ static int ve_sys_get_pci_sync_recv(int veos_sock_fd, struct pcisval *val)
 	if (!(pseudo_msg->has_pseudo_msg)) {
 		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
 			"Failed to get message for GET_PCI_SYNC response");
-		fprintf(stderr,
-			"Failed to get message for GET_PCI_SYNC response\n");
+		fputs("Failed to get message for GET_PCI_SYNC response\n",stderr);
 		pseudo_abort();
 	}
 
 	if (pseudo_msg->pseudo_msg.data == NULL) {
 		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
 			"Failed to get data for GET_PCI_SYNC response");
-		fprintf(stderr,
-			"Failed to get data for GET_PCI_SYNC response\n");
+		fputs("Failed to get data for GET_PCI_SYNC response\n",stderr);
 		pseudo_abort();
 	}
 
 	if (sizeof(*val) != pseudo_msg->pseudo_msg.len) {
 		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
 		       "GET_PCI_SYNC response has invalid size message");
-		fprintf(stderr,
-			"GET_PCI_SYNC response has invalid size message\n");
+		fputs("GET_PCI_SYNC response has invalid size message\n",stderr);
 		pseudo_abort();
 	}
 	memcpy(val, pseudo_msg->pseudo_msg.data, pseudo_msg->pseudo_msg.len);
@@ -385,7 +380,7 @@ int ve_sys_set_user_reg(veos_handle *handle, uint64_t reg, uint64_t value)
 	/* abort on IPC error */
 	if (ve_set_user_reg(handle, regid, value, mask) != 0) {
 		PSEUDO_DEBUG("Failed to set user register");
-		fprintf(stderr, "Failed to set the user register\n");
+		fputs("Failed to set the user register\n",stderr);
 		/* FATAL ERROR: abort current process */
 		pseudo_abort();
 	} else
@@ -493,15 +488,15 @@ ssize_t ve_sys_get_ve_info(veos_handle *handle, char *name, char *buffer,
 		goto hndl_return;
 	}
 
-	if ((strlen(sysfs_path) + strlen(filename) + 1) >
-						(sizeof(filepath) - 1)) {
+	ret = snprintf(filepath, sizeof(filepath), "%s/%s", sysfs_path, filename);
+	/*  ret doesn't include null termination. */
+	if (ret < 0 || ret > (sizeof(filepath) - 1)) {
 		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
 						"filename is too long");
 		ret = -ENAMETOOLONG;
 		goto hndl_return;
-	}
 
-	snprintf(filepath, sizeof(filepath), "%s/%s", sysfs_path, filename);
+	}
 
 	VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_DEBUG, "filepath = %s",
 								filepath);
@@ -628,7 +623,7 @@ int ve_request_veos(veos_handle *handle,
 	msg_len = pseudo_veos_message__get_packed_size(&msg);
 	if (msg_len == 0) {
 		PSEUDO_ERROR("IPC message error(packed size)");
-		fprintf(stderr, err_str);
+		fputs(err_str,stderr);
 		pseudo_abort();
 	}
 	msg_buf = malloc(msg_len);
@@ -641,7 +636,7 @@ int ve_request_veos(veos_handle *handle,
 	ret = pseudo_veos_message__pack(&msg, msg_buf);
 	if (ret <= 0) {
 		PSEUDO_ERROR("IPC message error(pack)");
-		fprintf(stderr, err_str);
+		fputs(err_str,stderr);
 		pseudo_abort();
 	}
 
@@ -649,21 +644,21 @@ int ve_request_veos(veos_handle *handle,
 	ret = pseudo_veos_send_cmd(handle->veos_sock_fd, msg_buf, msg_len);
 	if (ret < 0) {
 		PSEUDO_ERROR("IPC message error(send cmd)");
-		fprintf(stderr, err_str);
+		fputs(err_str,stderr);
 		pseudo_abort();
 	}
 	recv_len = pseudo_veos_recv_cmd(handle->veos_sock_fd, recv_buf, 
 		MAX_PROTO_MSG_SIZE);
 	if (recv_len < 0) {
 		PSEUDO_ERROR("IPC message error(recv cmd)");
-		fprintf(stderr, err_str);
+		fputs(err_str,stderr);
 		pseudo_abort();
 	}
 	recv_msg = pseudo_veos_message__unpack(NULL, recv_len,
 			(const uint8_t *)recv_buf);
 	if (recv_msg == NULL) {
 		PSEUDO_ERROR("IPC message error(unpack)");
-		fprintf(stderr, err_str);
+		fputs(err_str,stderr);
 		pseudo_abort();
 	}
 

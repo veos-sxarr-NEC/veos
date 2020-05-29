@@ -102,9 +102,11 @@ enum swap_progress {
 struct ve_ipc_sync {
 	pthread_mutex_t ref_lock; /* Lock to protect ref_count and exit_status */
 	int ref_count;            /* Reference counter */
-	/* Lock to prevent overlap between ystem call processing in VEOS
-	 * and Swap-out/in */
-	pthread_rwlock_t handling_request_lock_task;
+	pthread_mutex_t swap_exclusion_lock; /* Lock to protect handling_request and swapping */
+	int handling_request;     /* The number of threads handling requests */
+	pthread_cond_t handling_request_cond; /* Condition variable to wait handling_request becomes 0 */
+	int swapping; /* The flag which is 1 while process is swapped by pps */
+	pthread_cond_t swapping_cond; /* Condition variable to wait swapping becomes 0 */
 };
 
 int veos_alloc_ppsbuf(size_t);
@@ -130,4 +132,6 @@ struct ve_ipc_sync *ve_alloc_ipc_sync(void);
 int is_ve_page_swappable(pgno_t pgno, struct ve_node_struct *vnode);
 void del_doing_swap_request(struct veos_swap_request_info *request);
 bool veos_check_pps_enable(void);
+void ve_swap_out_start(struct ve_ipc_sync *);
+void ve_swap_in_finish(struct ve_ipc_sync *);
 #endif

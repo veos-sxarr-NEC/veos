@@ -210,7 +210,7 @@ struct new_ve_proc {
 	int namespace_pid;	/*!< Namespace pid of VE process */
 	int core_id;		/*!< Core id of ve process */
 	int node_id;		/*!< Node id of ve process */
-	char exe_name[ACCT_COMM+1]; /*!< Binary name */
+	char exe_name[ACCT_COMM]; /*!< Binary name */
 	char sfile_name[S_FILE_LEN]; /*!< Syscall argument file */
 	uint64_t exec_path;	/*!< path of ve_exec */
 	bool traced_proc;       /*!< VE process is getting traced */

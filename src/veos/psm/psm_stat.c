@@ -204,12 +204,14 @@ int psm_rpm_handle_pidstat_req(int pid, struct velib_pidstat *pidstat)
 	int retval = -1;
 	struct ve_task_struct *tsk = NULL;
 	bool flag;
+	pid_t namespace_pid = -1;
 
 	VEOS_TRACE("Entering");
 	if (!pidstat)
 		goto hndl_return;
 
 	flag = pidstat->whole;
+	namespace_pid = pidstat->tgid;
 
 	memset(pidstat, 0, sizeof(struct velib_pidstat));
 
@@ -268,12 +270,16 @@ int psm_rpm_handle_pidstat_req(int pid, struct velib_pidstat *pidstat)
 			 tsk->start_time.tv_usec / MICRO_SECONDS));
 
 	/* VE process name */
-	strncpy(pidstat->cmd, tsk->ve_comm, sizeof(tsk->ve_comm));
+	memcpy(pidstat->cmd, tsk->ve_comm, strlen(tsk->ve_comm)+1);
 
 	/* Populate the stack pointer & instruction pointer */
 	pidstat->kstesp = tsk->p_ve_thread->SR[11];
 	pidstat->ksteip = tsk->p_ve_thread->IC;
-	pidstat->tgid = tsk->tgid;
+
+	if (namespace_pid == pid)
+		pidstat->tgid = tsk->tgid;
+	else
+		pidstat->tgid = tsk->group_leader->namespace_pid;
 
 	retval = 0;
 hndl_return:
@@ -637,7 +643,7 @@ int psm_rpm_handle_pidstatus(int pid, struct velib_pidstatus *pidstatus)
 	 */
 	pidstatus->nvcsw = tsk->nvcsw;
 	pidstatus->nivcsw = tsk->nivcsw;
-	strncpy(pidstatus->cmd, tsk->ve_comm, sizeof(tsk->ve_comm));
+	memcpy(pidstatus->cmd, tsk->ve_comm, strlen(tsk->ve_comm)+1);
 
 	/*Collect pending and blocked signals */
 	pidstatus->pending = tsk->pending.signal.__val[0];

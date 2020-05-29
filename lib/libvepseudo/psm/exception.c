@@ -31,9 +31,18 @@
 
 #include <sys/syscall.h>
 #include <asm/siginfo.h>
+#include <features.h>
+#if  __GLIBC_PREREQ(2,26)
+#define __siginfo_t_defined 1
+#define __sigevent_t_defined 1
+#define __sigval_t_defined 1
+#define _BITS_SIGINFO_CONSTS_H 1
+#define _BITS_SIGEVENT_CONSTS_H 1
+#else
 #define __have_siginfo_t 1
 #define __have_sigval_t 1
 #define __have_sigevent_t 1
+#endif
 
 #include <signal.h>
 #include "handle.h"
@@ -140,14 +149,13 @@ void ve_send_signal_req(pid_t tid, int signum, siginfo_t *signal_info
 	retval = pseudo_psm_send_signal_req(&ve_sig_info
 					, g_handle->veos_sock_fd);
 	if (0 > retval) {
-		WRITE(2, "failed to send signal request to veos\n", 39);
+		WRITE(2, "Failed to communicate with VEOS\n", 33);
 		pseudo_abort();
 	}
 
 	retval = pseudo_psm_recv_signal_ack(g_handle->veos_sock_fd);
 	if (0 > retval) {
-		WRITE(2, "failed to receive signal acknowledgement"
-				" from veos\n", 52);
+		WRITE(2, "Failed to communicate with VEOS\n", 33);
 		pseudo_abort();
 	}
 

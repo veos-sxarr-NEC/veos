@@ -41,7 +41,10 @@ def do_kill_process(line):
 
 def kill_process(devfile):
     output = subprocess.check_output([UDEVADM, 'info', '-q', 'path', devfile])
-    path = '/sys' + output.rstrip('\n') + '/task_id_all'
+    if sys.version_info[0] > 2:
+        path = '/sys' + output.rstrip(b'\n').decode('utf-8') + '/task_id_all'
+    else:
+        path = '/sys' + output.rstrip('\n') + '/task_id_all'
     while True:
         found = 0
         for line in open(path, 'r'):

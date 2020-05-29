@@ -1466,7 +1466,7 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 out:
 	if(VE_GROW_NO_ERR != grow_err)
 	{
-		PSEUDO_DEBUG(ve_grow_err_str[grow_err]);
+	        PSEUDO_DEBUG("%s",ve_grow_err_str[grow_err]);
 		fprintf(stderr, "Unable to grow stack\n");
 		pseudo_abort();
 	}

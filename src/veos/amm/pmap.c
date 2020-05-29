@@ -298,14 +298,14 @@ int valid_map_range(struct _psuedo_pmap *pmap,
 					tpmap[0].size = pmap[idx].size;
 					tpmap[0].inode = pmap[idx].inode;
 					tpmap[0].foo = pmap[idx].foo;
-					(void)strncpy(tpmap[0].perm,
+					(void)memcpy(tpmap[0].perm,
 							pmap[idx].perm,
-							sizeof(pmap[idx].perm));
-					(void)strncpy(tpmap[0].dev,
+						        strlen(pmap[idx].perm)+1);
+					(void)memcpy(tpmap[0].dev,
 							pmap[idx].dev,
-							sizeof(pmap[idx].dev));
-					(void)strncpy(tpmap[0].mapname, "[anon]",
-							sizeof("[anon]"));
+						        strlen(pmap[idx].dev)+1);
+					(void)memcpy(tpmap[0].mapname, "[anon]",
+						        sizeof("[anon]"));
 					if (fill_ve_pmap(tpmap, pvemap, 0)) {
 						VEOS_WARN(
 								"Record not inserted: %p - %p",
@@ -313,7 +313,7 @@ int valid_map_range(struct _psuedo_pmap *pmap,
 								(void *)tpmap[0].end);
 					}
 				}
-				(void)strncpy(pmap[idx].mapname, "[stack]",
+				(void)memcpy(pmap[idx].mapname, "[stack]",
 						sizeof("[stack]"));
 				pmap[idx].begin = aligned_addr;
 				flag = 2;
@@ -329,14 +329,14 @@ int valid_map_range(struct _psuedo_pmap *pmap,
 					tpmap[0].size = pmap[idx].size;
 					tpmap[0].inode = pmap[idx].inode;
 					tpmap[0].foo = pmap[idx].foo;
-					(void)strncpy(tpmap[0].perm,
+					(void)memcpy(tpmap[0].perm,
 							pmap[idx].perm,
-							sizeof(pmap[idx].perm));
-					(void)strncpy(tpmap[0].dev,
+						        strlen(pmap[idx].perm)+ 1);
+					(void)memcpy(tpmap[0].dev,
 							pmap[idx].dev,
-							sizeof(pmap[idx].dev));
-					(void)strncpy(tpmap[0].mapname, "[anon]",
-							sizeof("[anon]"));
+						        strlen(pmap[idx].dev)+ 1);
+					(void)memcpy(tpmap[0].mapname, "[anon]",
+						        sizeof("[anon]"));
 					if (fill_ve_pmap(tpmap, pvemap, 0)) {
 						VEOS_WARN(
 								"Record not inserted: %p - %p",
@@ -347,8 +347,8 @@ int valid_map_range(struct _psuedo_pmap *pmap,
 					break;
 				} else {
 					flag = 3;
-					(void)strncpy(pmap[idx].mapname, "[anon]",
-							sizeof("[anon]"));
+					(void)memcpy(pmap[idx].mapname, "[anon]",
+						     sizeof("[anon]"));
 				}
 			} else if (0 > retval) {
 				/* Enters if "end" address is invalid */
@@ -484,7 +484,7 @@ int insert_heap(struct _psuedo_pmap *pvemap,
 
 			ret = isheap(ptempobj->begin, tsk, pgmod);
 			if (!ret) {
-				(void)strncpy(ptempobj->mapname, "[heap]",
+				(void)memcpy(ptempobj->mapname, "[heap]",
 						sizeof("[heap]"));
 				VEOS_DEBUG("Heap %p - %p, %s, %s",
 						(void *)ptempobj->begin,

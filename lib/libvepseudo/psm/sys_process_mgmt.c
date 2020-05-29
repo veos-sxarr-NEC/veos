@@ -221,6 +221,53 @@ thread_cleanup:
 	return;
 }
 
+
+
+/**
+* @brief This function initiazes a lock which will be used to synchronize
+* request related to DMA(reading data from VE memory) and creating new
+* process(fork/vfork). Execution of both requests parallely leads to
+* memory curruption.
+*
+* @return abort on failure.
+*/
+void reinit_rwlock_to_sync_dma_fork()
+{
+	int ret = -1;
+	pthread_rwlockattr_t sync_fork_dma_attr;
+
+	ret = pthread_rwlockattr_init(&sync_fork_dma_attr);
+	if (ret) {
+		PSEUDO_ERROR("Failed to initialize attribute %s",
+				strerror(ret));
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
+
+	ret = pthread_rwlockattr_setkind_np(&sync_fork_dma_attr,
+			PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
+	if (ret) {
+		PSEUDO_ERROR("Failed to set rwlock attribute: %s",
+				strerror(ret));
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
+
+	ret = pthread_rwlock_init(&sync_fork_dma, &sync_fork_dma_attr);
+	if (ret) {
+		PSEUDO_ERROR("Failed to init rwlock %s", strerror(ret));
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
+
+	ret = pthread_rwlockattr_destroy(&sync_fork_dma_attr);
+	if (ret) {
+		PSEUDO_ERROR("Failed to destroy rwlock attribute: %s",
+				strerror(ret));
+	}
+}
+
+
 /**
  * @brief This function is invoked when VE process is exited.
  *
@@ -1062,6 +1109,14 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 			fprintf(stderr, "Internal resource usage error\n");
 			pseudo_abort();
 		}
+		retval = pthread_rwlock_destroy(&sync_fork_dma);
+		if (retval) {
+			PSEUDO_ERROR("failed to destroy write lock to"
+					" synchronize dma %s", strerror(retval));
+			fprintf(stderr, "Internal resource usage error\n");
+			pseudo_abort();
+		}
+		reinit_rwlock_to_sync_dma_fork();
 
 		/* After fork() re-initalize the syscall trap field in child */
 		sys_enter_trap = false;
@@ -1196,7 +1251,7 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 				goto hndl_fail1;
 			}
 			file_name = basename(sfile);
-			strncpy(ve_fork_info.sfile_name, file_name, S_FILE_LEN);
+			memcpy(ve_fork_info.sfile_name, file_name, strlen(file_name)+1);
 		}
 
 		/* prepare structure to be sent to PSM */

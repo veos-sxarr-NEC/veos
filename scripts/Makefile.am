@@ -24,6 +24,7 @@ install-exec-hook:
 ve_release_resource: $(srcdir)/ve_release_resource.in
 	$(edit) $< > $@
 
+
 ve_delete_process.py: $(srcdir)/ve_delete_process.in
 	$(edit) $< > $@
 

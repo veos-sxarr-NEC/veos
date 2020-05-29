@@ -166,8 +166,8 @@ ssize_t pseudo_veos_send_cmd(int socket_fd, void *buff, ssize_t max_len)
 				fprintf(stderr, "Error: %s\n", strerror(errno));
 				pseudo_abort();
 			} else {
-				PSEUDO_ERROR("Sending Command from Pseudo "
-					"to VEOS failed :%s", strerror(errno));
+				PSEUDO_ERROR("Failed to communicate with "
+                                                "veos: %s", strerror(errno));
 				fprintf(stderr, "Connection lost: %s\n",
 						strerror(errno));
 				pseudo_abort();
@@ -242,13 +242,13 @@ ssize_t pseudo_veos_recv_cmd(int sock_fd,
 
 	while ((ret = recv(sock_fd, buff, bufsize, 0)) == -1) {
 		if (errno == EINTR || errno == EAGAIN) {
-			PSEUDO_ERROR("Received Command from VEOS"
-					"to Pseudo failed :%s",
+			PSEUDO_ERROR("Failed to communicate with "
+                                                "veos: %s",
 					strerror(errno));
 			continue;
 		} else {
-			PSEUDO_ERROR("Received Command from VEOS"
-					"to Pseudo failed :%s",
+			PSEUDO_ERROR("Failed to communicate with "
+                                                "veos: %s",
 					strerror(errno));
 			fprintf(stderr, "Connection lost: %s\n",
 					strerror(errno));

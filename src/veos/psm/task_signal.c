@@ -637,7 +637,38 @@ void ve_do_group_action(struct ve_task_struct *p_ve_task, int flag, int sig)
 	}
 	VEOS_TRACE("Exiting");
 }
+# define __sigmask_internal(sig)\
+	(((unsigned long int) 1) << (((sig) - 1) % (8 * sizeof (unsigned long int))))
+# define __sigword_internal(sig) (((sig) - 1) / (8 * sizeof (unsigned long int)))
+/**
+* @brief Add the internal signals to the set.
+*
+* @param[in] __set_internal provided set. 
+* @param[in] __sig_internal signal number to be added.
+*
+* @return -1 on failure and 0 on success.
+*/
+int sigaddset_internal_sig(__sigset_t *__set_internal, int __sig_internal)
+{
+	unsigned long int __mask_internal = __sigmask_internal (__sig_internal);
+	unsigned long int __word_internal = __sigword_internal (__sig_internal);
+	return (__set_internal->__val[__word_internal] |= __mask_internal);
+}
 
+/**
+* @brief Delete the internal signals to the set.
+*
+* @param[in] __set_internal provided set. 
+* @param[in] __sig_internal signal number to be deleted.
+*
+* @return -1 on failure and 0 on success.
+*/
+int sigdelset_internal_sig(__sigset_t *__set_internal, int __sig_internal)
+{
+	unsigned long int __mask_internal = __sigmask_internal (__sig_internal);
+	unsigned long int __word_internal = __sigword_internal (__sig_internal);
+	return (__set_internal->__val[__word_internal] &= ~__mask_internal);
+}
 /**
 * @brief Sends the generated signal to the VE process.
 *
@@ -764,7 +795,15 @@ int psm_send_ve_signal(struct ve_task_struct *ve_task_curr,
 
 	/* Add the signal in the signal set for this task
 	 * */
-	sigaddset(&ve_pending->signal, signum);
+	if( (signum == SIGRTMIN - 1) || (signum == SIGRTMIN - 2))
+	{
+		VEOS_DEBUG("ADDED Internal Signal\n");
+		sigaddset_internal_sig(&ve_pending->signal, signum);
+	}
+	else
+	{
+		sigaddset(&ve_pending->signal, signum);
+	}
 
 	/* Recalculate SIGNAL PENDING flag
 	 * */
@@ -915,7 +954,15 @@ void ve_collect_signal(siginfo_t *ve_siginfo,
 	 * */
 	VEOS_DEBUG("Delete signum %d from pending sigset",
 			sig);
-	sigdelset(&pending->signal, sig);
+	if( (sig == SIGRTMIN - 1) || (sig == SIGRTMIN - 2))
+	{
+		VEOS_DEBUG("DELETED internal signal\n");
+		sigdelset_internal_sig(&pending->signal, sig);
+	}
+	else
+	{
+		sigdelset(&pending->signal, sig);
+	}
 
 	if (first) {
 more_pending:

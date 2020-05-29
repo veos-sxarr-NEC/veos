@@ -2,12 +2,15 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([veos], [2.4.3])
+AC_INIT([veos], [2.5.0])
 AC_CONFIG_SRCDIR([lib/libvepseudo/psm/exception.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([./build-aux])
 AM_INIT_AUTOMAKE([foreign -Wall -Werror])
-AM_PATH_PYTHON
+
+RHEL_VERSION=$(cat /etc/redhat-release |  sed -e 's/.*\s\(@<:@0-9@:>@\)\..*/\1/')
+PY_V=$(if test $RHEL_VERSION -eq 8 ; then echo 3; else echo 2; fi )
+AM_PATH_PYTHON([$PY_V])
 
 AC_ARG_WITH([release-id], [AS_HELP_STRING([--with-release-id],
 	    [Specify release id])],
@@ -203,4 +206,7 @@ AC_CONFIG_FILES([Makefile
 		debian/veos-libvepseudo-headers.install
 		debian/veos-libveptrace.install
 		debian/veos-musl-headers.install])
+
+
 AC_OUTPUT
+

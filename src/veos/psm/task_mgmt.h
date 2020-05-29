@@ -154,7 +154,7 @@ enum swap_status {
 struct veos_swap_request_info {
 	struct list_head swap_info; /*!< list head */
 	pid_t pid_array[MAX_SWAP_PROCESS + 1]; /*!< process id */
-	/* To release handling_request_lock_task even if ve_task_struct is
+	/* To set 0 to ve_ipc_sync->swapping even if ve_task_struct is
 	 * released */
 	struct ve_ipc_sync *ipc_sync_array[MAX_SWAP_PROCESS + 1];
 	int pid_number; /*!< length of pid_array */
@@ -482,7 +482,7 @@ struct ve_task_struct {
 	struct list_head swapped_pages; /*!< List of ATB/DMAATB corresponding
 					 * to VE memory which was deallocated
 					 * in Swap-out */
-	struct ve_ipc_sync *ipc_sync; /*!< Structure wihch has handling_request_lock_task.
+	struct ve_ipc_sync *ipc_sync; /*!< Structure wihch has handling_request and swapping.
 				       * Don't access to this structure directly,
 				       * have to use ve_get_ipc_sync().
 				       */

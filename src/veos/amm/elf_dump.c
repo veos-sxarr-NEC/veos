@@ -52,8 +52,8 @@ void create_ehdr(char *dumpImage,
 		int count)
 {
 	char buf[] = {0x7f, 'E', 'L', 'F', 2, 1, 1, 0, 0, 0, 16};
-	(void)strncpy((char *)((Elf64_Ehdr *)dumpImage)->e_ident,
-			buf, sizeof(buf));
+	(void)memcpy((char *)((Elf64_Ehdr *)dumpImage)->e_ident,
+			buf, strlen(buf)+1);
 	((Elf64_Ehdr *)dumpImage)->e_type = ET_CORE;
 	((Elf64_Ehdr *)dumpImage)->e_machine = EM_VE;
 	((Elf64_Ehdr *)dumpImage)->e_version = EV_CURRENT;
