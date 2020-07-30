@@ -19,7 +19,7 @@ Requires:	libved >= 2.1.0-1
 Requires:	velayout
 Requires:	protobuf-c log4c systemd-libs libuuid
 Requires:	libcap
-Requires:	procps-ng bc
+Requires:	procps-ng
 
 
 Requires:	libdhash

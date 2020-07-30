@@ -16,6 +16,7 @@ libpseudopsm_la_SOURCES = \
 libpseudopsm_la_CFLAGS = \
 	-g -Wall -Werror -DDEBUG -D_GNU_SOURCE -std=gnu99 \
 	-I$(top_srcdir)/src/veos/dma \
+	-I$(top_srcdir)/src/veos/main \
 	-I$(top_srcdir)/src/pseudo \
 	-I$(srcdir)/../common \
 	-I$(srcdir)/../amm \

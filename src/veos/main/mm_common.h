@@ -119,6 +119,10 @@ struct ve_mm_struct {
         uint64_t auxv_size;	/* aux of VE */
 	enum mempolicy mem_policy;         /* memory policy*/
 	enum swap_progress dmaatb_progress;
+	struct list_head swapped_pages; /*!< List of ATB/DMAATB corresponding
+					 * to VE memory which was deallocated
+					 * in Swap-out */
+
 };
 
 

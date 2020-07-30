@@ -74,7 +74,7 @@ static int pgmode_to_page_size(int pgmode)
 	case PG_HP:
 		return 64 * 1024 * 1024;
 	default:
-		VEMM_AGENT_ERROR("page mode 0x%x is invalid.", pgmode);
+		VEMM_AGENT_DEBUG("page mode 0x%x is invalid.", pgmode);
 		return -1;
 	}
 }
@@ -129,7 +129,7 @@ int veos_vemm_acquire(pid_t pid, uint64_t encoded_vaddr, size_t size)
 	VEMM_AGENT_DEBUG("pid=%d, addr=%p: page size = %d", (int)pid,
 		(void *)start_vaddr, page_size);
 	if (page_size < 0) {
-		VEMM_AGENT_ERROR("cannot get page size: pid=%d, addr=%p",
+		VEMM_AGENT_DEBUG("cannot get page size: pid=%d, addr=%p",
 			(int)pid, (void *)start_vaddr);
 		return 0;
 	}
@@ -141,7 +141,7 @@ int veos_vemm_acquire(pid_t pid, uint64_t encoded_vaddr, size_t size)
 		VEMM_AGENT_DEBUG("pid=%d, addr=%p: page size = %d",
 			(int)pid, (void *)addr, page_size);
 		if (page_size <= 0) {
-			VEMM_AGENT_ERROR("cannot get page size: "
+			VEMM_AGENT_DEBUG("cannot get page size: "
 				"pid=%d, addr=%p", (int)pid, (void *)addr);
 			return 0;
 		}
@@ -149,7 +149,7 @@ int veos_vemm_acquire(pid_t pid, uint64_t encoded_vaddr, size_t size)
 			min_page_size = page_size;
 
 	}
-	/* check PCIATB page size */
+	/* get PCIATB page size */
 	int pciatb_page_size = veos_ived_get_pciatb_pgmode(pid);
 
 	VEMM_AGENT_DEBUG("PCIATB page size for PID %d = %d", (int)pid,
@@ -157,11 +157,6 @@ int veos_vemm_acquire(pid_t pid, uint64_t encoded_vaddr, size_t size)
 	if (pciatb_page_size < 0) {
 		VEMM_AGENT_ERROR("failed to get PCIATB page size (pid=%d)",
 			pid);
-		return 0;
-	}
-	if (min_page_size % pciatb_page_size != 0) {
-		VEMM_AGENT_ERROR("area (size=%ld) cannot be mapped", size);
-		VEMM_AGENT_ERROR("PCIATB page size = %d", pciatb_page_size);
 		return 0;
 	}
 	VEMM_AGENT_TRACE("%s() returns %d", __func__, pciatb_page_size);

@@ -1,5 +1,26 @@
-/*
- * This file might be merged into other PPS files.
+
+/**
+ * Copyright (C) 2019-2020 NEC Corporation
+ * This file is part of the VEOS.
+ *
+ * The VEOS is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * The VEOS is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public
+ * License along with the VEOS; if not, see
+ * <http://www.gnu.org/licenses/>.
+ */
+
+/**
+ * @file ve_swap_in.c
+ * @brief PPS swap-in functions in VEOS
  */
 
 #include <stdio.h>
@@ -77,7 +98,7 @@ veos_pps_do_restore_memory_content(uint64_t page_start,
 				VE_DMA_VEMAA, 0, page_start, pgsz);
 	if (dma_status != VE_DMA_STATUS_OK) {
 		PPS_ERROR(cat_os_pps, "Failed to restore VE memory(0x%lx)"
-				" content from PPS buffer(0x%lx) due to %d",
+				" content from buffer(0x%lx) due to %d",
 				page_start, (uint64_t)buf_page, dma_status);
 		PPS_TRACE(cat_os_pps, "Out %s", __func__);
 		return -1;
@@ -86,6 +107,43 @@ veos_pps_do_restore_memory_content(uint64_t page_start,
 	PPS_TRACE(cat_os_pps, "Out %s", __func__);
 	return 0;
 }
+
+/**
+ * @brief Transfer saved content of VE page to new VE page.
+ *
+ * @param[in] page_start Start address of new VE page
+ * @param[in] pgsz Page size of new VE page
+ * @param[in] buf_page Pointer to PPS buffer pages which stores saved content
+ * of VE page
+ *
+ * @retval 0 on success,
+ * @retval -1 on Failure.
+ *
+ * @note Don't acquire ve_page_node_lock before invoking this.
+ */
+static int
+veos_pps_do_restore_file_content(uint64_t page_start, size_t pgsz, void *buf,
+								off_t offset)
+{
+	struct ve_node_struct *vnode = VE_NODE(0);
+	int read_ret = -1;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	read_ret = pread(vnode->pps_file.fd, buf, pgsz, offset);
+	if (read_ret != pgsz) {
+		PPS_ERROR(cat_os_pps,
+		"Failed to read data from PPS file due to %s", strerror(errno));
+		return -1;
+	}
+
+	if (veos_pps_do_restore_memory_content(page_start, pgsz, buf) != 0)
+		return -1;
+
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return 0;
+}
+
 
 /**
  * @brief This function allocates a new VE page in Swap-in.
@@ -115,33 +173,11 @@ allocate_new_ve_page(uint64_t count, pgno_t *map, int pgmod,
 {
 	int retval = -1;
 	int ret;
-	int pret = 0;
-	struct ve_node_struct *vnode = VE_NODE(0);
-	struct ve_mm_struct *mm = group_leader->p_ve_mm;
 
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
 
 	ret = alloc_ve_pages(1, map, pgmod, mempolicy, numa_node, from_node);
 	if (ret == -ENOMEM) {
-		pthread_mutex_lock_unlock(&(mm->thread_group_mm_lock), UNLOCK,
-				"Failed to release thread_group_mm_lock");
-		pthread_mutex_lock_unlock(&(vnode->swap_request_pids_lock),
-				LOCK, "Failed to aqcuire swap_request lock");
-		if (!vnode->resource_freed) {
-			pret = pthread_cond_wait(&(vnode->
-					swap_request_pids_cond),
-					&(vnode->swap_request_pids_lock));
-			vnode->resource_freed = false;
-		}
-		pthread_mutex_lock_unlock(&(vnode->swap_request_pids_lock),
-				UNLOCK, "Failed to release swap_request lock");
-		pthread_mutex_lock_unlock(&(mm->thread_group_mm_lock), LOCK,
-				"Failed to release thread_group_mm_lock");
-		if (pret != 0) {
-			PPS_ERROR(cat_os_pps, "Wait notice is failed due to %s",
-								strerror(pret));
-			goto hndl_return;
-		}
 		if (is_process_veos_terminate(group_leader, "Swap-in")) {
 			retval = -PPS_INTER_TERM;
 			goto hndl_return;
@@ -181,8 +217,9 @@ veos_restore_registered_memory(struct ve_task_struct *group_leader,
 				struct ve_swapped_virtual *vrt, size_t pgsize)
 {
 	int retval = 0;
-	int pgmod, from_node, ret, i;
+	int pgmod, from_node, numa_node, ret, i;
 	void *buf_page;
+	off_t offset;
 	uint64_t page_start;
 	pgno_t pno;
 	size_t pgsz;
@@ -210,7 +247,9 @@ veos_restore_registered_memory(struct ve_task_struct *group_leader,
 	pno = vrt->phy->pno;
 	if (pno == -1) {
 		buf_page = vrt->phy->buf_page;
+		offset = vrt->phy->file_offset;
 		pgsz = vrt->phy->pgsz;
+		numa_node = vrt->phy->numa_node;
 
 		/*
 		 * In this case, vrt->phy is not changed, because Swap-in
@@ -220,8 +259,8 @@ veos_restore_registered_memory(struct ve_task_struct *group_leader,
 				UNLOCK, "Failed to release ve_pages_node_lock");
 
 		retval = allocate_new_ve_page(1, &pno, pgmod,
-			group_leader->p_ve_mm->mem_policy,
-			group_leader->numa_node, &from_node, group_leader);
+					group_leader->p_ve_mm->mem_policy,
+					numa_node, &from_node, group_leader);
 		if (retval != 0)
 			goto hndl_return;
 		page_start = pbaddr(pno, PG_2M);
@@ -231,8 +270,17 @@ veos_restore_registered_memory(struct ve_task_struct *group_leader,
 		pthread_mutex_lock_unlock(&(group_leader->p_ve_mm->
 				thread_group_mm_lock), UNLOCK,
 				"Failed to release thread_group_mm_lock");
-		retval = veos_pps_do_restore_memory_content(page_start, pgsz,
-								buf_page);
+
+		if (offset != -1) {
+ 			PPS_DEBUG(cat_os_pps, "swap in from file, offset is %ld",
+									offset);
+			retval = veos_pps_do_restore_file_content(page_start,
+				pgsz, vnode->pps_file_transfer_buffer, offset);
+		} else {
+			PPS_DEBUG(cat_os_pps, "swap in from PPS buffer");
+			retval = veos_pps_do_restore_memory_content(page_start,
+								pgsz, buf_page);
+		}
 		pthread_mutex_lock_unlock(&(group_leader->p_ve_mm->
 				thread_group_mm_lock), LOCK,
 				"Failed to acquire thread_group_mm_lock");
@@ -244,7 +292,6 @@ veos_restore_registered_memory(struct ve_task_struct *group_leader,
 				UNLOCK, "Failed to release ve_pages_node_lock");
 			goto hndl_return;
 		}
-
 		VE_PAGE(vnode, pno)->perm = vrt->phy->perm;
 		VE_PAGE(vnode, pno)->flag = vrt->phy->flag;
 		VE_PAGE(vnode, pno)->private_data = vrt->phy->private_data;
@@ -254,30 +301,38 @@ veos_restore_registered_memory(struct ve_task_struct *group_leader,
 		vrt->phy->pgsz = VE_PAGE(vnode, pno)->pgsz;
 		vrt->phy->flag = 0;
 		vrt->phy->buf_page = NULL;
-		veos_pps_free_buf_page(buf_page, pgsz, vrt->phy->numa_node);
+		vrt->phy->file_offset = -1;
+		if(buf_page != NULL)
+			veos_pps_free_buf_page(buf_page, pgsz, vrt->phy->numa_node);
+		if(offset != -1)
+			veos_pps_free_file_offset((void *)offset, pgsz,
+							vrt->phy->numa_node);
 		vrt->phy->numa_node = -1;
-
 		VE_PAGE(vnode, pno)->swapped_info = vrt->phy;
 		is_new_mem_alloc = true;
 	}
 	/* Increment ref_cnt of VE page */
 	__sync_fetch_and_add(&vnode->ve_pages[pno]->ref_count, 1);
-
 	VE_PAGE(vnode, pno)->swapped_info->ref_cnt--;
 	if (VE_PAGE(vnode, pno)->swapped_info->ref_cnt == 0) {
 		free(VE_PAGE(vnode, pno)->swapped_info);
 		VE_PAGE(vnode, pno)->swapped_info = NULL;
 	}
+	if (vnode->partitioning_mode == 1) {
+		numa_node = (int)paddr2mpnum(pbaddr(pno, PG_2M),
+					numa_sys_info.numa_mem_blk_sz,
+					numa_sys_info.first_mem_node);
+	} else {
+		numa_node = 0;
+	}
 	pthread_mutex_lock_unlock(&(vnode->ve_pages_node_lock),
 				UNLOCK, "Failed to release ve_pages_node_lock");
-
 	if (is_new_mem_alloc) {
 		ret = amm_update_rss_swapin(VE_PAGE(vnode, pno));
 		if (ret != 0)
 			PPS_DEBUG(cat_os_pps, "Failed to amm_update_rss_swapin"
 						" due to %s", strerror(-ret));
 	}
-
 	if (vrt->kind == PPS_VIRT_DMAATB) {
 		PPS_DEBUG(cat_os_pps, "DMAATB[%d][%d] for Page %ld",
 						vrt->dir, vrt->ent, pno);
@@ -294,11 +349,20 @@ veos_restore_registered_memory(struct ve_task_struct *group_leader,
 				atb[i].entry[vrt->dir][vrt->ent]));
 			pg_setpb(&(group_leader->p_ve_mm->
 				atb[i].entry[vrt->dir][vrt->ent]), pno, PG_2M);
+			if ((vnode->partitioning_mode == 1) &&
+							(numa_node == i)) {
+				pg_unsetbypass(&(group_leader->p_ve_mm->
+					atb[i].entry[vrt->dir][vrt->ent]));
+			} else if ((vnode->partitioning_mode == 1) &&
+							(numa_node != i)) {
+				pg_setbypass(&(group_leader->p_ve_mm->
+					atb[i].entry[vrt->dir][vrt->ent]));
+			}
+			/* Don't Update cache baypass bit when Normal mode */
 		}
 	}
 	list_del(&(vrt->pages));
 	free(vrt);
-
 hndl_return:
 	PPS_TRACE(cat_os_pps, "Out %s", __func__);
 	return retval;
@@ -321,7 +385,6 @@ static int
 get_new_dimatb_dir(uint64_t vehva, struct ve_task_struct *tsk)
 {
 	int newdir;
-	int ret = 0;
 	struct ve_task_struct *group_leader = tsk->group_leader;
 	struct ve_node_struct *vnode = VE_NODE(0);
 
@@ -334,22 +397,6 @@ get_new_dimatb_dir(uint64_t vehva, struct ve_task_struct *tsk)
 					"Failed to release node dmaatb lock");
 		pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock,
 			UNLOCK, "Failed to release thread-group-mm-lock");
-		pthread_mutex_lock_unlock(&(vnode->swap_request_pids_lock),
-				LOCK, "Failed to aqcuire swap_request lock");
-		if (!vnode->resource_freed) {
-			ret = pthread_cond_wait(&(vnode->
-					swap_request_pids_cond),
-					&(vnode->swap_request_pids_lock));
-			vnode->resource_freed = false;
-		}
-		pthread_mutex_lock_unlock(&(vnode->swap_request_pids_lock),
-				UNLOCK, "Failed to release swap_request lock");
-		if (ret != 0) {
-			PPS_ERROR(cat_os_pps, "Wait notice is failed due to %s",
-								strerror(ret));
-			newdir = -1;
-			goto hndl_return;
-		}
 		if (is_process_veos_terminate(group_leader, "Swap-in")) {
 			newdir = -PPS_INTER_TERM;
 			goto hndl_return;
@@ -430,7 +477,6 @@ allocate_new_dmaatb_dir(struct ve_task_struct *tsk)
 	 * If not, dir may not be changed.
 	 */
 	invalidate_dmaatb(&new_process_soft_copy);
-hndl_retry:
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock,
 				LOCK, "Failed to acquire thread-group-mm-lock");
 	for(old_dir = vnode->nr_avail_cores; old_dir < DMAATB_DIR_NUM;
@@ -459,8 +505,6 @@ hndl_retry:
 		if (retval < 0) {
 			/* In thias case, get_new_dimatb_dir() Released
 			 * dmaatb_node_lock and thread_group_mm_lock */
-			if (retval == -PPS_ALLOC_RETRY)
-				goto hndl_retry;
 			cleanup_allocate_dirs(new_allocate_dirs);
 			goto hndl_return;
 		}
@@ -477,7 +521,7 @@ hndl_retry:
 				UNLOCK, "Failed to release node dmaatb lock");
 
 		memcpy(&(new_process_soft_copy.dir[new_dir]),
-		       &(tsk->p_ve_mm->dmaatb.dir[old_dir]), sizeof(uint64_t));
+			&(tsk->p_ve_mm->dmaatb.dir[old_dir]), sizeof(uint64_t));
 		memcpy(new_process_soft_copy.entry[new_dir],
 				tsk->p_ve_mm->dmaatb.entry[old_dir],
 				sizeof(uint64_t) * DMAATB_ENTRY_MAX_SIZE);
@@ -551,13 +595,12 @@ veos_swap_in_atb(struct ve_task_struct *tsk, size_t pgsize)
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
 	PPS_DEBUG(cat_os_pps, "Swapping-in ATB");
 
-hndl_retry:
 	pthread_mutex_lock_unlock(&(tsk->group_leader->p_ve_mm->
 			thread_group_mm_lock), LOCK,
 			"Failed to aqcuire hread_group_mm_lock");
 
 	/* Pick one information */
-	list_for_each_safe(p, n, &(tsk->group_leader->swapped_pages)) {
+	list_for_each_safe(p, n, &(tsk->p_ve_mm->swapped_pages)) {
 		PPS_DEBUG(cat_os_pps, "Pick up one info");
 		tmp = list_entry(p, struct ve_swapped_virtual, pages);
 		/* Check information type */
@@ -574,7 +617,8 @@ hndl_retry:
 				if (ret == -PPS_ALLOC_RETRY) {
 					PPS_DEBUG(cat_os_pps,
 						"Retry to restore memory");
-					goto hndl_retry;
+					retval = -PPS_ALLOC_RETRY;
+					goto hndl_return;
 				}
 				PPS_DEBUG(cat_os_pps,
 					"Failed to restore memory and ATB");
@@ -625,7 +669,6 @@ veos_swap_in_dmaatb(struct ve_task_struct *tsk)
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
 	PPS_DEBUG(cat_os_pps, "Swapping-in DMAATB");
 
-hndl_retry:
 	/* Update Process soft copy.
 	 * VE memory which are registered with DMAATB may be changed after
 	 * Swap-in.
@@ -636,15 +679,13 @@ hndl_retry:
 		pthread_mutex_lock_unlock(&(mm->thread_group_mm_lock), LOCK,
 				"Failed to acquire thread_group_mm_lock");
 		list_for_each_entry_safe(vrt, tmp,
-				&(group_leader->swapped_pages), pages) {
+			&(group_leader->p_ve_mm->swapped_pages), pages) {
 			retval = veos_restore_registered_memory(
 						group_leader, vrt, pasizea[i]);
 			pthread_mutex_lock_unlock(&(mm->thread_group_mm_lock),
 				UNLOCK,
 				"Failed to release thread_group_mm_lock");
 			if (retval != 0) {
-				if (retval == -PPS_ALLOC_RETRY)
-					goto hndl_retry;
 				goto hndl_return;
 			}
 			if (is_process_veos_terminate(
@@ -694,7 +735,7 @@ is_process_veos_terminate(struct ve_task_struct *tsk, char *kind)
 
 	/* Check process */
 	exit_status = get_task_exit_status(tsk);
-	if (exit_status != 0) {
+	if (exit_status == EXITING) {
 		PPS_INFO(cat_os_pps,
 			"Process is terminating, so %s is canceled", kind);
 		retval = true;
@@ -743,6 +784,8 @@ ve_do_swapin(struct ve_task_struct *tsk)
 	ret = veos_swap_in_atb(tsk, PAGE_SIZE_64MB);
 	if (ret == -PPS_INTER_TERM) {
 		goto hndl_return;
+	} else if (ret == -PPS_ALLOC_RETRY) {
+		goto hndl_retry;
 	} else if  (ret != 0) {
 		PPS_ERROR(cat_os_pps, "Failed to restore 64MB memory and ATB, "
 					"kill %d", tsk->group_leader->pid);
@@ -751,6 +794,8 @@ ve_do_swapin(struct ve_task_struct *tsk)
 	ret = veos_swap_in_atb(tsk, PAGE_SIZE_2MB);
 	if (ret == -PPS_INTER_TERM) {
 		goto hndl_return;
+	} else if (ret == -PPS_ALLOC_RETRY) {
+		goto hndl_retry;
 	} else if  (ret != 0) {
 		PPS_ERROR(cat_os_pps, "Failed to restore 2MB memory and ATB, "
 					"kill %d", tsk->group_leader->pid);
@@ -766,6 +811,8 @@ ve_do_swapin(struct ve_task_struct *tsk)
 		 * Process termination or VEOS termination Interrupt
 		 */
 		goto hndl_return;
+	} else if (ret == -PPS_ALLOC_RETRY) {
+		goto hndl_retry;
 	} else if (ret != 0) {
 		PPS_ERROR(cat_os_pps, "Failed to restore DMAATB, "
 					"kill %d", tsk->group_leader->pid);
@@ -793,6 +840,11 @@ ve_do_swapin(struct ve_task_struct *tsk)
 hndl_return:
 	PPS_DEBUG(cat_os_pps, "Swap-in against %d finishes retval is %d", pid,
 			retval);
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return retval;
+
+hndl_retry:
+	retval = ret;
 	PPS_TRACE(cat_os_pps, "Out %s", __func__);
 	return retval;
 }
@@ -867,7 +919,7 @@ veos_ve_swapin_req(pid_t *pids)
 					thread_group) {
 			/* Check status and sub-status */
 			if (!(((tmp->ve_task_state == STOP) ||
-			      (tmp->ve_task_state == ZOMBIE)) &&
+				(tmp->ve_task_state == ZOMBIE)) &&
 				((tmp->sstatus == SWAPPING_OUT) ||
 				(tmp->sstatus == SWAPPED_OUT)))) {
 				PPS_DEBUG(cat_os_pps, "Checking status and "
@@ -892,7 +944,8 @@ veos_ve_swapin_req(pid_t *pids)
 
 		if (!to_next_pid) {
 			/* Check status and sub-status */
-			if ((group_leader->ve_task_state != STOP) ||
+			if (((group_leader->ve_task_state != ZOMBIE) &&
+				(group_leader->ve_task_state != STOP)) ||
 				((group_leader->sstatus != SWAPPING_OUT) &&
 				(group_leader->sstatus != SWAPPED_OUT))) {
 				PPS_DEBUG(cat_os_pps,

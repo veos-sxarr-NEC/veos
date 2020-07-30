@@ -66,7 +66,7 @@
 #define VE_ST_UNAVAILABLE 4	/*value of ve_state when it is unavailable as specified in vesysinit*/
 
 __thread sigset_t ve_proc_sigmask;
-__thread veos_handle *g_handle;
+__thread veos_handle *g_handle = NULL;
 __thread struct _ve_page_info ve_page_info;
 
 struct tid_info global_tid_info[VEOS_MAX_VE_THREADS];
@@ -121,7 +121,7 @@ void pseudo_abort()
 	act.sa_handler = SIG_DFL;
 	sigaction(SIGABRT, &act, NULL);
 	memset(&buf, -1, sizeof(buf));
-
+	if(g_handle){
 	node_num = get_ve_node_num(g_handle->veos_sock_name);
 	const char *sysfs_path = vedl_get_sysfs_path(g_handle->ve_handle);
 	if(sysfs_path){
@@ -161,6 +161,8 @@ void pseudo_abort()
 	} else
 		PSEUDO_ERROR("Failed to get sysfs path for node %d: %s",
 						node_num, strerror(errno));
+	} else
+		PSEUDO_DEBUG("VEOS handle is not initialized");
 
 	/* Abort Pseudo Process */
 err_abort:
@@ -1225,7 +1227,6 @@ int main(int argc, char *argv[], char *envp[])
 		PSEUDO_ERROR("VEOS request error");
 		PSEUDO_DEBUG("Failed to send NEW VE PROC request to veos,"
 				"return value %d", retval);
-		veos_handle_free(handle);
 		close_syscall_args_fille(ret, sfile_name );
 		fprintf(stderr, "VE process setup failed\n");
 		pseudo_abort();
@@ -1257,7 +1258,6 @@ int main(int argc, char *argv[], char *envp[])
 			PSEUDO_DEBUG("Failed to create VE process, return "
 					"value %d", retval);
 			fprintf(stderr, "VE process setup failed\n");
-			veos_handle_free(handle);
 			close_syscall_args_fille(ret, sfile_name );
 			pseudo_abort();
 		}

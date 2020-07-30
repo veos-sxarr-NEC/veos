@@ -485,6 +485,21 @@ struct ve_rusage_info {
 };
 
 /**
+* @brief times structure for VE process
+*/
+struct ve_times {
+	struct timeval tms_utime;/*!< user CPU time used */
+	struct timeval tms_cutime;/*!< user CPU time used by the childrens */
+	struct timeval uptime;/*!< Uptime for the node */
+};
+
+/* @brief pid: PID of a process whose times is required
+ */
+struct ve_times_info {
+	pid_t pid;		/*!< stores PID of process for times */
+};
+
+/**
 * @brief Clock info for VE process
 */
 struct ve_clockinfo {
@@ -654,6 +669,10 @@ enum pseudo_veos_msg_id {
 	CMD_VHSHM,
 	MAP_DMADES,
 	UNMAP_DMADES,
+	RPM_QUERY_COMPT,
+	NEW_VE_PROC_COMPT,
+	GET_TIMES,
+	GET_VEOS_PID,
 	PSEUDO_VEOS_MAX_MSG_NUM,
 	CMD_INVALID = -1,
 };

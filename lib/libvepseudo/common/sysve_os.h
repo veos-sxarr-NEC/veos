@@ -33,5 +33,6 @@ int ve_sys_set_user_reg(veos_handle *, uint64_t, uint64_t);
 ssize_t ve_sys_get_ve_info(veos_handle *, char *, char *, size_t);
 int ve_sys_map_dmades(veos_handle *, uint64_t * ,uint64_t *);
 int ve_sys_unmap_dmades(veos_handle *, uint64_t );
+int ve_sys_get_veos_pid(veos_handle *);
 
 #endif

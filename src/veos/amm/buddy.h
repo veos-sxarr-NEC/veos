@@ -120,4 +120,5 @@ void veos_dump_ve_pages(void);
 size_t get_size_to_be_free(size_t extra_sz, int order, int count);
 size_t calc_free_sz(struct buddy_mempool *mp, int pgmod);
 size_t calc_allocated_sz(struct buddy_mempool *mp);
+int check_free_buddy(struct buddy_mempool *mp, size_t size);
 #endif

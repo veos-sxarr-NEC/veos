@@ -47,6 +47,7 @@
 
 int nr_thrds = 0;
 pthread_spinlock_t nr_thrds_lock;
+__thread int prefered_core = 0;
 
 /**
  * @brief Handling of failure for veos handler
@@ -201,6 +202,7 @@ int pseudo_proc_veos_handler(veos_thread_arg_t *pti)
 		veos_abort("Failed to release relocate lock");
 	}
 	if (ve_task != NULL) {
+		prefered_core = ve_task->core_id;
 		if (ve_task->group_leader->pid == host_pid)
 			pid_checked = true;
 		ipc_sync = ve_get_ipc_sync(ve_task);

@@ -186,3 +186,43 @@ hndl_return:
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
 	return ret;
 }
+
+int veos_handle_get_veos_pid_req(veos_thread_arg_t *pti)
+{
+	int ret = -1;
+	void *msg_buff = NULL;
+        ssize_t msg_len = 0;
+	PseudoVeosMessage msg = PSEUDO_VEOS_MESSAGE__INIT;
+
+        VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "In Func");
+
+	msg.has_syscall_retval = true;
+	msg.syscall_retval = getpid();
+	msg.has_pseudo_msg = false;
+
+	msg_len = pseudo_veos_message__get_packed_size(&msg);
+        msg_buff = malloc(msg_len);
+        if (msg_buff == NULL) {
+                VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+                        "Failed to malloc for GET_VEOS_PID responce message buffer");
+                goto hndl_return;
+        }
+        memset(msg_buff, '\0', msg_len);
+        if (msg_len != pseudo_veos_message__pack(&msg, msg_buff)) {
+                VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+                       "Failed to pack for GET_VEOS_PID responce message");
+                goto hndl_return;
+        }
+
+        ret = psm_pseudo_send_cmd(pti->socket_descriptor, msg_buff, msg_len);
+        if (ret < msg_len) {
+                VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+                                "Failed to send GET_VEOS_PID responce");
+                goto hndl_return;
+        }
+	ret = 0;
+hndl_return:
+	free(msg_buff);
+        VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
+        return ret;
+}

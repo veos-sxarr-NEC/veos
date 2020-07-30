@@ -66,6 +66,7 @@
 #define VE_PROC_PRIORITY_MIN		0
 
 #define VE_ACCT_VERSION		3
+#define NEW_VE_ACCT_VERSION	14
 
 #define MAX_SWAP_PROCESS 256
 
@@ -121,6 +122,12 @@
 #define MANTSIZE        13                      /* 13 bit mantissa. */
 #define EXPSIZE         3                       /* Base 8 (3 bit) exponent. */
 #define MAXFRACT        ((1 << MANTSIZE) - 1)   /* Maximum fractional value. */
+
+/*
+ * to facilitate efficient searching of tasks in cores
+ * it will enhance the find_ve_task_struct() latency
+ */
+extern __thread int prefered_core;
 
 typedef uint64_t did_t;
 
@@ -240,20 +247,22 @@ enum wait_for_vfork {
 
 typedef  unsigned long long cputime_t;
 
-/**
- * @brief Per-process accounting information.
- */
-struct pacct_struct {
-	int ac_flag; /*!< status of the process when it terminated */
-	__u32 ac_exitcode; /*!< task exit code passed to the exit system call */
-	unsigned long ac_mem; /*!< Memory usage */
-	cputime_t ac_utime; /*!< Time spend by the process while scheduled on VE core */
+enum acct_data {
+	ACCT_TOTAL_MEM = 0,
+	ACCT_TRANSDATA,
+	ACCT_SYSCALL,
 };
+
+#define PMMR_MASK	0xFFFFFFFF
+#define PMMR_SHIFT	0xF000000000000000
+#define PMC_REG		16
+#define CHK_OVRFLW      0x00ffffffffffffff
 
 /**
  * @brief Accouting structure to dump on an accountiing file.
  */
 struct ve_acct {
+	/* Existing accounting fields(VE Specific) as per v3 */
 	char            ac_flag;                /*!< Flags */
 	char            ac_version;             /*!< Always set to ACCT_VERSION */
 	__u16           ac_tty;                 /*!< Control Terminal */
@@ -273,6 +282,50 @@ struct ve_acct {
 	comp_t           ac_majflt;              /*!< Major Pagefaults */
 	comp_t           ac_swaps;               /*!< Number of Swaps */
 	char            ac_comm[ACCT_COMM];     /*!< Command Name */
+	/* Additional VE process accouting fields for accounting file. */
+	__u32           ac_sid;         /* session ID */
+	__u32           ac_timeslice;   /* timeslice [μs] */
+	__u16           ac_max_nthread;/* max number of thread */
+	__u16           ac_numanode;    /* the number of NUMA node */
+	double           ac_total_mem;   /* VE's total memory usage in clicks */
+	__u64           ac_maxmem;      /* VE's max memory usage [kb] */
+	__u64           ac_syscall;     /* the number of systemcall */
+	double           ac_transdata;   /* data transfer amount between VE-VH [kb] */
+	__u64           ac_ex;          /* Execution count */
+	__u64           ac_vx;          /* Vector execution count */
+	__u64           ac_fpec;        /* Floating point data element count */
+	__u64           ac_ve;          /* Vector elements count */
+	__u64           ac_l1lmc;       /* L1 instruction cache miss count */
+	__u64           ac_vecc;        /* Vector execution clock count */
+	__u64           ac_l1mcc;       /* L1 cache miss clock count */
+	__u64           ac_l2mcc;       /* L2 cache miss clock count */
+	__u64           ac_ve2;         /* Vector elements count 2 */
+	__u64           ac_varec;       /* Vector arithmetic execution clock count */
+	__u64           ac_l1lmcc;      /* L1 instruction cache miss clock count */
+	__u64           ac_vldec;       /* Vector load execution clock count */
+	__u64           ac_l1omcc;      /* L1 operand cache miss clock count */
+	__u64           ac_pccc;        /* Port conflict clock count */
+	__u64           ac_ltrc;        /* Load instruction traffic count */
+	__u64           ac_vldcc;       /* Vector load delayed clock count */
+	__u64           ac_strc;        /* Store instruction traffic count */
+	__u64           ac_vlec;        /* Vector load element count */
+	__u64           ac_vlcme;       /* Vector load cache miss element count */
+	__u64           ac_vlcme2;      /* Vector load cache miss element count 2 */
+	__u64           ac_fmaec;       /* Fused multiply add element count */
+	__u64           ac_ptcc;        /* Power throttling clock count */
+	__u64           ac_ttcc;        /* Thermal throttling clock count */
+
+};
+
+/**
+ * @brief Per-process accounting information.
+ */
+struct pacct_struct {
+	int ac_flag; /*!< status of the process when it terminated */
+	__u32 ac_exitcode; /*!< task exit code passed to the exit system call */
+	unsigned long ac_mem; /*!< Memory usage */
+	cputime_t ac_utime; /*!< Time spend by the process while scheduled on VE core */
+	struct ve_acct acct_info;	/* VE task accounting information */
 };
 
 /**
@@ -479,15 +532,16 @@ struct ve_task_struct {
 				* information in case RPM sends delete dummy
 				* task request */
 	pid_t real_parent_pid;  /*!< VE Parent proces PID */
-	struct list_head swapped_pages; /*!< List of ATB/DMAATB corresponding
-					 * to VE memory which was deallocated
-					 * in Swap-out */
 	struct ve_ipc_sync *ipc_sync; /*!< Structure wihch has handling_request and swapping.
 				       * Don't access to this structure directly,
 				       * have to use ve_get_ipc_sync().
 				       */
 	pid_t proc_pid;		/*!< VE Parent proces PID */
 	pid_t tgid;		/*!< VE process's thread group ID */
+	pid_t sid;		/*!< VE process's session ID */
+	unsigned short tty;		/*!< VE process's tty ID */
+	uint64_t initial_pmc_pmmr[16];	/* initial PMC/PMMR counter register values */
+	uint64_t pmc_pmmr[16];		/* updated PMC/PMMR counter register */
 };
 
 
@@ -549,6 +603,7 @@ void calc_sys_load_per_sched_interval(struct ve_node_struct *);
 int psm_relocate_ve_task(int, int, int, int, struct ve_task_struct *);
 int psm_least_loaded_node_n_core(void);
 int get_ve_core_n_node_new_ve_proc(struct ve_task_struct *, int *, int *, int *);
+int psm_get_active_proc_num(struct ve_core_struct *);
 int init_psm_daemon(char *);
 void list_ve_proc(void);
 int handle_get_priortiy(pid_t);
@@ -606,4 +661,5 @@ int psm_get_regval(struct ve_task_struct *, int, int *, uint64_t *);
 int psm_map_lhm_shm_area(struct ve_task_struct *, int, char *, uint64_t);
 struct ve_task_struct *find_child_ve_task_struct(pid_t, pid_t);
 void send_notice_to_swap_thread(void);
+void update_accounting_data(struct ve_task_struct *tsk, enum acct_data, double);
 #endif

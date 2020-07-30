@@ -1,2 +1,2 @@
 #The maximum size of memory that can be swapped out per VE node.
-#ve-os-launcher@*=--ve-swap-mem-max=32768
+#ve-os-launcher@*=--ve-swap-mem-max=32768 --ve-swap-file-path=/opt/nec/ve/veos/swap-out-file --ve-swap-file-max=65536

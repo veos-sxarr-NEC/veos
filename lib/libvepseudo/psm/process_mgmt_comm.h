@@ -48,6 +48,7 @@ int64_t pseudo_psm_recv_schedule_ack(int);
 ret_t pseudo_psm_send_fork_req(char *, struct pseudo_ve_clone_info, int);
 int pseudo_psm_recv_fork_ack(int);
 int pseudo_psm_recv_load_binary_req(int, int*, int*, int*);
+int pseudo_version_compare(char *, char *);
 int64_t pseudo_psm_send_clk_cputime_req(int, struct ve_clockinfo);
 int64_t pseudo_psm_recv_clk_cputime_ack(int, struct timespec *);
 int64_t pseudo_psm_send_get_rlimit_req(int, int, pid_t);
@@ -56,6 +57,8 @@ int64_t pseudo_psm_send_set_rlimit_req(int, int, struct rlimit, pid_t);
 int64_t pseudo_psm_recv_set_rlimit_ack(int);
 int64_t pseudo_psm_send_get_rusage_req(int, struct ve_rusage_info);
 int64_t pseudo_psm_recv_get_rusage_ack(int, struct ve_rusage *);
+int64_t pseudo_psm_send_get_times_req(int, struct ve_times_info);
+int64_t pseudo_psm_recv_get_times_ack(int, struct ve_times *);
 
 int64_t un_block_and_retval_req(veos_handle *, int, ret_t, bool);
 int64_t block_syscall_req_ve_os(veos_handle *);

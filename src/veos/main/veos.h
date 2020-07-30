@@ -125,8 +125,18 @@ struct ve_acct_struct {
 	bool active; /*!< Accounting enable/disable info */
 	char *file; /*!< Accounting filename */
 	int fd; /*!< File descriptor corresponding to file */
+	struct timeval check_space_time; /* !< To check disk space periodically */
 	pthread_mutex_t ve_acct_lock; /*!< Mutex lock for syncronization */
 } veos_acct;
+
+/**
+ * @brief These macros define the behaviour of the free space checking thread
+ * which remains active when process accounting is enabled
+ */
+
+#define ACCT_RESUME 4 /* resume process accounting if free space >= this value */
+#define ACCT_SUSPEND 2 /* suspend process accounting if free space <= this value */
+#define ACCT_FREQ 30 /* frequency between two successive free space checks */
 
 /* *
  * @brief VE NUMA Node Struct
@@ -137,6 +147,19 @@ struct ve_numa_struct {
 					VE core belonging to this NUMA node */
 	struct ve_core_struct *cores[VE_MAX_CORE_PER_NODE]; /* !< Pointers of ve_core_struct belonging to NUMA node*/
 	struct buddy_mempool *mp; /* !< Pointer of memory pool of NUMA node */
+};
+
+/**
+ * @brief PPS file infomation Struct
+ */
+struct ve_swap_file_info {
+	char path[PATH_MAX * 2]; /* !< Absolute path of PPS file */
+	size_t size;         /* !< Size of PPS file */
+	int fd;              /* !< fd of PPS file */
+	bool is_opened;      /* !< Status flag of PPS file */
+	bool not_del_after_swapin;  /* !< Flag indicating whether the PPS file
+					can be deleted after swap in when no
+					resource is swapped out */
 };
 
 /**
@@ -210,12 +233,17 @@ struct ve_node_struct {
 	struct ve_numa_struct numa[VE_MAX_NUMA_NODE]; /* !< Data structures to store NUMA information */
 	struct buddy_mempool *pps_mp; /* !< Memory poll of PPS buffer */
 	size_t pps_mp_used[VE_MAX_NUMA_NODE]; /* !< Used size of PPS buffer for every NUMA node, in Byte */
+	struct buddy_mempool *pps_file_offset; /* !< Memory poll of PPS file */
+	size_t pps_file_used[VE_MAX_NUMA_NODE]; /* !< Used size of PPS file for every NUMA node, in Byte */
 	struct list_head swap_request_pids_queue; /* !< Swap request queue, which contains struct veos_swap_request_info */
 	pthread_mutex_t swap_request_pids_lock; /* !< Lock wihch protecs Swap request queue */
 	bool swap_request_pids_enable; /* !< Status of swap request queue */
 	bool resource_freed; /* !< Resource freed flag for swap */
 	pthread_cond_t swap_request_pids_cond; /* !< Condition variable which is used to start Swap-out or Swap-in */
 	size_t pps_buf_size; /* !< Size of PPS buffer in Byte */
+	struct ve_swap_file_info pps_file; /* !< Information of PPS file */
+	pthread_mutex_t pps_file_lock; /* !< Lock which protects pps_file */
+	void *pps_file_transfer_buffer; /* !< Address of PPS file transfer buffer */
 };
 
 /**
@@ -232,11 +260,14 @@ struct ve_sys_load {
  */
 #define VE_ABORT_CAUSE_BUF_SIZE 512
 
-#define OPT_PCISYNC1  0
-#define OPT_PCISYNC2  1
-#define OPT_PCISYNC3  2
-#define OPT_CLEANUP   3
-#define OPT_VESWAPMAX 4
+#define OPT_PCISYNC1         0
+#define OPT_PCISYNC2         1
+#define OPT_PCISYNC3         2
+#define OPT_CLEANUP          3
+#define OPT_VESWAPMAX        4
+#define OPT_VESWAP_FILE_PATH 5
+#define OPT_VESWAP_FILE_MAX  6
+
 
 #define NOT_REQUIRED 0
 #define REQUIRED     1
@@ -342,7 +373,6 @@ extern const log4c_location_info_t locinfo;
 	.ve_task_lock		= PTHREAD_MUTEX_INITIALIZER,		\
 	.offset_lock		= PTHREAD_MUTEX_INITIALIZER,		\
 	.sstatus		= INVALID,				\
-	.swapped_pages		= LIST_HEAD_INIT(ve_tsk.swapped_pages),	\
 	.ipc_sync		= NULL					\
 }
 #endif

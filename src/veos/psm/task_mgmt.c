@@ -36,6 +36,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/vfs.h>
 #include <signal.h>
 #include <mqueue.h>
 #include <time.h>
@@ -64,8 +65,10 @@
 #include "psm_stat.h"
 #include "veos_sock.h"
 #include "ve_swap.h"
+#include <sys/sysmacros.h>
 
 bool veos_term ;
+extern int __amm_get_sysfs_info(char *out, char *fname, size_t out_sz);
 
 /**
  * @brief Maps the LHM/SHM area of pseudo process in veos
@@ -1199,6 +1202,50 @@ int psm_least_loaded_node_n_core(void)
 }
 
 /**
+ * @brief Return the number of "Active VE processes" on VE core.
+ *        If a VE process meets following condition, the VE process is called
+ *        "Active VE process".
+ *        + Its state is WAIT or RUNNING
+ *
+ * @param[in] p_ve_core Pointer to struct ve_core_struct of VE core.
+ *
+ * @return The number of "Active VE processes" on VE core.
+ *
+ * @internal
+ * @author PSMG / Scheduling and context switch
+ */
+int psm_get_active_proc_num(struct ve_core_struct *p_ve_core)
+{
+	struct ve_task_struct *ve_task_list_head = NULL;
+	struct ve_task_struct *ve_task_curr = NULL;
+	int active_proc_num = 0;
+
+	VEOS_TRACE("Entering");
+	ve_task_list_head = p_ve_core->ve_task_list;
+	ve_task_curr = ve_task_list_head;
+	if (NULL == ve_task_curr)
+		goto hndl_return;
+
+	do {
+		pthread_mutex_lock_unlock(&ve_task_curr->ve_task_lock, LOCK,
+					"Failed to acquire ve_task_lock");
+		if ((ve_task_curr->ve_task_state == WAIT) ||
+				(ve_task_curr->ve_task_state == RUNNING))
+			active_proc_num++;
+		pthread_mutex_lock_unlock(&ve_task_curr->ve_task_lock, UNLOCK,
+					"Failed to release ve_task_lock");
+	} while ((ve_task_list_head != ve_task_curr->next)
+					&& (ve_task_curr = ve_task_curr->next));
+
+hndl_return:
+	VEOS_DEBUG("core [%d] active_proc_num : %d",
+					p_ve_core->core_num, active_proc_num);
+	VEOS_TRACE("Exiting");
+
+	return active_proc_num;
+}
+
+/**
  * @brief Searches for the appropriate VE Node and Core for the new VE process.
  *
  * @param[in] p_ve_task Pointer to struct ve_task_struct of VE process
@@ -1300,7 +1347,7 @@ int get_ve_core_n_node_new_ve_proc(struct ve_task_struct *p_ve_task,
 
 		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), RDLOCK,
 				"Failed to acquire ve core read lock");
-		num_proc_core = p_ve_core->num_ve_proc;
+		num_proc_core = psm_get_active_proc_num(p_ve_core);
 		if (num_proc_core < num_proc_core_min) {
 			num_proc_core_min = num_proc_core;
 			min_proc_num_core = core_loop;
@@ -1516,6 +1563,7 @@ struct ve_task_struct *find_ve_task_struct(int pid)
 	struct ve_task_struct *ve_task_curr = NULL;
 	struct ve_core_struct *p_ve_core = NULL;
 	struct ve_task_struct *ve_task_ret = NULL;
+	bool prefered_core_checked = false;
 
 	VEOS_TRACE("Entering");
 #ifdef VE_OS_DEBUG
@@ -1524,7 +1572,10 @@ struct ve_task_struct *find_ve_task_struct(int pid)
 	max_core = VE_NODE(0)->nr_avail_cores;
 
 		/* Core loop */
-		for (; core_loop < max_core; core_loop++) {
+		for (core_loop = prefered_core; core_loop < max_core; core_loop++) {
+			if (core_loop == prefered_core
+				&& prefered_core_checked == true)
+				continue;
 			VEOS_TRACE("Core loop: %d", core_loop);
 			p_ve_core = VE_CORE(VE_NODE_ID(node_loop), core_loop);
 			pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
@@ -1542,6 +1593,10 @@ struct ve_task_struct *find_ve_task_struct(int pid)
 						&(p_ve_core->ve_core_lock),
 						UNLOCK,
 						"Failed to release ve core lock");
+				if (prefered_core_checked == false) {
+					prefered_core_checked = true;
+					core_loop = -1;
+				}
 				continue;
 			}
 			VEOS_TRACE("Node %d: Core %d "
@@ -1585,6 +1640,10 @@ struct ve_task_struct *find_ve_task_struct(int pid)
 			pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
 					UNLOCK,
 					"Failed to release ve core lock");
+			if (prefered_core_checked == false) {
+				prefered_core_checked = true;
+				core_loop = -1;
+			}
 		}
 		VEOS_DEBUG("Task with PID : %d not found in Node %d",
 							pid,
@@ -1961,6 +2020,98 @@ unsigned long long veos_usec_to_AHZ(unsigned long long val)
 }
 
 /**
+ * @brief Print the accounting information of struct ve_acct in a
+ * debug log.
+ *
+ * @param[in] pacct Pointer to pacct_struct
+ *
+ * @internal
+ * @author PSMG / Process management
+*/
+void print_accounting(pid_t pid, struct pacct_struct *pacct)
+{
+	VEOS_DEBUG("PID of the task : %d", pid);
+	VEOS_DEBUG("ac_sid: %d", pacct->acct_info.ac_sid);
+	VEOS_DEBUG("ac_total_mem: %f", pacct->acct_info.ac_total_mem);
+	VEOS_DEBUG("ac_maxmem: %lld",pacct->acct_info.ac_maxmem);
+	VEOS_DEBUG("ac_timeslice: %d", pacct->acct_info.ac_timeslice);
+	VEOS_DEBUG("ac_max_nthread: %d", pacct->acct_info.ac_max_nthread);
+	VEOS_DEBUG("ac_syscall: %lld", pacct->acct_info.ac_syscall);
+	VEOS_DEBUG("ac_transdata: %f", pacct->acct_info.ac_transdata);
+	VEOS_DEBUG("ac_numanode: %d", pacct->acct_info.ac_numanode);
+	VEOS_DEBUG("ac_ex: %llx", pacct->acct_info.ac_ex);
+	VEOS_DEBUG("ac_vx: %llx", pacct->acct_info.ac_vx);
+	VEOS_DEBUG("ac_fpec: %llx", pacct->acct_info.ac_fpec);
+	VEOS_DEBUG("ac_ve: %llx", pacct->acct_info.ac_ve);
+	VEOS_DEBUG("ac_l1lmc: %llx", pacct->acct_info.ac_l1lmc);
+	VEOS_DEBUG("ac_vecc: %llx", pacct->acct_info.ac_vecc);
+	VEOS_DEBUG("ac_l1mcc: %llx", pacct->acct_info.ac_l1mcc);
+	VEOS_DEBUG("ac_l2mcc: %llx", pacct->acct_info.ac_l2mcc);
+	VEOS_DEBUG("ac_ve2: %llx", pacct->acct_info.ac_ve2);
+	VEOS_DEBUG("ac_varec: %llx", pacct->acct_info.ac_varec);
+	VEOS_DEBUG("ac_l1lmcc: %llx", pacct->acct_info.ac_l1lmcc);
+	VEOS_DEBUG("ac_vldec: %llx", pacct->acct_info.ac_vldec);
+	VEOS_DEBUG("ac_l1omcc: %llx", pacct->acct_info.ac_l1omcc);
+	VEOS_DEBUG("ac_pccc: %llx", pacct->acct_info.ac_pccc);
+	VEOS_DEBUG("ac_ltrc: %llx", pacct->acct_info.ac_ltrc);
+	VEOS_DEBUG("ac_vldcc: %llx", pacct->acct_info.ac_vldcc);
+	VEOS_DEBUG("ac_strc: %llx", pacct->acct_info.ac_strc);
+	VEOS_DEBUG("ac_vlec: %llx", pacct->acct_info.ac_vlec);
+	VEOS_DEBUG("ac_vlcme: %llx", pacct->acct_info.ac_vlcme);
+	VEOS_DEBUG("ac_vlcme2: %llx", pacct->acct_info.ac_vlcme2);
+	VEOS_DEBUG("ac_fmaec: %llx", pacct->acct_info.ac_fmaec);
+	VEOS_DEBUG("ac_ptcc: %llx", pacct->acct_info.ac_ptcc);
+	VEOS_DEBUG("ac_ttcc: %llx", pacct->acct_info.ac_ttcc);
+}
+
+/**
+ * @brief This function checks the free space available in the file system
+ * and suspend/resume process accounting accordingly.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+bool veos_acct_check_free_space()
+{
+	struct statfs sbuf = {0};
+	uint64_t suspend = 0, resume = 0;
+	uint64_t time_since_last_check = 0;
+	bool is_changed = false;
+	struct timeval now = {0};
+
+	/* skip checking free space if it was checked a while ago */
+	gettimeofday(&now, NULL);
+	time_since_last_check = timeval_diff(now, veos_acct.check_space_time);
+	if (time_since_last_check < ACCT_FREQ * USECOND) {
+		goto out;
+	}
+	if (fstatfs(veos_acct.fd, &sbuf) == -1) {
+		VEOS_DEBUG("Failed to get file system statistics: %s",
+							strerror(errno));
+		return false;
+	}
+	veos_acct.check_space_time = now;
+	if (veos_acct.active) {
+		suspend = (sbuf.f_blocks * ACCT_SUSPEND) / 100;
+		if (sbuf.f_bavail <= suspend) {
+			is_changed = true;
+			veos_acct.active = false;
+		}
+	} else {
+		resume = (sbuf.f_blocks * ACCT_RESUME) / 100;
+		if (sbuf.f_bavail >= resume) {
+			is_changed = true;
+			veos_acct.active = true;
+		}
+	}
+	if (is_changed)
+		VEOS_INFO("process accounting %s",
+				veos_acct.active ? "resumed":"suspended");
+out:
+	return veos_acct.active;
+}
+
+/**
  * @brief Dump the accounting information of struct ve_acct in a
  * accounting file.
  *
@@ -1972,64 +2123,82 @@ unsigned long long veos_usec_to_AHZ(unsigned long long val)
 void veos_acct_ve_proc(struct ve_task_struct *tsk)
 {
 	struct pacct_struct *pacct = NULL;
-	struct ve_acct acct_info = {0};
 	struct timeval now = {0};
 	int retval = -1;
 
 	VEOS_TRACE("Entering");
 	if (!tsk)
 		goto hndl_return;
+	if (!veos_acct_check_free_space())
+		goto hndl_return;
 
 	pacct = &(tsk->sighand->pacct);
-	memset(&acct_info, 0, sizeof(struct ve_acct));
-
-	acct_info.ac_flag = (char)(pacct->ac_flag);
+	pacct->acct_info.ac_flag = (char)(pacct->ac_flag);
 
 	/* Always set to VE_ACCT_VERSION | ACCT_BYTEORDER */
-	acct_info.ac_version = VE_ACCT_VERSION | ACCT_BYTEORDER;
+	pacct->acct_info.ac_version = NEW_VE_ACCT_VERSION | ACCT_BYTEORDER;
 
 	/* task exit code passed to the exit system call */
-	acct_info.ac_exitcode = pacct->ac_exitcode;
+	pacct->acct_info.ac_exitcode = pacct->ac_exitcode;
 
 	/* Real user ID */
-	acct_info.ac_uid = tsk->uid;
+	pacct->acct_info.ac_uid = tsk->uid;
 
 	/*Real group ID*/
-	acct_info.ac_gid = tsk->gid;
+	pacct->acct_info.ac_gid = tsk->gid;
 
 	/*Process ID*/
-	acct_info.ac_pid = tsk->pid;
+	pacct->acct_info.ac_pid = tsk->pid;
 
 	/* Parent process ID*/
 	if(1 == tsk->parent->pid)
-		acct_info.ac_ppid = tsk->real_parent_pid;
+		pacct->acct_info.ac_ppid = tsk->real_parent_pid;
 	else
-		acct_info.ac_ppid = tsk->parent->pid;
+		pacct->acct_info.ac_ppid = tsk->parent->pid;
 
 	/* process creation time */
-	acct_info.ac_btime = tsk->start_time.tv_sec +
-			tsk->start_time.tv_usec/MICRO_SECONDS;
+	pacct->acct_info.ac_btime = tsk->start_time.tv_sec +
+		tsk->start_time.tv_usec/MICRO_SECONDS;
 
 	/* elapsed time from process creation to termination */
 	gettimeofday(&now, NULL);
-	acct_info.ac_etime = veos_usec_to_AHZ(timeval_diff(now,
-						tsk->start_time));
+	pacct->acct_info.ac_etime = veos_usec_to_AHZ(timeval_diff(now,
+				tsk->start_time));
 
 	/* In VE stime of process would be zero */
-	acct_info.ac_stime = 0;
+	pacct->acct_info.ac_stime = 0;
 
 	/* Time spend by the process while scheduled on VE core */
-	acct_info.ac_utime = veos_encode_comp_t(veos_usec_to_AHZ
-						(pacct->ac_utime));
+	pacct->acct_info.ac_utime = veos_encode_comp_t(veos_usec_to_AHZ
+					(pacct->ac_utime));
 
 	/* Average memory usage (kB) */
-	acct_info.ac_mem = veos_encode_comp_t(pacct->ac_mem);
+	pacct->acct_info.ac_mem = veos_encode_comp_t(pacct->ac_mem);
+
+
+	/* In case of thread group VE's max memory usage [kb] */
+	pacct->acct_info.ac_maxmem = ((tsk->p_ve_mm->rss_max) / 1024);
+
+	/*The number of NUMA node */
+	pacct->acct_info.ac_numanode = tsk->numa_node;
+
+	/*Timeslice of the process (us)*/
+	pacct->acct_info.ac_timeslice = veos_time_slice;
+
+	/*session_id*/
+	pacct->acct_info.ac_sid = tsk->sid;
+
+	/*controlling terminal (tty)*/
+	pacct->acct_info.ac_tty = tsk->tty;
 
 	/* Command name of the program */
-	memcpy(acct_info.ac_comm, tsk->ve_comm, strlen(tsk->ve_comm)+1);
+	memcpy(pacct->acct_info.ac_comm, tsk->ve_comm, ACCT_COMM-1);
+
+	/*printing accounting data before dumping to file*/
+	print_accounting(tsk->pid, pacct);
 
 	/* Write struct ve_acct to file */
-	retval = write(veos_acct.fd, (char *)&acct_info,
+	retval = write(veos_acct.fd, (char *)&(pacct->acct_info),
 			sizeof(struct ve_acct));
 	if (-1 == retval) {
 		VEOS_ERROR("Failed to write in accounting file");
@@ -2043,6 +2212,347 @@ hndl_return:
 	VEOS_TRACE("Exiting");
 	return;
 }
+
+void update_accounting_data(struct ve_task_struct *tsk,
+					enum acct_data ac_type,	double size)
+{
+	struct ve_acct *acct_info = &(tsk->sighand->pacct.acct_info);
+	pthread_mutex_lock_unlock(&(tsk->sighand->siglock), LOCK,
+			"Failed to acquire task sighand lock");
+	switch (ac_type) {
+		case ACCT_TOTAL_MEM:
+			acct_info->ac_total_mem += size;
+			break;
+		case ACCT_TRANSDATA:
+			acct_info->ac_transdata += size;
+			break;
+		case ACCT_SYSCALL:
+			acct_info->ac_syscall += 1;
+			break;
+	}
+	pthread_mutex_lock_unlock(&(tsk->sighand->siglock), UNLOCK,
+			"Failed to release task sighand lock");
+}
+/**
+ * @brief get the PMMR register value at the time of
+ * process termination.
+ *
+ * @param[in] tsk Pointer to VE task struct
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+void get_performance_register_info(struct ve_task_struct *tsk)
+{
+	reg_t pmmr_mode = 0x00, pmmr_mode_val = 0x00;
+	int i = 0, regid = 0;
+	int ret = 0;
+	char tmp[LINE_MAX] = { '\0' };
+	char *endptr = NULL;
+	uint64_t pmc_val, clock_val_mhz = 0;
+	struct pacct_struct *pacct = NULL;
+	/*To get clock_chip value*/
+	ret = __amm_get_sysfs_info(tmp, "clock_chip", sizeof(tmp));
+	if (ret != 0){
+		VEOS_ERROR("failed to get clock_chip value: %s", strerror(errno));
+		return;
+	}
+	errno = 0;
+	clock_val_mhz = (uint64_t)strtoul(tmp, &endptr, 10);
+        if (errno != 0) {
+                       VEOS_ERROR("Conversion from string to unsigned long"
+				      " int is failed: %s", strerror(errno));
+			return;
+        }
+	pacct = &(tsk->sighand->pacct);
+	for(i = 0; i < PMC_REG; i++) {
+		regid = PMC00 + i;
+		pmmr_mode_val =  ((tsk->p_ve_thread->PMMR) & (PMMR_SHIFT >> 4*i));
+                pmmr_mode = (pmmr_mode_val >> 4*(PMC_REG - i - 1));
+		pmc_val = 0;
+		/*each case corresponding to PMCXX */
+		switch (regid){
+			case PMC00:
+				if (pmmr_mode == 0 && tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					pacct->acct_info.ac_ex +=
+						((tsk->pmc_pmmr[i]
+						  - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+				} else {
+					tsk->pmc_pmmr[i] = -1;
+					pacct->acct_info.ac_ex = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC01:
+				if (pmmr_mode == 0 && tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					pacct->acct_info.ac_vx +=
+						((tsk->pmc_pmmr[i]
+						  - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+				} else {
+					tsk->pmc_pmmr[i] = -1;
+					pacct->acct_info.ac_vx = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC02:
+				if (pmmr_mode == 0 && tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					pacct->acct_info.ac_fpec +=
+						((tsk->pmc_pmmr[i]
+						  - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+				} else {
+					tsk->pmc_pmmr[i] = -1;
+					pacct->acct_info.ac_fpec = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC03:
+				if (tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					if (pmmr_mode == 0){
+						pacct->acct_info.ac_ve +=
+							((tsk->pmc_pmmr[i]
+							  - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+						pacct->acct_info.ac_l1lmc = -1;
+					} else if (pmmr_mode == 2){
+						pacct->acct_info.ac_l1lmc +=
+							((tsk->pmc_pmmr[i]
+							  - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+						pacct->acct_info.ac_ve = -1;
+					} else {
+						tsk->pmc_pmmr[i] = -1;
+						pacct->acct_info.ac_ve = tsk->pmc_pmmr[i];
+						pacct->acct_info.ac_l1lmc = tsk->pmc_pmmr[i];
+					}
+				} else {
+					pacct->acct_info.ac_ve = tsk->pmc_pmmr[i];
+					pacct->acct_info.ac_l1lmc = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC04:
+				if (pmmr_mode == 0 && tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					pmc_val = ((tsk->pmc_pmmr[i]
+                                       - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+                                       /*conversion of clock count to microsecond*/
+                                       pacct->acct_info.ac_vecc += (pmc_val/clock_val_mhz);
+
+				} else {
+					tsk->pmc_pmmr[i] = -1;
+					pacct->acct_info.ac_vecc = -1;
+				}
+				break;
+			case PMC05:
+				if (tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					if (pmmr_mode == 0){
+						pmc_val = ((tsk->pmc_pmmr[i]
+                                               - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+                                               /*conversion of clock count to microsecond*/
+                                               pacct->acct_info.ac_l1mcc += (pmc_val/clock_val_mhz);
+						pacct->acct_info.ac_l2mcc = -1;
+					} else if (pmmr_mode == 1){
+						pmc_val = ((tsk->pmc_pmmr[i]
+                                               - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+                                               /*conversion of clock count to microsecond*/
+                                               pacct->acct_info.ac_l2mcc += (pmc_val/clock_val_mhz);
+					       pacct->acct_info.ac_l1mcc = -1;
+					} else {
+						tsk->pmc_pmmr[i] = -1;
+						pacct->acct_info.ac_l1mcc = tsk->pmc_pmmr[i];
+	                                        pacct->acct_info.ac_l2mcc = tsk->pmc_pmmr[i];
+					}
+				} else {
+					pacct->acct_info.ac_l1mcc = tsk->pmc_pmmr[i];
+					pacct->acct_info.ac_l2mcc = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC06:
+				if (pmmr_mode == 0 && tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					pacct->acct_info.ac_ve2 +=
+						((tsk->pmc_pmmr[i]
+						  - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+				} else {
+					tsk->pmc_pmmr[i] = -1;
+					pacct->acct_info.ac_ve2 = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC07:
+				if (tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					if (pmmr_mode == 0){
+						pmc_val = ((tsk->pmc_pmmr[i]
+                                               - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+                                               /*conversion of clock count to microsecond*/
+                                               pacct->acct_info.ac_varec += (pmc_val/clock_val_mhz);
+					       pacct->acct_info.ac_l1lmcc = -1;
+					} else if (pmmr_mode == 1){
+						pmc_val = ((tsk->pmc_pmmr[i]
+                                               - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+                                               /*conversion of clock count to microsecond*/
+                                               pacct->acct_info.ac_l1lmcc += (pmc_val/clock_val_mhz);
+					       pacct->acct_info.ac_varec = -1;
+					} else {
+						tsk->pmc_pmmr[i] = -1;
+						pacct->acct_info.ac_varec = tsk->pmc_pmmr[i];
+	                                        pacct->acct_info.ac_l1lmcc = tsk->pmc_pmmr[i];
+					}
+				} else {
+					pacct->acct_info.ac_varec = tsk->pmc_pmmr[i];
+					pacct->acct_info.ac_l1lmcc = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC08:
+				if (tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					if (pmmr_mode == 0){
+						pmc_val = ((tsk->pmc_pmmr[i]
+                                               - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+                                               /*conversion of clock count to microsecond*/
+                                               pacct->acct_info.ac_vldec += (pmc_val/clock_val_mhz);
+					       pacct->acct_info.ac_l1omcc = -1;
+
+					} else if (pmmr_mode == 1){
+						 pmc_val =((tsk->pmc_pmmr[i]
+                                               - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+                                               /*conversion of clock count to microsecond*/
+                                               pacct->acct_info.ac_l1omcc += (pmc_val/clock_val_mhz);
+					       pacct->acct_info.ac_vldec = -1;
+					} else {
+						tsk->pmc_pmmr[i] = -1;
+						pacct->acct_info.ac_vldec = tsk->pmc_pmmr[i];
+						pacct->acct_info.ac_l1omcc = tsk->pmc_pmmr[i];
+					}
+				} else {
+					pacct->acct_info.ac_vldec = tsk->pmc_pmmr[i];
+					pacct->acct_info.ac_l1omcc = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC09:
+				if (tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					if (pmmr_mode == 0){
+						pmc_val = ((tsk->pmc_pmmr[i]
+                                               - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+                                               /*conversion of clock count to microsecond*/
+                                               pacct->acct_info.ac_pccc += (pmc_val/clock_val_mhz);
+					       pacct->acct_info.ac_ltrc = -1;
+
+					} else if (pmmr_mode == 1){
+						pacct->acct_info.ac_ltrc +=
+							((tsk->pmc_pmmr[i]
+							  - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+						pacct->acct_info.ac_pccc = -1;
+					} else {
+						tsk->pmc_pmmr[i] = -1;
+						pacct->acct_info.ac_pccc = tsk->pmc_pmmr[i];
+						pacct->acct_info.ac_ltrc = tsk->pmc_pmmr[i];
+					}
+				} else {
+					pacct->acct_info.ac_pccc = tsk->pmc_pmmr[i];
+					pacct->acct_info.ac_ltrc = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC10:
+				if (tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					if (pmmr_mode == 0){
+						 pmc_val = ((tsk->pmc_pmmr[i]
+                                               - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+                                               /*conversion of clock count to microsecond*/
+                                               pacct->acct_info.ac_vldcc += (pmc_val/clock_val_mhz);
+					       pacct->acct_info.ac_strc = -1;
+
+					} else if (pmmr_mode == 1){
+						pacct->acct_info.ac_strc +=
+							((tsk->pmc_pmmr[i]
+							  - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+						pacct->acct_info.ac_vldcc = -1;
+					} else {
+						tsk->pmc_pmmr[i] = -1;
+						pacct->acct_info.ac_vldcc = tsk->pmc_pmmr[i];
+	                                        pacct->acct_info.ac_strc = tsk->pmc_pmmr[i];
+					}
+				} else {
+					pacct->acct_info.ac_vldcc = tsk->pmc_pmmr[i];
+					pacct->acct_info.ac_strc = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC11:
+				if (pmmr_mode == 0 && tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					pacct->acct_info.ac_vlec +=
+						((tsk->pmc_pmmr[i]
+						  - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+				} else {
+					tsk->pmc_pmmr[i] = -1;
+					pacct->acct_info.ac_vlec = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC12:
+				if (tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					if (pmmr_mode == 0){
+						pacct->acct_info.ac_vlcme +=
+							((tsk->pmc_pmmr[i]
+							  - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+						pacct->acct_info.ac_vlcme2 = -1;
+					}else if (pmmr_mode == 1){
+						pacct->acct_info.ac_vlcme2 +=
+							((tsk->pmc_pmmr[i]
+							  - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+						pacct->acct_info.ac_vlcme = -1;
+					} else {
+						tsk->pmc_pmmr[i] = -1;
+						pacct->acct_info.ac_vlcme = tsk->pmc_pmmr[i];
+	                                        pacct->acct_info.ac_vlcme2 = tsk->pmc_pmmr[i];
+					}
+				} else {
+					pacct->acct_info.ac_vlcme = tsk->pmc_pmmr[i];
+					pacct->acct_info.ac_vlcme2 = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC13:
+				if (pmmr_mode == 0 && tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					pacct->acct_info.ac_fmaec +=
+						((tsk->pmc_pmmr[i]
+						  - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+				} else {
+					tsk->pmc_pmmr[i] = -1;
+					pacct->acct_info.ac_fmaec = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC14:
+				if (pmmr_mode == 0 && tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					pmc_val =((tsk->pmc_pmmr[i]
+                                       - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+                                       /*conversion of clock count to microsecond*/
+                                         pacct->acct_info.ac_ptcc += (pmc_val/clock_val_mhz);
+
+				} else {
+					tsk->pmc_pmmr[i] = -1;
+					pacct->acct_info.ac_ptcc = tsk->pmc_pmmr[i];
+				}
+				break;
+			case PMC15:
+				if (pmmr_mode == 0 && tsk->pmc_pmmr[i] != -1){
+					tsk->pmc_pmmr[i] = tsk->p_ve_thread->PMC[i];
+					pmc_val =((tsk->pmc_pmmr[i]
+                                       - tsk->initial_pmc_pmmr[i]) & CHK_OVRFLW);
+                                       /*conversion of clock count to microsecond*/
+                                       pacct->acct_info.ac_ttcc += (pmc_val/clock_val_mhz);
+
+				} else {
+					tsk->pmc_pmmr[i] = -1;
+					pacct->acct_info.ac_ttcc = tsk->pmc_pmmr[i];
+				}
+				break;
+		}
+	}
+}
+
 
 /**
  * @brief Collect accounting information into pacct_struct.
@@ -2069,6 +2579,8 @@ void psm_acct_collect(int exit_code, struct ve_task_struct *tsk)
 		pacct->ac_flag |= AXSIG;
 	if (tsk->flags & PF_DUMPCORE)
 		pacct->ac_flag |= ACORE;
+	if (tsk->uid == 0)
+		pacct->ac_flag |= ASU;
 
 	/* Time spend by the process while scheduled on VE core */
 	pacct->ac_utime += tsk->exec_time;
@@ -2079,9 +2591,53 @@ void psm_acct_collect(int exit_code, struct ve_task_struct *tsk)
 		pacct->ac_exitcode = exit_code;
 	}
 
+
+	/*max number of thread, acct_info.ac_nthread*/
+	pacct->acct_info.ac_max_nthread++;
+
+	/*calculate difference of initial and final value of pmc_pmmr*/
+	get_performance_register_info(tsk);
+
+
 hndl_return:
 	VEOS_TRACE("Exiting");
 	return;
+}
+
+/**
+ * @brief Return the number of "Active VE processes" on NUMA node.
+ *        If a VE process meets following condition, the VE process is called
+ *        "Active VE process".
+ *        + Its state is WAIT or RUNNING
+ *
+ * @param[in] numa_node NUMA node number.
+ *
+ * @return The number of "Active VE processes" on NUMA node.
+ *
+ * @internal
+ * @author PSMG / Scheduling and context switch
+ */
+static int psm_get_active_proc_num_numa(int numa_node)
+{
+	struct ve_core_struct *p_ve_core;
+	int i;
+	int active_proc_num_numa = 0;
+
+	VEOS_TRACE("Entering");
+
+	for (i = 0; VE_NODE(0)->numa[numa_node].cores[i] != NULL; i++) {
+		p_ve_core = VE_NODE(0)->numa[numa_node].cores[i];
+		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), RDLOCK,
+					"Failed to acquire ve core read lock");
+		active_proc_num_numa += psm_get_active_proc_num(p_ve_core);
+		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
+					"Failed to release ve core lock");
+	}
+
+	VEOS_DEBUG("NUMA[%d] active_proc_num : %d",
+					numa_node, active_proc_num_numa);
+	VEOS_TRACE("Exiting");
+	return active_proc_num_numa;
 }
 
 /**
@@ -2139,6 +2695,10 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	int num_proc_numa_node = -1, min_proc_numa_node = -1;
 	int num_proc_numa_node_min = MAX_TASKS_PER_NODE;
 	int actual_node_id = -1;
+	pid_t sid = -1;
+	struct stat statbuf;
+	char proc_self_path[PATH_MAX] = {0};
+	unsigned int  dev_major = 0, dev_minor = 0;
 
 	VEOS_TRACE("Entering");
 
@@ -2240,8 +2800,42 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	tsk->thread_execed = false;
 	tsk->assign_task_flag = TSK_UNASSIGN;
 	tsk->dummy_task = true;
-	tsk->real_parent_pid = real_parent_pid;
+	tsk->real_parent_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
+						real_parent_pid);
+	if (tsk->real_parent_pid <= 0) {
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				real_parent_pid,
+				strerror(errno));
+	}
 	tsk->proc_pid = proc_pid;
+
+	/*session id of process for process accounting data*/
+	sid = getsid(tsk->pid);
+        if(sid == -1) {
+                VEOS_ERROR("sid request error");
+                VEOS_DEBUG("Failed to get sid of the process,"
+                                "return value: %s", strerror(errno));
+		goto free_cr_data;
+        } else
+		tsk->sid = sid;
+
+	/*controlling terminal (tty) id of process for process accounting data*/
+	sprintf(proc_self_path, "/proc/%d/fd/0", tsk->pid);
+	if(stat(proc_self_path, &statbuf) == -1){
+		VEOS_ERROR("stat failed, return value: %s", strerror(errno));
+		tsk->tty = -1;
+		retval = -errno;
+		goto free_cr_data;
+	} else {
+		dev_major = major(statbuf.st_rdev);
+		dev_minor = minor(statbuf.st_rdev);
+		tsk->tty = ((dev_major << 8) | dev_minor);
+		VEOS_DEBUG("controlling terminal(tty): %d", tsk->tty);
+	}
+
 	/* Allocate time slice to VE task, however when scheduled
 	 * this value will be initialised again. We are initializing it
 	 * so that it does not contain any junk value. */
@@ -2268,7 +2862,7 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	INIT_LIST_HEAD(&tsk->siblings);
 	INIT_LIST_HEAD(&tsk->thread_group);
 	INIT_LIST_HEAD(&tsk->tasks);
-	INIT_LIST_HEAD(&tsk->swapped_pages);
+	INIT_LIST_HEAD(&tsk->p_ve_mm->swapped_pages);
 	ve_init_sigpending(&tsk->pending);
 	sigemptyset(&tsk->blocked);
 
@@ -2315,7 +2909,7 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	/* Finding least loaded numa node */
 	if ((*numa_node == -1) && (*ve_core_id == -1)) {
 		for (; numa_loop < max_numa_node; numa_loop++) {
-			num_proc_numa_node = VE_NODE(0)->numa[numa_loop].num_ve_proc;
+			num_proc_numa_node = psm_get_active_proc_num_numa(numa_loop);
 			if (num_proc_numa_node < num_proc_numa_node_min) {
 				num_proc_numa_node_min = num_proc_numa_node;
 				min_proc_numa_node = numa_loop;
@@ -2584,8 +3178,10 @@ int psm_handle_start_ve_request(struct veos_thread_arg *pti, int pid)
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
 		"Failed to acquire task lock");
 
-	/* Start time of new VE process is maintained */
-	/* The birth time of task do not change across exec */
+	/* Start time of new VE process is maintained
+	 * The birth time of task do not change across exec
+	 * The performance counter values are carried forward across execve
+	 */
 	if (tsk->rpm_create_task || !tsk->execed_proc) {
 		tsk->rpm_create_task = false;
 		tsk->dummy_task = false;
@@ -2958,7 +3554,13 @@ int psm_handle_block_request(pid_t pid)
 	if (p_ve_core->nr_active == 0 || (p_ve_core->curr_ve_task == tsk)) {
 		/* Halt core specially added for correct
 		 * CPU busy time update */
+		pthread_mutex_lock_unlock(&tsk->group_leader->p_ve_mm->thread_group_mm_lock,
+                               LOCK, "Failed to acquire thread-group-mm-lock");
+
 		psm_halt_ve_core(0, p_ve_core->core_num, &regdata, false);
+		pthread_mutex_lock_unlock(&tsk->group_leader->p_ve_mm->thread_group_mm_lock,
+                               UNLOCK, "Failed to release thread-group-mm-lock");
+
 
 		if (p_ve_core->nr_active == 0) {
 			pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
@@ -3090,6 +3692,7 @@ int psm_handle_un_block_request(struct ve_task_struct *tsk,
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
 			"Failed to release task lock");
 
+	update_accounting_data(tsk, ACCT_SYSCALL, 1);
 	if (p_ve_core->nr_active == 1)
 		schedule_current = true;
 
@@ -3831,7 +4434,7 @@ int psm_handle_do_acct_ve(char *file_name)
 	VEOS_TRACE("Entering");
 	/* Disable previous accounting */
 	pthread_mutex_lock_unlock(&(veos_acct.ve_acct_lock), LOCK,
-		"Failed to acquire task accounting lock");
+		"Failed to acquire process accounting lock");
 	veos_acct.active = false;
 	if (NULL != veos_acct.file) {
 		free(veos_acct.file);
@@ -3861,13 +4464,96 @@ int psm_handle_do_acct_ve(char *file_name)
 	veos_acct.fd = fd;
 	veos_acct.file = file_name;
 	VEOS_DEBUG("VE Accounting File: %s", veos_acct.file);
-
 	retval = 0;
 hndl_return:
 	pthread_mutex_lock_unlock(&(veos_acct.ve_acct_lock), UNLOCK,
-		"Failed to release task accounting lock");
+		"Failed to release process accounting lock");
 	VEOS_TRACE("Exiting");
 	return retval;
+}
+
+/**
+ * @brief Invalidating process accounting data in case of wrong PMMR/user input.
+ *
+ * @param[in] tsk task_struct of the process.
+ *
+ * @param[in] regid register ID.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+void invalidate_core_accounting_data(struct ve_task_struct *tsk, usr_reg_name_t regid)
+{
+	int i = 0;
+	if (regid == -1){
+		for(i = 0; i < PMC_REG; i++)
+			tsk->pmc_pmmr[i] = -1;
+	} else if((regid >= PMC00) && (regid <= PMC15)){
+		tsk->pmc_pmmr[regid - PMC00] = -1;
+	}
+}
+
+/**
+ * @brief Initialize process's accounting data.
+ *
+ * @param[in] tsk task_struct of the process.
+ *
+ * @param[in] pmmr register value to be set.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+void init_perf_accounting(struct ve_task_struct *tsk, reg_t pmmr, uint64_t *pmc)
+{
+	reg_t pmmr_mode = 0x00, pmmr_mode_val = 0x00;
+	int i = 0, regid = 0;
+	if (tsk->sighand->pacct.acct_info.ac_version == 0 || tsk->execed_proc){
+		tsk->sighand->pacct.acct_info.ac_version = 14;
+	} else {
+		invalidate_core_accounting_data(tsk, -1);
+		return;
+	}
+	for(i = 0; i < PMC_REG; i++) {
+		regid = PMC00 + i;
+		pmmr_mode_val =  (pmmr & (PMMR_SHIFT >> 4*i));
+                pmmr_mode = (pmmr_mode_val >> 4*(PMC_REG - i - 1));
+		switch (regid){
+			case PMC00:
+			case PMC01:
+			case PMC02:
+			case PMC04:
+			case PMC06:
+			case PMC11:
+			case PMC13:
+			case PMC14:
+			case PMC15:
+				if (pmmr_mode == 0){
+					tsk->initial_pmc_pmmr[i] = pmc[i];
+				} else {
+					tsk->initial_pmc_pmmr[i] = -1;
+				}
+				break;
+			case PMC03:
+				if (pmmr_mode == 0 || pmmr_mode == 2){
+					tsk->initial_pmc_pmmr[i] = pmc[i];
+				} else {
+					tsk->initial_pmc_pmmr[i] = -1;
+				}
+				break;
+			case PMC05:
+			case PMC07:
+			case PMC08:
+			case PMC09:
+			case PMC10:
+			case PMC12:
+				if (pmmr_mode == 0 || pmmr_mode == 1){
+					tsk->initial_pmc_pmmr[i] = pmc[i];
+				} else {
+					tsk->initial_pmc_pmmr[i] = -1;
+				}
+				break;
+		}
+	}
 }
 
 /**
@@ -3890,18 +4576,29 @@ int psm_handle_set_reg_req(struct ve_task_struct *tsk, usr_reg_name_t regid,
 {
 	int retval = -1;
 	reg_t old_regval = 0;
-	int core_id = -1;
+	int core_id = -1, i = 0;
 	struct ve_core_struct *p_ve_core = NULL;
 	bool sync_reg = false;
+	int regids[PMC_REG] = {0};
+	uint64_t pmc[PMC_REG] = {0};
 
 	VEOS_TRACE("Entering");
 
 	core_id = tsk->core_id;
 	p_ve_core = VE_CORE(0, core_id);
 
-	VEOS_DEBUG("Reg: %d New Regval: %lx Mask: %lx",
-			regid, regval, mask);
+	VEOS_DEBUG("Reg: %d New Regval: %lx Mask: %lx",	regid, regval, mask);
 
+	if (regid == PMMR) {
+		retval = get_ve_task_struct(tsk);
+		if (0 > retval) {
+			VEOS_ERROR("failed to get task reference");
+			return retval;
+		}
+		for (i = 0; i < PMC_REG; i++)
+			regids[i] = PMC00 + i;
+		psm_get_regval(tsk, PMC_REG, regids, pmc);
+	}
 	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
 			RDLOCK, "Failed to acquire core's read lock");
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
@@ -3957,9 +4654,11 @@ int psm_handle_set_reg_req(struct ve_task_struct *tsk, usr_reg_name_t regid,
 		regval = (old_regval & (~mask)) | (regval & mask);
 		tsk->p_ve_thread->PMMR = regval;
 		SET_BIT(tsk->pmr_context_bitmap, 1);
+		init_perf_accounting(tsk, regval, pmc);
 		retval = 0;
 		goto hndl_ret;
 	}
+
 	if ((regid >= SR00) && (regid <= SR63)) {
 		/* In scaler register mask will be always USER_REG_MASK,
 		 * so we dont need the latest register value from core.
@@ -4020,24 +4719,25 @@ int psm_handle_set_reg_req(struct ve_task_struct *tsk, usr_reg_name_t regid,
 		regval = (old_regval & (~mask)) | (regval & mask);
 		tsk->p_ve_thread->PMC[regid - PMC00] = regval;
 		SET_BIT(tsk->pmr_context_bitmap, ((regid - PMC00) + 6));
+		invalidate_core_accounting_data(tsk, regid);
 		retval = 0;
 		goto hndl_ret;
 	}
+	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
+		"Failed to release task lock");
 	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
 			UNLOCK, "Failed to release core's read lock");
 
-	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
-		"Failed to release task lock");
 
 	VEOS_ERROR("Failed to handle pseudo process request: "
 			"unmatched register");
 	return retval;
 hndl_ret:
-	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
-			UNLOCK, "Failed to release core's read lock");
-
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
 		"Failed to release task lock");
+
+	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
+			UNLOCK, "Failed to release core's read lock");
 	VEOS_TRACE("Exiting");
 	return retval;
 }

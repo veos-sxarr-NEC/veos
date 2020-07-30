@@ -30,6 +30,7 @@
 #include "veos_handler.h"
 #include "veos.h"
 #include "task_mgmt.h"
+#include "veos_sock.h"
 #define VMFLAGS_LENGTH  81
 #define VE_MAX_REGVALS  64
 #define MAX_CORE_IN_HEX  4

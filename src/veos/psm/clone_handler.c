@@ -351,6 +351,8 @@ int copy_ve_thread(struct ve_task_struct *current,
 		} else {
 			/*Setting PEF bits to 0 in child*/
 			new_tsk->p_ve_thread->PSW &= pef_rst_mask;
+			update_accounting_data(current, ACCT_TRANSDATA,
+					PSM_CTXSW_CREG_SIZE / (double)1024);
 		}
 	} else {
 		VEOS_DEBUG("Copying parent's (%d) p_ve_thread",	current->pid);
@@ -540,6 +542,8 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 {
 	struct ve_task_struct *new_task = NULL;
 	int retval = -1, ret = -1;
+	int i = 0;
+
 	VEOS_TRACE("Entering");
 
 	if (!fork_info) {
@@ -596,7 +600,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	INIT_LIST_HEAD(&(new_task->children));
 	INIT_LIST_HEAD(&(new_task->siblings));
 	INIT_LIST_HEAD(&(new_task->tasks));
-	INIT_LIST_HEAD(&(new_task->swapped_pages));
+	INIT_LIST_HEAD(&(new_task->p_ve_mm->swapped_pages));
 	ve_init_sigpending(&(new_task->pending));
 
 	/*setting signal related fields in child process*/
@@ -609,6 +613,10 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 
 	/* new_task is not created on driver yet, hence set flag to false*/
 	new_task->is_crt_drv = false;
+
+	/*copy parent's PMMR,PMC data to child process*/
+	for(i = 0; i < PMC_REG; i++)
+		new_task->initial_pmc_pmmr[i] = current->pmc_pmmr[i] ;
 
 	if (!(clone_flags & CLONE_THREAD)) {
 		VEOS_DEBUG("Setting private members in child to NULL");
@@ -626,6 +634,8 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 		new_task->ipc_sync = NULL;
 		new_task->thread_sched_count = NULL;
 		new_task->thread_sched_bitmap = NULL;
+		new_task->sighand->pacct.acct_info.ac_max_nthread = 0;
+		new_task->sighand->pacct.acct_info.ac_syscall = 0;
 	}
 
 	if (clone_flags & CLONE_VFORK) {
@@ -647,7 +657,6 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 		VEOS_ERROR("Failed to create sighand structure");
 		goto free_new_task;
 	}
-
 	/* Creating the process address space by setting up all ATB entries
 	 * and memory descriptors for the new VE process with the help of AMM.
 	 */
@@ -674,6 +683,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 		new_task->ipc_sync = new_task->group_leader->ipc_sync;
 		new_task->parent = current->parent;
 		new_task->p_ve_thread->SR[11] = stack_start;
+
 	} else {
 
 		/*CR process dump file name*/
@@ -1120,7 +1130,11 @@ int do_ve_fork(unsigned long clone_flags,
 				fork_info->child_pid);
 		retval = -ENOMEM;
 		goto hndl_return1;
+	} else {
+		update_accounting_data(new_task, ACCT_TRANSDATA,
+					sizeof(uint64_t) / (double)1024);
 	}
+
 
 	/* If all successful, return the core ID assigned
 	 * to newly created VE process/VE thread */

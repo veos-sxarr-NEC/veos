@@ -1462,19 +1462,25 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 	case VE_SYSVE_AIO_WAIT:
 		retval = sys_ve_aio_wait(handle, (void *)args[1]);
 		break;
-        case VE_SYSVE_ACCELERATED_IO_INIT:
-                retval = sys_accelerated_io_init(handle,(void **)args[1],
-                                                 (uint64_t *)args[2], (void *)args[3], (uint64_t *)args[4], (int)args[5]);
-                break;
-        case VE_SYSVE_ACCELERATED_IO_REGISTER_DMAATB:
-                retval = sys_accelerated_io_register_dmaatb(handle,(void *)args[1],
-                                                 (uint64_t *)args[2], (void *)args[3], (uint64_t *)args[4], (int)args[5]);
+	case VE_SYSVE_ACCELERATED_IO_INIT:
+		retval = sys_accelerated_io_init(handle,(void **)args[1],
+				(uint64_t *)args[2], (void *)args[3],
+				(uint64_t *)args[4], (int)args[5]);
+		break;
+	case VE_SYSVE_ACCELERATED_IO_REGISTER_DMAATB:
+		retval = sys_accelerated_io_register_dmaatb(handle,
+				(void *)args[1], (uint64_t *)args[2],
+				(void *)args[3], (uint64_t *)args[4],
+				(int)args[5]);
 		break;
 	case VE_SYSVE_SYSTEM:
 		retval = sys_system(handle, args[1], args[2]);
 		break;
 	case VE_SYSVE_SYSTEM2:
 		retval = sys_system2(handle, args[1], args[2], args[3]);
+		break;
+	case VE_SYSVE_GET_VEOS_PID:
+		retval = ve_sys_get_veos_pid(handle);
 		break;
 
 	default:

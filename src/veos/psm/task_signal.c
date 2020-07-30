@@ -198,7 +198,7 @@ int psm_restore_ve_context(struct ve_task_struct *ve_task_curr)
 	ve_dma_status_t st;
 	struct ve_node_struct *vnode_info;
 	int retval = 0;
-
+	uint64_t dma_size = 0;
 	VEOS_TRACE("Entering");
 
 	memset(&p_ve_sigframe, 0, sizeof(struct sigframe));
@@ -242,6 +242,14 @@ int psm_restore_ve_context(struct ve_task_struct *ve_task_curr)
 				" virtual memory", ve_task_curr->pid);
 		retval = -EFAULT;
 		goto ret;
+	} else {
+		dma_size = sizeof(struct sigframe);
+		pthread_mutex_lock_unlock(&(ve_task_curr->sighand->siglock), LOCK,
+                        "Failed to acquire task sighand lock");
+		ve_task_curr->sighand->pacct.acct_info.ac_transdata +=
+					(dma_size / (double)1024);
+		pthread_mutex_lock_unlock(&(ve_task_curr->sighand->siglock), UNLOCK,
+                        "Failed to release task sighand lock");
 	}
 
 	/* Copy the current hardware context from the sigframe
@@ -1289,6 +1297,13 @@ static int setup_ve_frame(int signum,
 					UNLOCK,
 					"failed to release task lock");
 			return -EFAULT;
+		} else {
+			pthread_mutex_lock_unlock(&(p_ve_task->sighand->siglock), LOCK,
+				"Failed to acquire task sighand lock");
+			p_ve_task->sighand->pacct.acct_info.ac_transdata +=
+					(dma_size / (double)1024);
+			pthread_mutex_lock_unlock(&(p_ve_task->sighand->siglock), UNLOCK,
+				"Failed to release task sighand lock");
 		}
 	}
 
@@ -2101,6 +2116,7 @@ int ve_get_signal(struct ve_task_struct *p_ve_task, int *flag,
 			p_ve_task->sighand->signal_flag =
 				VE_SIGNAL_GROUP_COREDUMP;
 			p_ve_task->flags |= PF_DUMPCORE;
+			p_ve_task->flags |= PF_SIGNALED;
 			psm_set_task_state(p_ve_task, STOP);
 			pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock)
 				, UNLOCK, "failed to release task lock");
@@ -2172,6 +2188,7 @@ hndl_terminate:
 		} else {
 			VEOS_DEBUG("%d signal: %d action is terminate",
 					p_ve_task->pid ,signum);
+			p_ve_task->flags |= PF_SIGNALED;
 			kill(p_ve_task->pid, SIGKILL);
 		}
 hndl_exit:

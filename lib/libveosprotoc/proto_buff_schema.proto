@@ -11,4 +11,5 @@ message pseudo_veos_message {
 				      * */
 	optional int32 ve_pid = 6; /*!< VE process PID for which information
 				* is required VEOS modules */
+	optional bytes veos_version = 7; /*!< VEOS version */
 };

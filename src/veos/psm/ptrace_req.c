@@ -359,7 +359,10 @@ int psm_ptrace_peekdata(struct ve_task_struct *p_ve_task, uint64_t addr,
 	if (-1 == retval) {
 		VEOS_DEBUG("DMA failed during ptrace PEEKDATA");
 		goto hndl_return;
-	}
+	} else {
+		update_accounting_data(p_ve_task, ACCT_TRANSDATA,
+				sizeof(uint64_t) / (double)1024);
+		}
 
 	retval = 0;
 hndl_return:
@@ -409,7 +412,11 @@ int psm_ptrace_pokedata(struct ve_task_struct *p_ve_task, uint64_t addr,
 	if (-1 == retval) {
 		VEOS_DEBUG("DMA failed during ptrace POKEDATA");
 		goto hndl_return;
+	} else {
+		update_accounting_data(p_ve_task, ACCT_TRANSDATA,
+					sizeof(uint64_t) / (double)1024);
 	}
+
 
 	retval = 0;
 hndl_return:
@@ -595,7 +602,11 @@ int psm_ptrace_getregs(struct ve_task_struct *p_ve_task, uint64_t data)
 	if (-1 == retval) {
 		VEOS_DEBUG("DMA failed during ptrace GETREGS");
 		goto hndl_return;
+	} else {
+		update_accounting_data(p_ve_task, ACCT_TRANSDATA,
+				sizeof(struct ve_user_regs) / (double)1024);
 	}
+
 
 	retval = 0;
 hndl_return:
@@ -634,7 +645,11 @@ int psm_ptrace_setregs(struct ve_task_struct *p_ve_task, uint64_t data)
 	if (-1 == retval) {
 		VEOS_DEBUG("DMA failed during ptrace SETREGS");
 		goto hndl_return;
+	} else {
+		update_accounting_data(p_ve_task, ACCT_TRANSDATA,
+				sizeof(struct ve_user_regs) / (double)1024);
 	}
+
 
 	/* Update the VE user register set maintained the VE task struct */
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK,
@@ -689,7 +704,11 @@ int psm_ptrace_getvregs(struct ve_task_struct *p_ve_task, uint64_t data)
 	if (-1 == retval) {
 		VEOS_DEBUG("DMA failed during ptrace GETVREGS");
 		goto hndl_return;
+	} else {
+		update_accounting_data(p_ve_task, ACCT_TRANSDATA,
+				sizeof(struct ve_user_regs) / (double)1024);
 	}
+
 
 	retval = 0;
 hndl_return:
@@ -728,6 +747,9 @@ int psm_ptrace_setvregs(struct ve_task_struct *p_ve_task, uint64_t data)
 	if (-1 == retval) {
 		VEOS_DEBUG("DMA failed during ptrace SETVREGS");
 		goto hndl_return;
+	} else {
+		update_accounting_data(p_ve_task, ACCT_TRANSDATA,
+                                sizeof(struct ve_user_vregs) / (double)1024);
 	}
 
 	/* Update the VE vector register set maintained the VE task struct */

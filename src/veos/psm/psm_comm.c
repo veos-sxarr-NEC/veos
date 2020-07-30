@@ -185,7 +185,8 @@ int psm_pseudo_send_load_binary_req(struct veos_thread_arg *pti,
 {
 	ssize_t retval = -1;
 	struct new_proc_info new_ve_proc = {0};
-	ProtobufCBinaryData new_ve_proc_msg = {0};	
+	ProtobufCBinaryData new_ve_proc_msg = {0};
+	ProtobufCBinaryData ve_version = {0};
 	PseudoVeosMessage ld_binary_req = PSEUDO_VEOS_MESSAGE__INIT;
 	char buf[MAX_PROTO_MSG_SIZE] = {0};
 	ssize_t pseudo_msg_len = 0, msg_len = 0;
@@ -210,6 +211,11 @@ int psm_pseudo_send_load_binary_req(struct veos_thread_arg *pti,
 	new_ve_proc_msg.len = sizeof(new_ve_proc);
 	new_ve_proc_msg.data = (uint8_t *)&(new_ve_proc);
 	ld_binary_req.pseudo_msg = new_ve_proc_msg;
+
+	ld_binary_req.has_veos_version = true;
+	ve_version.data = (uint8_t *)VERSION_STRING;
+	ve_version.len = strlen(VERSION_STRING) + 1;
+	ld_binary_req.veos_version = ve_version;
 
 	pseudo_msg_len = pseudo_veos_message__get_packed_size(&ld_binary_req);
 
@@ -651,6 +657,113 @@ hndl_return:
 }
 
 /**
+ * @brief Handles the request of NEW_VE_PROC_COMPT request.
+ *
+ * @param[in] pti Contains the request message received from pseudo process
+ *
+ * @return negative value on failure.
+ *
+ * @internal
+ * @author PSMG / MP-MT
+ */
+int psm_handle_old_exec_ve_proc_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	int pack_msg_len = -1;
+	int msg_pack_len = -1;
+	char pack_buf[MAX_PROTO_MSG_SIZE] = {0};
+	PseudoVeosMessage ack = PSEUDO_VEOS_MESSAGE__INIT;
+	ProtobufCBinaryData ve_version = {0};
+
+	VEOS_TRACE("Entering");
+	/* Populating return value */
+	ack.has_syscall_retval = true;
+	ack.syscall_retval = -EFAULT;
+
+	/* Populating version value */
+	ack.has_veos_version = true;
+	ve_version.data = (uint8_t *)VERSION_STRING;
+	ve_version.len = strlen(VERSION_STRING);
+	ack.veos_version = ve_version;
+
+	pack_msg_len = pseudo_veos_message__get_packed_size(&ack);
+	msg_pack_len = pseudo_veos_message__pack(&ack, (uint8_t *)pack_buf);
+	if (pack_msg_len != msg_pack_len) {
+		VEOS_ERROR("Acknowledgment from VEOS to RPM failed");
+		VEOS_DEBUG("Expected length: %d, Received length: %d",
+				pack_msg_len, msg_pack_len);
+		goto hndl_return;
+	}
+
+	retval = veos_write_buf(pti->socket_descriptor, pack_buf, pack_msg_len);
+	if (retval < pack_msg_len) {
+		VEOS_ERROR("Written: %d bytes of total: %d bytes",
+				retval, pack_msg_len);
+		retval = -1;
+		goto hndl_return;
+	}
+	retval = 0;
+
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief This function is used to compare the versions.
+ *
+ * @param veos_ver[in] version number of VEOS
+ * @param recvd_ver[in] version number received
+ *
+ * @return,
+ * -1 if veos version is smallar than received version number
+ * 1 if veos version is greater than received version number
+ * 0 if both veos and received version is same.
+ */
+int version_compare(char *veos_ver, char *recvd_ver)
+{
+	int veos_len = 0, recvd_len = 0;
+	int veos_num = 0, recvd_num = 0;
+	int vlv = 0, lv = 0;
+
+	veos_len = strlen(veos_ver);
+	VEOS_DEBUG("VEOS version: %s  length: %d", veos_ver, veos_len);
+	recvd_len = strlen(recvd_ver);
+	VEOS_DEBUG("Received version: %s  length: %d", recvd_ver,  recvd_len);
+
+	for (vlv = 0, lv = 0; (vlv < veos_len || lv < recvd_len);) {
+		/* Store each digit of 'veos_ver' in 'veos_num' one by one */
+		while (vlv < veos_len && veos_ver[vlv] != '.') {
+			veos_num = veos_num * 10 + (veos_ver[vlv] - '0');
+			vlv++;
+		}
+
+		/* Store each digit of 'recvd_ver' in 'recvd_num' one by one */
+		while (lv < recvd_len && recvd_ver[lv] != '.') {
+			recvd_num = recvd_num * 10 + (recvd_ver[lv] - '0');
+			lv++;
+		}
+
+		/* Now compare each digit of veos version with received version */
+
+		if (veos_num < recvd_num) {
+			VEOS_DEBUG("veos version is older than received version");
+			return -1;
+		}
+		if (recvd_num < veos_num) {
+			VEOS_DEBUG("veos version is newer than received version");
+			return 1;
+		}
+
+		veos_num = recvd_num = 0;
+		vlv++;
+		lv++;
+	}
+	VEOS_DEBUG("veos version is equal to received version");
+	return 0;
+}
+
+/**
  * @brief Handles the request of creation of a new VE process.
  *
  * @param[in] pti Contains the request message received from pseudo process
@@ -677,6 +790,8 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 	pid_t real_parent_pid = -1;
 	pid_t proc_pid = -1;
 	int mem_policy = MPOL_DEFAULT;
+	PseudoVeosMessage *req_msg = NULL;
+	char *version = NULL;
 
 	VEOS_TRACE("Entering");
 
@@ -715,8 +830,29 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 	real_parent_pid = ve_proc.real_parent_pid;
 	proc_pid = pti->cred.pid;
 
+	req_msg = (PseudoVeosMessage *)pti->pseudo_proc_msg;
+	version = malloc(req_msg->veos_version.len + 1);
+	if (NULL == version) {
+		retval = -errno;
+		VEOS_CRIT("Internal Memory allocation failed");
+		VEOS_DEBUG("Malloc failed: %s",
+				strerror(errno));
+		goto hndl_return;
+	}
+	memset(version, '\0', req_msg->veos_version.len + 1);
+	memcpy(version, req_msg->veos_version.data,
+			req_msg->veos_version.len);
+	retval = version_compare(VERSION_STRING, version);
+	VEOS_DEBUG("VEOS version: %s, Received version: %s retval: :%d",
+			VERSION_STRING, version, retval);
+	if (retval == -1) {
+		VEOS_ERROR("VEOS version is older than ve_exec version");
+		retval = -EINVAL;
+		goto hndl_return;
+	}
+
 	retval = amm_dma_xfer(VE_DMA_VHVA, ve_proc.exec_path, pid, VE_DMA_VHVA,
-				(uint64_t)exe_path, getpid(), PATH_MAX, 0);
+			(uint64_t)exe_path, getpid(), PATH_MAX, 0);
 	if (-1 == retval) {
 		VEOS_ERROR("Failed to get path of new VE process binary");
 		goto hndl_return;
@@ -745,7 +881,6 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 		tsk->exit_status = 0;
 		tsk->exit_code_set = 0;
 		tsk->block_status = BLOCK_RECVD;
-
 		pthread_rwlock_lock_unlock(&(tsk->p_ve_core->ve_core_lock), WRLOCK,
 				"Failed to acquire execve task's core write lock");
 		psm_set_task_state(tsk, WAIT);
@@ -809,6 +944,8 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 	}
 
 hndl_return:
+	if(version)
+		free(version);
 	if (tsk)
 		put_ve_task_struct(tsk);
 	retval = psm_pseudo_send_load_binary_req(pti,
@@ -3455,6 +3592,177 @@ hndl_return:
 	VEOS_TRACE("Exiting");
 	return retval;
 }
+
+/**
+ * @brief Handles the GET TIMES request from pseudo process.
+ *
+ * @details
+ * int psm_handle_get_times_req(struct veos_thread_arg *pti)
+ *
+ * @param[in] pti Contains the request received from the pseudo process
+ *
+ * @return 0 on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_handle_get_times_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	PseudoVeosMessage *times_req = NULL;
+	struct ve_task_struct *tsk = NULL;
+	struct ve_times ve_t = {{0}};
+	struct ve_times_info times_task = {0};
+	struct timeval now = {0};
+	struct ve_node_struct *p_ve_node = NULL;
+	pid_t pid = -1;
+	uint64_t total_time = 0;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument "
+				"received from pseudo process");
+		goto hndl_return;
+	}
+
+	times_req = (PseudoVeosMessage *)pti->
+					pseudo_proc_msg;
+
+	memcpy(&times_task, times_req->pseudo_msg.data,
+		times_req->pseudo_msg.len);
+
+	/* Convert namespace pid to host pid */
+	pid = pti->saved_host_pid;
+
+	if (pid <= 0) {
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				times_task.pid,
+				strerror(errno));
+		retval = -errno;
+		goto send_ack1;
+	}
+	times_task.pid = pid;
+
+	VEOS_DEBUG("%d", times_task.pid);
+
+	tsk = find_ve_task_struct(times_task.pid);
+	if (NULL == tsk) {
+		VEOS_ERROR("Failed to find task structure");
+		retval = -ESRCH;
+		goto send_ack1;
+	}
+
+
+	/*
+ 	 * Calculate the User space time for the 
+ 	 * all the calling process.	
+ 	 */
+	total_time = get_ve_proc_exec_time(tsk, 1);
+	ve_t.tms_utime.tv_sec = total_time/ MICRO_SECONDS;
+	ve_t.tms_utime.tv_usec = total_time% MICRO_SECONDS;
+
+	/*
+ 	 * Calculate the User space time for the 
+ 	 * all the waited child processes.	
+ 	 */
+	total_time = tsk->sighand->cexec_time;
+	ve_t.tms_cutime.tv_sec = total_time/MICRO_SECONDS;
+	ve_t.tms_cutime.tv_usec = total_time% MICRO_SECONDS;
+
+	/* 
+ 	 * Calculate the node Uptime
+ 	 */
+	p_ve_node = VE_NODE(tsk->node_id);
+	gettimeofday(&now, NULL);
+	total_time = ((now.tv_sec * MICRO_SECONDS) + now.tv_usec) -
+		p_ve_node->node_boot_time;	
+	ve_t.uptime.tv_sec = total_time / MICRO_SECONDS;
+	ve_t.uptime.tv_usec = total_time % MICRO_SECONDS; 
+
+	retval = 0;
+	
+	if (tsk)
+		put_ve_task_struct(tsk);
+send_ack1:
+	retval = psm_pseudo_get_times_ack(pti, retval, ve_t);
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Sends acknowlegdment for GET times request received
+ * from pseudo process.
+ *
+ * @details
+ * int psm_pseudo_get_times_ack(struct veos_thread_arg *pti,
+ *                 int ack_ret, struct ve_times ve_t)
+ *
+ * @param[in] pti Contains the request received from the pseudo process
+ * @param[in] ack_ret Acknowledgment to be send to pseudo process
+ * @param[in] ve_t struct ve_times to fill VE process times usage
+ *
+ * @return positive value on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_pseudo_get_times_ack(struct veos_thread_arg *pti,
+		int ack_ret, struct ve_times ve_t)
+{
+	ssize_t retval = -1;
+	PseudoVeosMessage times_ack = PSEUDO_VEOS_MESSAGE__INIT;
+	char buf[MAX_PROTO_MSG_SIZE] = {0};
+	ssize_t pseudo_msg_len = 0, msg_len = 0;
+	ProtobufCBinaryData veos_info = {0};
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("NULL argument received");
+		goto hndl_return;
+	}
+
+	/* Populate acknowledgment message */
+	times_ack.has_syscall_retval = true;
+	times_ack.syscall_retval = ack_ret;
+
+	times_ack.has_pseudo_msg = true;
+	veos_info.data = (uint8_t *)&ve_t;
+	veos_info.len = sizeof(struct ve_times);
+	times_ack.pseudo_msg = veos_info;
+
+	pseudo_msg_len = pseudo_veos_message__get_packed_size(&times_ack);
+	msg_len = pseudo_veos_message__pack(&times_ack, (uint8_t *)buf);
+
+	if (pseudo_msg_len != msg_len) {
+		VEOS_ERROR("Internal message protocol error");
+		VEOS_DEBUG("Expected length: %ld, Returned length: %ld",
+				pseudo_msg_len, msg_len);
+		retval = -1;
+		goto hndl_return;
+	}
+
+
+	VEOS_DEBUG("Sending times acknowledgement");
+	retval = psm_pseudo_send_cmd(pti->socket_descriptor,
+			buf, pseudo_msg_len);
+	if (retval < pseudo_msg_len) {
+		VEOS_ERROR("Failed to send response to pseudo process");
+		VEOS_DEBUG("Expected bytes: %ld, Transferred bytes: %ld",
+				pseudo_msg_len, retval);
+		retval = -1;
+	}
+
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
 
 /**
  * @brief Handles the GET RUSAGE request from pseudo process.

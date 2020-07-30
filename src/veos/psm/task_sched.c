@@ -36,7 +36,7 @@
 #include "cr_api.h"
 #include "locking_handler.h"
 #include "vesync.h"
-
+#include "ve_shm.h"
 /**
 * @brief Function handles the failure of assigning task on core
 * while context switch decision is ongoing.
@@ -1046,15 +1046,28 @@ int psm_calc_task_exec_time(struct ve_task_struct *curr_ve_task)
 {
 	struct timeval now_time = {0};
 	int retval = 0;
+	double exec_time_ticks = 0, size = 0;
+        uint64_t uss = 0, pss = 0, exec_time = 0;
+	uint64_t total_time = 0;
+	struct list_head *p, *n;
+	struct ve_task_struct *tmp = NULL, *group_leader = NULL;
 
 	VEOS_TRACE("Entering");
 	gettimeofday(&now_time, NULL);
-	curr_ve_task->exec_time += timeval_diff(now_time,
-			(curr_ve_task->stime));
+	exec_time = timeval_diff(now_time, (curr_ve_task->stime));
+	curr_ve_task->exec_time += exec_time;
+	group_leader = curr_ve_task->group_leader;
 
 	VEOS_DEBUG("Core %d PID %d Exec Time %ld",
 			curr_ve_task->p_ve_core->core_num,
 			curr_ve_task->pid, curr_ve_task->exec_time);
+
+	/*1679 ac_total_mem in each context switch*/
+	uss = get_uss(curr_ve_task->p_ve_mm);
+	pss = get_pss(curr_ve_task->p_ve_mm);
+	exec_time_ticks = (exec_time) / ((double)(USECOND / AHZ));
+	size = ((uss + pss) / (double)1024) * exec_time_ticks;
+	update_accounting_data(curr_ve_task, ACCT_TOTAL_MEM, size);
 
 	/* Check the RLIMIT_CPU resource limit of current
 	 * VE task.
@@ -1063,7 +1076,18 @@ int psm_calc_task_exec_time(struct ve_task_struct *curr_ve_task)
 	 * is send to VE process, if exceeds the hard limit
 	 * then SIGKILL is send.
 	 */
-	if (((curr_ve_task->exec_time)/(double)MICRO_SECONDS) >
+	total_time = group_leader->exec_time + group_leader->sighand->utime;
+	if (!list_empty(&group_leader->thread_group)) {
+		list_for_each_safe(p, n, &group_leader->thread_group) {
+			tmp = list_entry(p,
+					struct ve_task_struct,
+					thread_group);
+				VEOS_DEBUG("Thread with PID %d execution time %lu",
+						tmp->pid, tmp->exec_time);
+				total_time += tmp->exec_time;
+		}
+	}
+	if ((total_time/(double)MICRO_SECONDS) >
 			curr_ve_task->sighand->rlim[RLIMIT_CPU]
 			.rlim_max) {
 		VEOS_INFO("CPU Hard limit exceeded, "
@@ -1074,7 +1098,7 @@ int psm_calc_task_exec_time(struct ve_task_struct *curr_ve_task)
 		goto ret;
 	}
 	if (!curr_ve_task->cpu_lim_exceed) {
-		if (((curr_ve_task->exec_time)/(double)MICRO_SECONDS) >
+		if ((total_time/(double)MICRO_SECONDS) >
 				curr_ve_task->sighand->rlim[RLIMIT_CPU]
 				.rlim_cur) {
 			VEOS_INFO("CPU Soft limit exceeded, "
@@ -1190,7 +1214,8 @@ void psm_save_current_user_context(struct ve_task_struct *curr_ve_task)
 			curr_ve_task->p_ve_thread->EXS);
 	pthread_mutex_lock_unlock(&(curr_ve_task->ve_task_lock), UNLOCK,
 		"Failed to release task lock");
-
+	update_accounting_data(curr_ve_task, ACCT_TRANSDATA,
+			PSM_CTXSW_CREG_SIZE / (double)1024);
 success:
 	VEOS_TRACE("Exiting");
 }
@@ -1873,6 +1898,9 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *curr_ve_task,
 		if (dmast != VE_DMA_STATUS_OK) {
 			VEOS_DEBUG("Setting all user registers failed");
 			goto abort;
+		} else {
+			update_accounting_data(task_to_schedule, ACCT_TRANSDATA,
+						PSM_CTXSW_CREG_SIZE / (double)1024);
 		}
 		task_to_schedule->usr_reg_dirty = false;
 	}
@@ -2580,7 +2608,8 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 	struct ve_task_struct *loop_start = NULL;
 	struct ve_task_struct *ve_task_list_head = NULL;
 	struct ve_task_struct *temp = NULL;
-	int core_loop;
+	int core_loop, state, active_cnt;
+	int is_rebalance = 1;
 	int rebalance_flag = 0;
 	struct ve_core_struct *p_another_core;
 	struct ve_core_struct *p_given_core;
@@ -2588,6 +2617,20 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 	VEOS_TRACE("Entering");
 
 	p_given_core = VE_CORE(ve_node_id, ve_core_id);
+	pthread_rwlock_lock_unlock(&(p_given_core->ve_core_lock), RDLOCK,
+					"Failed to acquire Core %d read lock",
+					p_given_core->core_num);
+	if (!psm_check_rebalance_condition(p_given_core, 1)) {
+		is_rebalance = 0;
+	}
+	pthread_rwlock_lock_unlock(&(p_given_core->ve_core_lock), UNLOCK,
+					"Failed to release core's write lock");
+	if (!is_rebalance) {
+		VEOS_DEBUG("Active VE Tasks exist on core %d"
+			   " rebalance is canceled", p_given_core->core_num);
+		return NULL;
+	}
+
 
 	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores;
 			core_loop++) {
@@ -2625,6 +2668,29 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 			loop_start = p_another_core->ve_task_list;
 		}
 
+		active_cnt = 0;
+		temp = loop_start;
+		do {
+			pthread_mutex_lock_unlock(&temp->ve_task_lock, LOCK,
+					"Failed to acquire ve_task_lock");
+			if ((temp->ve_task_state == WAIT) ||
+					(temp->ve_task_state == RUNNING)) {
+				active_cnt++;
+			}
+			pthread_mutex_lock_unlock(&temp->ve_task_lock, UNLOCK,
+					"Failed to release ve_task_lock");
+		} while ((loop_start != temp->next) && (temp = temp->next));
+		if (active_cnt < 2) {
+			VEOS_DEBUG("Core[%d] has no excess tasks",
+						p_another_core->core_num);
+			task_to_rebalance = NULL;
+			pthread_rwlock_lock_unlock(
+					&(p_another_core->ve_core_lock),
+					UNLOCK,
+					"Failed to release core's write lock");
+			continue;
+		}
+
 		ve_task_list_head = p_another_core->ve_task_list;
 
 		/* Check wether curr_ve_task->next should be rabalanced. */
@@ -2632,8 +2698,20 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 			if (CPU_ISSET(ve_core_id,
 					&(task_to_rebalance->cpus_allowed)) &&
 				!(get_ve_task_struct(task_to_rebalance))) {
-				rebalance_flag = 1;
-				break;
+				pthread_mutex_lock_unlock(
+					&task_to_rebalance->ve_task_lock, LOCK,
+					"Failed to acquire ve_task_lock");
+				state = task_to_rebalance->ve_task_state;
+				pthread_mutex_lock_unlock(
+					&task_to_rebalance->ve_task_lock, UNLOCK,
+					"Failed to release ve_task_lock");
+				if ((state == WAIT) ||
+					(state == RUNNING)) {
+					rebalance_flag = 1;
+					break;
+				} else {
+					put_ve_task_struct(task_to_rebalance);
+				}
 			}
 			task_to_rebalance = task_to_rebalance->next;
 		}
@@ -2676,6 +2754,7 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 		pthread_rwlock_lock_unlock(&(p_another_core->ve_core_lock),
 				UNLOCK, "Failed to release core's write lock");
 	}
+	/* if task_to_rebalance is not NULL, ve_task_lock is still acquired */
 	VEOS_TRACE("Exiting");
 	return task_to_rebalance;
 }
@@ -2761,6 +2840,76 @@ void insert_and_update_task_to_rebalance(
 }
 
 /**
+ * @brief Check that specified VE core meets rebalancing condition.
+ *        "Rebalancing condition" is as follows.
+ *        When VE core meets one of the following condition, Rebalancing will be done.
+ *        - No VE task is on the VE core.
+ *        - Only VE tasks by which state is STOP, ZOMBIE, or EXIT_DEAD
+ *          are on the VE core.
+ *
+ * @param[in] p_ve_core Pointer to core structure of core which is idle.
+ * @param[in] strictly Do check strictly if '1' is specified.
+ *
+ * @return If specified VE core meets rebalancing condition, return 1,
+ *         if not, return 0.
+ *
+ * @note Caller should ensure that p_ve_core is not NULL.
+ *       Caller should ensure that p_ve_core->ve_core_lock is acquired.
+ */
+int psm_check_rebalance_condition(struct ve_core_struct *p_ve_core,
+				  int strictly)
+{
+	int do_rebalance = 0;
+	struct ve_task_struct *curr_ve_task;
+
+	VEOS_TRACE("Entering");
+
+	/* No VE task is on the VE core. */
+	if (NULL == p_ve_core->ve_task_list) {
+		do_rebalance = 1;
+		goto hdnl_return;
+	}
+
+	/* Only VE tasks by which state is STOP, ZOMBIE, or EXIT_DEAD
+	 * are on the VE core */
+	if (strictly != 1) {
+		//Simple Check
+		curr_ve_task = p_ve_core->curr_ve_task;
+		if (NULL == curr_ve_task) {
+			do_rebalance = 1;
+			goto hdnl_return;
+		}
+		pthread_mutex_lock_unlock(&curr_ve_task->ve_task_lock, LOCK,
+					"Failed to acquire ve_task_lock");
+		if ((curr_ve_task->ve_task_state == STOP) ||
+		    (curr_ve_task->ve_task_state == ZOMBIE) ||
+		    (curr_ve_task->ve_task_state == EXIT_DEAD))
+			do_rebalance = 1;
+		pthread_mutex_lock_unlock(&curr_ve_task->ve_task_lock, UNLOCK,
+					"Failed to release ve_task_lock");
+	} else {
+		//Strictly Check
+		curr_ve_task = p_ve_core->ve_task_list;
+		do_rebalance = 1;
+		do {
+			pthread_mutex_lock_unlock(&curr_ve_task->ve_task_lock,
+					LOCK, "Failed to acquire ve_task_lock");
+			if ((curr_ve_task->ve_task_state == WAIT) ||
+			    (curr_ve_task->ve_task_state == RUNNING))
+				do_rebalance = 0;
+			pthread_mutex_lock_unlock(&curr_ve_task->ve_task_lock,
+				UNLOCK, "Failed to release ve_task_lock");
+		} while ((p_ve_core->ve_task_list != curr_ve_task->next) &&
+					(do_rebalance == 1) &&
+					(curr_ve_task = curr_ve_task->next));
+	}
+
+hdnl_return:
+	VEOS_TRACE("Exiting(%d)", do_rebalance);
+	return do_rebalance;
+}
+
+/**
 * @brief Performs rebalancing on VE core if it does not have any
 * task in its core list.
 *
@@ -2775,10 +2924,10 @@ void psm_rebalance_task_to_core(struct ve_core_struct *p_ve_core)
 	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), RDLOCK,
 			"Failed to acquire Core %d read lock",
 			p_ve_core->core_num);
-	if (NULL == p_ve_core->ve_task_list) {
+	if (psm_check_rebalance_condition(p_ve_core, 0)) {
 		pthread_rwlock_lock_unlock(
 				&(p_ve_core->ve_core_lock), UNLOCK,
-				"Failed to acquire Core %d read lock",
+				"Failed to release Core %d read lock",
 				p_ve_core->core_num);
 
 		pthread_rwlock_lock_unlock(
@@ -2899,9 +3048,13 @@ void psm_find_sched_new_task_on_core(struct ve_core_struct *p_ve_core,
 			timeval_diff(now_time, p_ve_core->core_stime);
 		p_ve_core->core_stime = now_time;
 
+		pthread_mutex_lock_unlock(&(curr_ve_task->p_ve_mm->thread_group_mm_lock), LOCK,
+                        "Failed to acquire thread-group-mm-lock");
 		/* Update VE task execution time */
 		psm_calc_task_exec_time(curr_ve_task);
 
+		pthread_mutex_lock_unlock(&(curr_ve_task->p_ve_mm->thread_group_mm_lock), UNLOCK,
+                        "Failed to release thread-group-mm-lock");
 		/* Update time quantum of VE task
 		 * As this is the only eligible VE task on VE core, therefore
 		 * re-assign time quantum even if it is exhausted

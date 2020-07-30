@@ -39,6 +39,7 @@
 #include "pseudo_ptrace.h"
 #include <proc/readproc.h>
 #include <sys/statvfs.h>
+#include <sys/times.h>
 #include "pseudo_vhshm.h"
 #include "pseudo_veshm.h"
 #include "sys_accelerated_io.h"
@@ -2435,6 +2436,142 @@ ret_t ve_getrlimit(int syscall_num, char *syscall_name, veos_handle *handle)
 				sizeof(struct rlimit), (uint64_t *)(&rlim))) {
 		PSEUDO_DEBUG("retval: %d, mapped value: %d", -errno, -EFAULT);
 		retval = -EFAULT;
+	}
+hndl_return:
+	/* write return value */
+	PSEUDO_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief This Function converts the time in timeval struct to clock ticks.
+ *
+ * @details
+ * clock_t update_time_in_clock(struct timeval ts, uint64_t base_clock)
+ *
+ * @param[in] ts Times in timeval structure.
+ * @param[in] base_clock Frequency of the VE node.
+ *
+ * @return time in clock ticks.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+clock_t update_time_in_clock(struct timeval ts, uint64_t base_clock)
+{
+	return (ts.tv_sec * base_clock + ts.tv_usec / ( 1000000 / base_clock ) );
+}
+
+/**
+ * @brief Handles times() system call functionality for ve.
+ *
+ * @details
+ * clock_t times(struct tms *buf);
+ *
+ * This function fetches the arguments from VE and then
+ * offload to VEOS to get the time-accounting information
+ * for calling process and its waited Childrens.
+ * Then the populated struct tms will be send back
+ * to VE process.
+ *
+ * @param[in] syscall_num System Call number
+ * @param[in] syscall_name System Call name
+ * @param[in] handle VEOS handle
+ *
+ * @return system call value to VE process.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+ret_t ve_times(int syscall_num, char *syscall_name, veos_handle *handle)
+{
+	ret_t retval = -1;
+	struct tms t = {0};
+	struct ve_times ve_t = {{0}};
+	uint64_t args = 0, base_clock = 0 ;
+	struct ve_times_info times_task = {0};
+
+	PSEUDO_TRACE("Entering");
+	PSEUDO_DEBUG("%s is called", syscall_name);
+
+	/* get arguments */
+	retval = vedl_get_syscall_args(handle->ve_handle, &args, 1);
+	if (retval < 0) {
+		PSEUDO_ERROR("times() failure: "
+				"failed to fetch system call aguments");
+		PSEUDO_DEBUG("times() failure: return value: %d,"
+				" mapped value: %d",
+				(int)retval, -EFAULT);
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+
+	times_task.pid = syscall(SYS_gettid);
+
+	/* Get the VE specific times from VEOS.
+	*/
+	retval = pseudo_psm_send_get_times_req(handle->veos_sock_fd,
+			times_task);
+	if (retval < 0) {
+		PSEUDO_ERROR("times() failure: veos request error");
+		PSEUDO_DEBUG("times() failure: veos request error, "
+				"return value: %d, mapped value: %d",
+				(int)retval, -EFAULT);
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+
+	/* wait for acknowledgment from PSM */
+	retval = pseudo_psm_recv_get_times_ack(handle->veos_sock_fd,
+			&ve_t);
+	if (retval < 0) {
+		PSEUDO_ERROR("times() failure: "
+				"veos acknowledgement error");
+		PSEUDO_DEBUG("%s failure: "
+				"veos acknowledgement error, "
+				"return value: %di, mapped value: %d",
+				syscall_name, (int)retval, -EFAULT);
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+
+	PSEUDO_DEBUG("CPU User time (%ld sec %ld microsec) "
+			"CPU User time for child (%ld sec %ld microsec) "
+			"Uptime for node (%ld sec %ld microsec)",
+			ve_t.tms_utime.tv_sec,
+			ve_t.tms_utime.tv_usec,
+			ve_t.tms_cutime.tv_sec,
+			ve_t.tms_cutime.tv_usec,
+			ve_t.uptime.tv_sec,
+			ve_t.uptime.tv_usec
+			);
+
+	base_clock = sysconf(_SC_CLK_TCK);
+	if(base_clock <= 0 )
+	{
+		PSEUDO_DEBUG("Unable to get the node Frequency");
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+	else
+	{
+		PSEUDO_DEBUG("Node frequency is %ld Hz" , base_clock);
+	}
+
+	t.tms_utime = update_time_in_clock(ve_t.tms_utime, base_clock);
+	t.tms_cutime = update_time_in_clock(ve_t.tms_cutime, base_clock);
+	t.tms_stime = 0;
+	t.tms_cstime = 0 ;
+
+	retval = update_time_in_clock(ve_t.uptime, base_clock);
+	
+	if(0 != args)
+	{
+		/* send the filled times buffer */
+		if (0 > ve_send_data(handle, args,
+					sizeof(struct tms), (uint64_t *)(&t))) {
+			retval = -EFAULT;
+		}
 	}
 hndl_return:
 	/* write return value */

@@ -28,9 +28,9 @@
 
 #include "veos_handler.h"
 struct veos_cmd_entry pseudo_veos_cmd[PSEUDO_VEOS_MAX_MSG_NUM] = {
-	{"RPM_QUERY", veos_rpm_hndl_cmd_req},
+	{"RPM_QUERY", veos_rpm_hndl_old_cmd_req},
 	{"PTRACE_REQUEST", veos_handle_ptrace_req},
-	{"NEW_VE_PROC", psm_handle_exec_ve_proc_req},
+	{"NEW_VE_PROC", psm_handle_old_exec_ve_proc_req},
 	{"START_VE_REQ", psm_pseudo_recv_start_ve_request},
 	{"DEL_VE_PROC", psm_handle_delete_ve_proc_req},
 	{"FORK_VE_PROC", psm_handle_fork_ve_proc_req},
@@ -87,4 +87,8 @@ struct veos_cmd_entry pseudo_veos_cmd[PSEUDO_VEOS_MAX_MSG_NUM] = {
 	{"CMD_VHSHM", veos_vhshm},
 	{"MAP_DMADES", veos_handle_map_dmades},
 	{"UNMAP_DMADES", veos_handle_unmap_dmades},
+	{"RPM_QUERY_COMPT", veos_rpm_hndl_cmd_req},
+	{"NEW_VE_PROC_COMPT", psm_handle_exec_ve_proc_req},
+	{"GET_TIMES", psm_handle_get_times_req},
+	{"GET_VEOS_PID", veos_handle_get_veos_pid_req},
 };

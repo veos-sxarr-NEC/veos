@@ -29,6 +29,7 @@
 int psm_handle_send_pseudo_vefd_ack(struct veos_thread_arg *, int);
 ssize_t psm_pseudo_send_cmd(int, void *, ssize_t);
 int psm_pseudo_recv_cmd(int, void *, int);
+int version_compare(char *, char *);
 int psm_pseudo_send_start_ve(struct veos_thread_arg *, pid_t, int64_t);
 int psm_pseudo_send_fork_ack(struct veos_thread_arg *, int);
 int psm_pseudo_send_fork_fail(struct veos_thread_arg *, pid_t);
@@ -61,6 +62,7 @@ int psm_pseudo_send_setaffinity_ack(struct veos_thread_arg *, int ack_ret);
 int psm_pseudo_send_getaffinity_ack(struct veos_thread_arg *pti,
 		int64_t ack_ret, cpu_set_t mask, size_t cpusetsize);
 int psm_pseudo_get_rusage_ack(struct veos_thread_arg *, int, struct ve_rusage);
+int psm_pseudo_get_times_ack(struct veos_thread_arg *, int, struct ve_times);
 int psm_pseudo_send_sysinfo_ack(struct veos_thread_arg *, int, struct sysinfo *);
 int psm_pseudo_send_acct_ack(struct veos_thread_arg *, int);
 int psm_pseudo_send_get_regval_ack(struct veos_thread_arg *, int, uint64_t);

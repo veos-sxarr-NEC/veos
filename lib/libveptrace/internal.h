@@ -32,7 +32,7 @@
 
 static inline int signal_is_valid(unsigned long sig)
 {
-        return ((sig < _NSIG) && (sig >= 0)) ? 1 : 0;
+        return (sig < _NSIG) ? 1 : 0;
 }
 
 #ifndef PTRACE_O_EXITKILL

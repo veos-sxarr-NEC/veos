@@ -1181,8 +1181,11 @@ int amm_handle_dma_req(veos_thread_arg_t *pti)
 			dst_addr, pid, length, tsk->node_id);
 	if (0 > ret)
 		VEOS_ERROR("error while DMA transfer (pid:%d)", pid);
-	else
+	else{
 		VEOS_DEBUG("DMA transfer done (pid %d)", pid);
+		update_accounting_data(tsk, ACCT_TRANSDATA,
+					length / (double)1024);
+	}
 
 send_ack:
 	ve_dma_req_ack.has_syscall_retval = true;

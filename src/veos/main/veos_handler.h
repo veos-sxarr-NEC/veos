@@ -70,6 +70,7 @@ int amm_dump_cr_req(veos_thread_arg_t *);
 int psm_handle_get_pseudo_vefd_req(struct veos_thread_arg *);
 int init_psm(veos_thread_arg_t *);
 int psm_handle_exec_ve_proc_req(veos_thread_arg_t *);
+int psm_handle_old_exec_ve_proc_req(veos_thread_arg_t *);
 int psm_handle_delete_ve_proc_req(veos_thread_arg_t *);
 int psm_handle_set_tid_addr_req(veos_thread_arg_t *);
 int psm_handle_fork_ve_proc_req(veos_thread_arg_t *);
@@ -96,6 +97,7 @@ int psm_handle_set_rlimit_req(struct veos_thread_arg *);
 int psm_handle_getaffinity_req(struct veos_thread_arg *);
 int psm_handle_setaffinity_req(struct veos_thread_arg *);
 int psm_handle_get_rusage_req(struct veos_thread_arg *);
+int psm_handle_get_times_req(struct veos_thread_arg *);
 int psm_handle_sysinfo_req(struct veos_thread_arg *);
 int psm_handle_acct_req(struct veos_thread_arg *);
 extern struct veos_cmd_entry pseudo_veos_cmd[PSEUDO_VEOS_MAX_MSG_NUM];
@@ -114,6 +116,7 @@ int veos_handle_vemmctl(struct veos_thread_arg *);
 
 /* RPM <--------------> VEOS */
 int veos_rpm_hndl_cmd_req(struct veos_thread_arg *);
+int veos_rpm_hndl_old_cmd_req(struct veos_thread_arg *);
 
 /*  PSM <--------------> libveptrace*/
 int veos_handle_ptrace_req(struct veos_thread_arg *);
@@ -122,6 +125,7 @@ int veos_handle_stop_proc_req(struct veos_thread_arg *);
 
 /* VEOS <--------------> PSEUDO */
 int veos_handle_get_pci_sync_req(veos_thread_arg_t *);
+int veos_handle_get_veos_pid_req(veos_thread_arg_t *);
 extern int veos_handle_map_dmades(veos_thread_arg_t *);
 extern int veos_handle_unmap_dmades(veos_thread_arg_t *);
 

@@ -1,4 +1,5 @@
 #ifndef __VEOS_SOCK_H
 #define __VEOS_SOCK_H
 #define VEOS_SOC_PATH "@localstatedir@"
+#define VERSION_STRING "@VERSION@"
 #endif

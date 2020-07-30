@@ -77,7 +77,7 @@ static bool is_swap_out_page(struct ve_task_struct *tsk, int dir_num, int ent_nu
 	int ret = false;
 
 	VEOS_DEBUG("Entering is_swap_out_page()");
-	list_for_each_safe(p, n, &(tsk->group_leader->swapped_pages)) {
+	list_for_each_safe(p, n, &(tsk->p_ve_mm->swapped_pages)) {
 		tmp = list_entry(p, struct ve_swapped_virtual, pages);
 		if ((tmp->dir == dir_num) && (tmp->ent == ent_num)) {
 			*page_flag = tmp->phy->flag;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 NEC Corporation
+ * Copyright (C) 2019-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -27,6 +27,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <libgen.h>
 #include <log4c.h>
 #include <pthread.h>
 #include "velayout.h"
@@ -36,9 +41,11 @@
 #include "buddy.h"
 
 #define LOCKSIZE_UNIT 64 * 1024 * 1024
+#define ISDIGIT(c)      ((unsigned)c-'0' < 10)
 
 log4c_category_t *cat_os_pps;
 static void *pps_buffer_addr;
+static void *pps_file_transfer_buffer_addr;
 
 /*
 Allocate                  Deallocate
@@ -67,6 +74,80 @@ veos_pps_log4c_init(void)
 }
 
 /**
+ * @brief Fetches the node number from VEOS socket file.
+ *
+ * @param[in] s string contains the veos socket file path
+ *
+ * @return node number on which this ve process will run
+ */
+static int get_ve_node_num_from_sock_file(char *s)
+{
+	int n = 0;
+
+	while (*s != '\0') {
+		if (ISDIGIT(*s))
+			n = 10*n + (*s - '0');
+		else if (*s == '.')
+			break;
+
+		s++;
+	}
+	return n;
+}
+
+/**
+ * @brief out put mode info for PPS
+ *
+ * @retval 0 on success,
+ * @retval -1 on failure
+ */
+int print_pps_mode_info(char pps_file_path, size_t pps_file_size,
+					bool mem_mode_flg, bool file_mode_flg)
+{
+	int retval = -1;
+	/* Out put PPS mode */
+	if ((mem_mode_flg) && (file_mode_flg)) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
+						"PPS mode is MIX_MODE");
+		fprintf(stderr, "Partial Process Swapping mode is mix mode\n");
+		if (pps_file_path == '\0') {
+			fprintf(stderr,
+			"Initializing Partial Process Swapping failed.\n");
+			fprintf(stderr, "--ve-swap-file-path is not set\n");
+			goto hndl_return;
+		} else if (pps_file_size == 0) {
+			fprintf(stderr,
+			"Initializing Partial Process Swapping failed.\n");
+			fprintf(stderr, "--ve-swap-file-max is not set\n");
+			goto hndl_return;
+		}
+	} else if (mem_mode_flg) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
+						"PPS mode is MEM_MODE");
+		fprintf(stderr, "Partial Process Swapping mode is memory mode\n");
+	} else if (file_mode_flg) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
+						"PPS mode is FILE_MODE");
+		fprintf(stderr, "Partial Process Swapping mode is file mode\n");
+		if (pps_file_path == '\0') {
+			fprintf(stderr,
+			"Initializing Partial Process Swapping failed.\n");
+			fprintf(stderr, "--ve-swap-file-path is not set\n");
+			goto hndl_return;
+		} else if (pps_file_size == 0) {
+			fprintf(stderr,
+			"Initializing Partial Process Swapping failed.\n");
+			fprintf(stderr, "--ve-swap-file-max is not set\n");
+			goto hndl_return;
+		}
+	}
+
+	retval = 0;
+hndl_return:
+	return retval;
+}
+
+/**
  * @brief Allocation PPS buffer and lock it into RAM.
  *
  * @param[in] pps_buf_size Size of PPS buffer in MB.
@@ -74,7 +155,7 @@ veos_pps_log4c_init(void)
  * @return Pointer to PPS buffer on Success, NULL on failure.
  */
 static void
-*veos_pps_alloc_ppsbuf(size_t pps_buf_size)
+*veos_pps_alloc_ppsbuf(size_t pps_buf_size, bool is_pps_buf)
 {
 	int ret;
 	uint64_t tmp;
@@ -86,6 +167,7 @@ static void
 
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
 	PPS_DEBUG(cat_os_pps, "Buffer size is %ldMB", pps_buf_size);
+
 	size = ((pps_buf_size + (PPS_BUFFPAGE_SIZE - 1)) /
 					PPS_BUFFPAGE_SIZE) * PPS_BUFFPAGE_SIZE;
 	PPS_DEBUG(cat_os_pps, "round up to %ldMB", size);
@@ -95,11 +177,13 @@ static void
 			MAP_POPULATE|MAP_PRIVATE|MAP_ANONYMOUS|MAP_HUGETLB,
 			-1, 0);
 	if (ptr == MAP_FAILED) {
+		if (errno == ENOMEM)
+			fprintf(stderr, "Need more free HugePages\n");
 		PPS_ERROR(cat_os_pps, "Failed to allocate buffer for PPS"
 						" due to %s", strerror(errno));
 		goto hndl_return;
 	}
-
+	PPS_DEBUG(cat_os_pps, "mmap for pps file is end ptr is %p", ptr);
 	for (locked_size = 0, remained = size, tmp = (uint64_t)ptr;
 				lock_on_going; remained -= LOCKSIZE_UNIT) {
 		if (terminate_flag) {
@@ -130,7 +214,9 @@ static void
 	}
 
 	retptr = ptr;
-	vnode->pps_buf_size = size;
+	if (is_pps_buf)
+		vnode->pps_buf_size = size;
+
 	goto hndl_return;
 
 hndl_unlock:
@@ -160,7 +246,7 @@ hndl_return:
  * @retval None
  */
 static void
-veos_pps_dealloc_ppsbuf(void *buffer)
+veos_pps_dealloc_ppsbuf(void *buffer, void *transfer_buffer)
 {
 	int ret;
 	struct ve_node_struct *vnode = VE_NODE(0);
@@ -168,20 +254,36 @@ veos_pps_dealloc_ppsbuf(void *buffer)
 
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
 
-	size = vnode->pps_buf_size;
-	ret = munlock(buffer, size);
-	if (ret != 0) {
-		PPS_ERROR(cat_os_pps, "Failed to unlock buffer for PPS"
+	if (buffer != NULL) {
+		size = vnode->pps_buf_size;
+		ret = munlock(buffer, size);
+		if (ret != 0) {
+			PPS_ERROR(cat_os_pps, "Failed to unlock buffer for PPS"
 						" due to %s", strerror(errno));
+		}
+
+		ret = munmap(buffer, size);
+		if (ret != 0) {
+			PPS_ERROR(cat_os_pps, "Failed to free buffer for PPS"
+						" due to %s", strerror(errno));
+		}
+
+		vnode->pps_buf_size = 0;
 	}
 
-	ret = munmap(buffer, size);
-	if (ret != 0) {
-		PPS_ERROR(cat_os_pps, "Failed to free buffer for PPS"
-						" due to %s", strerror(errno));
-	}
+	if (transfer_buffer != NULL) {
+		ret = munlock(transfer_buffer, PPS_TRANSFER_BUFFER_SIZE_BYTE);
+		if (ret != 0) {
+			PPS_ERROR(cat_os_pps, "Failed to unlock transfer buffer"
+					" for PPS due to %s", strerror(errno));
+		}
 
-	vnode->pps_buf_size = 0;
+		ret = munmap(transfer_buffer, PPS_TRANSFER_BUFFER_SIZE_BYTE);
+		if (ret != 0) {
+			PPS_ERROR(cat_os_pps, "Failed to free transfer buffer"
+					" for PPS due to %s", strerror(errno));
+		}
+	}
 
 	PPS_TRACE(cat_os_pps, "Out %s", __func__);
 }
@@ -242,6 +344,29 @@ veos_pps_free_buddy(void)
 
 	PPS_TRACE(cat_os_pps, "Out %s", __func__);
 }
+
+/**
+ * @brief Finalize buddy of PPS file offset
+ *
+ * @retval None
+ */
+static void
+veos_pps_free_offset_buddy(void)
+{
+	struct ve_node_struct *vnode = VE_NODE(0);
+	int ret;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	ret = pthread_mutex_destroy(&(vnode->pps_file_offset->buddy_mempool_lock));
+	if (ret != 0)
+		PPS_ERROR(cat_os_pps, "Failed to destroy buddy_mempool_lock"
+						" due to %s", strerror(ret));
+	buddy_deinit(vnode->pps_file_offset);
+
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+}
+
 
 /**
  * @brief Create swap thread
@@ -308,10 +433,11 @@ hndl_return:
  * @retval -1 on failure.
  */
 int
-veos_alloc_ppsbuf(size_t pps_buf_size)
+veos_alloc_ppsbuf(size_t pps_buf_size, size_t pps_file_buf_size)
 {
 	int retval = -1;
 	int ret;
+
 	struct ve_node_struct *vnode = VE_NODE(0);
 
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
@@ -320,18 +446,23 @@ veos_alloc_ppsbuf(size_t pps_buf_size)
 	pthread_mutex_init(&(vnode->swap_request_pids_lock), NULL);
 	pthread_cond_init(&(vnode->swap_request_pids_cond), NULL);
 
-	if (pps_buf_size == 0) {
-		retval = 0;
-		goto hndl_return;
+	if (pps_buf_size != 0) {
+		pps_buffer_addr = veos_pps_alloc_ppsbuf(pps_buf_size, true);
+			if (pps_buffer_addr == NULL)
+				goto hndl_return;
+
+		ret = veos_pps_init_buddy(pps_buffer_addr);
+		if (ret != 0)
+			goto hndl_dealloc;
 	}
-
-	pps_buffer_addr = veos_pps_alloc_ppsbuf(pps_buf_size);
-	if (pps_buffer_addr == NULL)
-		goto hndl_return;
-
-	ret = veos_pps_init_buddy(pps_buffer_addr);
-	if (ret != 0)
-		goto hndl_dealloc;
+	if (pps_file_buf_size != 0) {
+		pps_file_transfer_buffer_addr =
+			veos_pps_alloc_ppsbuf(pps_file_buf_size, false);
+		vnode->pps_file_transfer_buffer = pps_file_transfer_buffer_addr;
+		if (pps_file_transfer_buffer_addr == NULL) {
+			goto hndl_free_buddy;
+		}
+	}
 
 	ret = veos_pps_create_swap_thread();
 	if (ret != 0)
@@ -341,10 +472,11 @@ veos_alloc_ppsbuf(size_t pps_buf_size)
 	goto hndl_return;
 
 hndl_free_buddy:
-	veos_pps_free_buddy();
+	if (pps_buf_size != 0)
+		veos_pps_free_buddy();
 
 hndl_dealloc:
-	veos_pps_dealloc_ppsbuf(pps_buffer_addr);
+	veos_pps_dealloc_ppsbuf(pps_buffer_addr, pps_file_transfer_buffer_addr);
 
 hndl_return:
 	PPS_TRACE(cat_os_pps, "Out %s", __func__);
@@ -362,15 +494,365 @@ veos_free_ppsbuf(void)
 {
 	struct ve_node_struct *vnode = VE_NODE(0);
 	size_t pps_buf_size;
+	size_t pps_file_size;
 
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
 
 	pps_buf_size = vnode->pps_buf_size;
+	pps_file_size = vnode->pps_file.size;
 	PPS_DEBUG(cat_os_pps, "pps_buf_size : 0x%lx", pps_buf_size);
+	PPS_DEBUG(cat_os_pps, "pps_file_size : 0x%lx", pps_file_size);
 	if (pps_buf_size > 0) {
 		veos_pps_free_buddy();
-		veos_pps_dealloc_ppsbuf(pps_buffer_addr);
 	}
+
+	if (pps_file_size > 0) {
+		veos_pps_free_offset_buddy();
+	}
+	veos_pps_dealloc_ppsbuf(pps_buffer_addr, pps_file_transfer_buffer_addr);
 
 	PPS_TRACE(cat_os_pps, "Out %s", __func__);
 }
+
+/**
+ * @brief Initialize buddy of PPS file
+ *
+ * @retval 0 on Success,
+ * @retval -1 on failure.
+ */
+static int
+veos_pps_file_init_buddy(void)
+{
+	int retval = -1;
+	int i;
+	uint64_t start = 0;
+	struct ve_node_struct *vnode = VE_NODE(0);
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	vnode->pps_file_offset = veos_buddy_init(start, vnode->pps_file.size,
+								PAGE_SIZE_2MB);
+	if (vnode->pps_file_offset == NULL) {
+		PPS_ERROR(cat_os_pps, "Failed to init mempool for PPS file");
+		goto hndl_return;
+	}
+	pthread_mutex_init(&(vnode->pps_file_offset->buddy_mempool_lock), NULL);
+	vnode->swap_request_pids_enable = true;
+	vnode->resource_freed = false;
+	for (i = 0; i < VE_MAX_NUMA_NODE; i++) {
+		vnode->pps_file_used[i] = 0;
+	}
+	retval = 0;
+
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return retval;
+}
+
+/**
+ * @brief This function set path of veswap file to node struct.
+ *
+ * @param[in] Path of veswap file
+ * @param[in] Size of veswap file
+ *
+ * @retval None
+ */
+int
+veos_init_pps_file_info(char *pps_file_path, size_t pps_file_size,
+							char *drv_sock_file)
+{
+	int retval = 0;
+	int node_num = 0;
+	char hostname[PATH_MAX] = {'\0'};
+	struct stat s_buf;
+	struct ve_node_struct *vnode = VE_NODE(0);
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+	pthread_mutex_init(&(vnode->pps_file_lock), NULL);
+
+	if((pps_file_path == NULL) || (pps_file_size == 0))
+		goto hndl_return;
+
+	/* Set pps file path to ve_node_struct */
+	PPS_DEBUG(cat_os_pps, "drv_sock_file is %s", drv_sock_file);
+	node_num = get_ve_node_num_from_sock_file(drv_sock_file);
+	if (gethostname(hostname, sizeof(hostname)) != 0) {
+		PPS_DEBUG(cat_os_pps, "Can not get host name, errno is %d",
+									errno);
+		strcpy(hostname, "UnknownHost");
+	}
+	snprintf(vnode->pps_file.path, PATH_MAX * 2, "%s_%s.%d",
+					pps_file_path, hostname, node_num);
+	if(strlen(vnode->pps_file.path) > PATH_MAX) {
+		PPS_ERROR(cat_os_pps, "Path of PPS file is too long");
+		retval = -1;
+		goto hndl_return;
+	}
+	PPS_DEBUG(cat_os_pps, "Path of pps file in host %s for node%d is %s",
+				hostname, node_num, vnode->pps_file.path);
+
+	/* Set pps file size to ve_node_struct */
+	PPS_DEBUG(cat_os_pps, "pps file orignal size is %ldMB", pps_file_size);
+	pps_file_size = pps_file_size * (1024 * 1024);
+	if ((pps_file_size % PAGE_SIZE_2MB) != 0) {
+		pps_file_size = ((pps_file_size / PAGE_SIZE_2MB + 1)
+							* PAGE_SIZE_2MB);
+	}
+	vnode->pps_file.size = pps_file_size;
+	PPS_DEBUG(cat_os_pps, "pps file size is %ldbyte", vnode->pps_file.size);
+
+	/* Delete file if the file already exists when starting VEOS*/
+	if(stat(vnode->pps_file.path, &s_buf) == -1) {
+		PPS_DEBUG(cat_os_pps, "Not need to delete because it is maybe "
+								"a dir");
+		errno = 0;
+	} else if(!S_ISDIR(s_buf.st_mode)) {
+		remove(vnode->pps_file.path); 
+		errno = 0;
+	}
+	 /* Set flag */
+	vnode->pps_file.is_opened = false;
+	vnode->pps_file.not_del_after_swapin = false;
+
+	/* Init buddy */
+	if (veos_pps_file_init_buddy() != 0) {
+		PPS_ERROR(cat_os_pps, "Failed to initialize buddy of PPS file");
+		retval = -1;
+	}
+
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return retval;
+}
+
+/**
+ * @brief This function make dir of PPS file.
+ *
+ * @param[out] Dir of PPS file
+ *
+ * @retval 0 on Success
+ * @retval -1 on Failure
+ */
+static int veos_mkdir_pps_file(char *file_dir)
+{
+	int retval = -1;
+	char *p;
+	int i = 0;
+	DIR *pps_file_dirp;
+	char mkdir_path[PATH_MAX] =  {'\0'};
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	p = file_dir;
+
+	while(*p) {
+		while(*p != '/' && *p != '\0') {
+			i++;
+			p++;
+		}
+		if (i != 0) {
+			strncpy(mkdir_path, file_dir, i);
+			PPS_DEBUG(cat_os_pps, "mkdir path is %s", mkdir_path);
+			pps_file_dirp = opendir(mkdir_path);
+			if (pps_file_dirp == NULL) {
+				if(mkdir(mkdir_path, S_IRWXU) == -1) {
+					PPS_DEBUG(cat_os_pps,
+						"Failed to mkdir for PPS file"
+						" due to %s", strerror(errno));
+					return retval;
+				}
+			}
+			closedir(pps_file_dirp);
+		}
+		i++;
+		p++;
+	}
+	retval = 0;
+
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return retval;
+}
+
+/**
+ * @brief This function open PPS file.
+ *
+ * @param[in] vnode Pointer to ve_node_struct structure
+ *
+ * @retval 0 on Success
+ * @retval -1 on Failure
+ */
+int veos_open_pps_file(struct ve_node_struct *vnode)
+{
+	int retval = -1;
+	int pps_file_fd = 0;
+	char pps_file_dir[PATH_MAX * 2] = {'\0'};
+	int ret;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	pthread_mutex_lock_unlock(&(vnode->pps_file_lock), LOCK,
+				"Failed to aqcuire pps_file_lock");
+
+	/* Check PPS mode */
+	if ((vnode->pps_file.path[0] == '\0') || (vnode->pps_file.size == 0)) {
+		PPS_DEBUG(cat_os_pps, "there is not file mode or mix mode");
+		retval = 0;
+		goto hndl_return;
+	}
+
+	/* Set flag to true,
+	 * file can not be deleted after swap in when no resource is swapped out
+	 */
+	vnode->pps_file.not_del_after_swapin = true;
+
+	if(vnode->pps_file.is_opened) {
+		PPS_DEBUG(cat_os_pps, "PPS file has been opened");
+		retval = 0;
+		goto hndl_return;
+	}
+	strncpy(pps_file_dir, vnode->pps_file.path, PATH_MAX * 2);
+	strncpy(pps_file_dir, dirname(pps_file_dir), PATH_MAX);
+	PPS_DEBUG(cat_os_pps, "pps file %s will be opened",
+							vnode->pps_file.path);
+	PPS_DEBUG(cat_os_pps, "dir of pps file is %s", pps_file_dir);
+	errno = 0;
+	pps_file_fd = open(vnode->pps_file.path, O_RDWR | O_CREAT, S_IRWXU);	
+	if ((pps_file_fd == -1) && (errno == ENOENT)) {
+		ret = veos_mkdir_pps_file(pps_file_dir);
+		if (ret != 0) {
+			PPS_ERROR(cat_os_pps, "Failed to make dir of PPS file"
+						" due to %s", strerror(errno));
+			goto hndl_return;
+		}
+		pps_file_fd = open(vnode->pps_file.path, O_RDWR | O_CREAT,
+								S_IRWXU);
+	}
+
+	if (pps_file_fd == -1) {
+		PPS_ERROR(cat_os_pps, "Failed to open PPS file due to %s",
+							strerror(errno));
+		goto hndl_return;
+	}
+
+	vnode->pps_file.fd = pps_file_fd; 
+	vnode->pps_file.is_opened = true;
+
+	retval = 0;
+
+hndl_return:
+	pthread_mutex_lock_unlock(&(vnode->pps_file_lock), UNLOCK,
+				"Failed to release pps_file_lock");
+
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return retval;
+}
+
+/**
+ * @brief This function close and del PPS file.
+ *
+ * @param[in] vnode Pointer to ve_node_struct structure
+ *
+ * @retval None
+ */
+void veos_del_pps_file(struct ve_node_struct *vnode)
+{
+	struct stat s_buf;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	if(stat(vnode->pps_file.path, &s_buf) == -1) {
+		PPS_DEBUG(cat_os_pps, "Not need to delete because it is maybe "
+								"a dir");
+		goto hndl_exit;
+	} else if(S_ISDIR(s_buf.st_mode)) {
+		PPS_DEBUG(cat_os_pps, "Not need to delete because it is a dir");
+		goto hndl_exit;
+	}
+
+	if (vnode->pps_file.not_del_after_swapin) {
+		PPS_DEBUG(cat_os_pps, "File is not need to delete");
+		goto hndl_exit;
+	}
+	close(vnode->pps_file.fd);
+	vnode->pps_file.fd = -1;
+	vnode->pps_file.is_opened = false;
+	vnode->pps_file.not_del_after_swapin = false;
+	remove(vnode->pps_file.path);
+
+hndl_exit:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+}
+
+/**
+ * @brief check swapin is need to pthread_cond_wait or not when there are not
+ *  enough resource on VE side.
+ *  swapin is need to pthread_cond_wait when:
+ *  In the processes connected to the queue, all of them are swapping in
+ *  In the processes connected to the queue, there a process with a status of
+ *  swapping out is included, and the PPS buffer or swap file is full
+ *  (when there is no 64MB page)
+ *
+ * @param [in] pointer to ve_node_struct
+ * @retval true need to pthread_cond_wait
+ * @retval false not need to pthread_cond_wait
+ */
+bool check_swap_in_need_wait(struct ve_node_struct *vnode)
+{
+	bool retval = false;
+	int ret = -1;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	ret = check_swap_out_in_process(SWAPPING_OUT);
+	if (ret != 0) {
+		PPS_DEBUG(cat_os_pps, "need wait because no swap out request");
+		retval = true;
+		goto hndl_return;
+	}
+
+	if (vnode->pps_mp != NULL) {
+		PPS_DEBUG(cat_os_pps, "need check mem buddy");
+		pthread_mutex_lock_unlock(&(vnode->pps_mp->buddy_mempool_lock),
+		LOCK,
+		"Failed to acquire PPS buddy lock");
+		ret = check_free_buddy(vnode->pps_mp, PPS_PAGE_SIZE_64MB);
+		if (ret == 0) {
+			PPS_DEBUG(cat_os_pps, "free mem buddy is exist");
+			goto hndl_free;
+		}
+	}
+
+	if (vnode->pps_file_offset != NULL) {
+		PPS_DEBUG(cat_os_pps, "need check file buddy");
+		pthread_mutex_lock_unlock(
+			&(vnode->pps_file_offset->buddy_mempool_lock),
+			LOCK,
+			"Failed to acquire PPS file buddy lock");
+		ret = check_free_buddy(vnode->pps_file_offset, PPS_PAGE_SIZE_64MB);
+		if (ret == 0) {
+			PPS_DEBUG(cat_os_pps, "free file buddy is exist");
+			goto hndl_free;
+		}
+	}
+
+	PPS_DEBUG(cat_os_pps, "need wait because no enough resource");
+	retval = true;
+
+hndl_free:
+	if (vnode->pps_mp != NULL) {
+		pthread_mutex_lock_unlock(&(vnode->pps_mp->buddy_mempool_lock),
+		UNLOCK,
+		"Failed to release PPS buddy lock");
+	}
+
+	if (vnode->pps_file_offset != NULL) {
+		pthread_mutex_lock_unlock(
+			&(vnode->pps_file_offset->buddy_mempool_lock),
+			UNLOCK,
+			"Failed to release PPS file buddy lock");
+	}
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return retval;
+}
+

@@ -49,6 +49,8 @@
 	<category name="veos.command.w" priority="INFO" appender="veos_command_appender" />
 	<category name="veos.command.ps" priority="INFO" appender="veos_command_appender" />
 	<category name="veos.command.accton" priority="INFO" appender="veos_command_appender" />
+	<category name="veos.command.lastcomm" priority="INFO" appender="veos_command_appender" />
+	<category name="veos.command.dump-acct" priority="INFO" appender="veos_command_appender" />
 	<category name="veos.command.sa" priority="INFO" appender="veos_command_appender" />
 	<category name="veos.command.prtstat" priority="INFO" appender="veos_command_appender" />
 	<category name="veos.command.strace" priority="INFO" appender="veos_command_appender" />

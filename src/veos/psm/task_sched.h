@@ -118,6 +118,7 @@ int veos_update_atb(uint64_t, int, int, struct ve_task_struct *);
 int veos_update_dmaatb(uint64_t, void *, int, int, struct ve_task_struct *, reg_t *);
 int psm_sync_hw_regs(struct ve_task_struct *, regs_t, bool, int, int);
 void psm_find_sched_new_task_on_core(struct ve_core_struct *, bool, bool);
+int psm_check_rebalance_condition(struct ve_core_struct *, int);
 void psm_rebalance_task_to_core(struct ve_core_struct *);
 void psm_unassign_migrate_task(struct ve_task_struct *);
 int psm_calc_task_exec_time(struct ve_task_struct *);

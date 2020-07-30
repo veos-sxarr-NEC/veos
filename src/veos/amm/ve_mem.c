@@ -1408,7 +1408,7 @@ int amm_do_munmap(vemva_t vaddr, size_t size,
 	memset(dirs, -1, sizeof(dirs));
 
 	if ((vnode->mem).ve_mem_size <= size) {
-		VEOS_CRIT("munmap request size 0x%lx is more than ve_mem_size", size);
+		VEOS_DEBUG("munmap request size 0x%lx is more than ve_mem_size", size);
 		return -EINVAL;
 	}
 
@@ -3323,8 +3323,11 @@ int amm_do_put_page(vemaa_t pb, bool is_amm)
 			((page->ref_count == 1) &&
 				(page->dma_ref_count == 0))) {
 			pps_ret = veos_pps_save_memory_content(pgnum);
-			if (pps_ret != 0) { /* Don't free memory */
-				ret = -EBUSY;
+			if (pps_ret != 0) {
+				if (pps_ret == NO_PPS_BUFF)
+					ret = NO_PPS_BUFF;
+				else
+					ret = -EBUSY; /* Don't free memory */
 				goto func_return;
 			}
 		}
@@ -3498,8 +3501,12 @@ int amm_put_page(vemaa_t pb)
 		}
 	} 
 	ret = amm_do_put_page(pb, true);
-	if (0 > ret)
+	if (0 > ret) 
 		VEOS_DEBUG("fail to put vemaa %lx ", pb);
+	if (ret == NO_PPS_BUFF ) {
+		VEOS_DEBUG("fail to put vemaa %lx ", pb);
+			ret = -EBUSY;
+	}
 
 	if (PG_SHM & pgflag) {
 		VEOS_DEBUG("private_data is shm");
@@ -4168,6 +4175,9 @@ ret_t update_mapping_desc(vemva_t vaddr, pgno_t *pgno,
 				VEOS_DEBUG("amm_dma_xfer failed");
 				ret = -EFAULT;
 				goto err;
+			} else {
+				update_accounting_data(tsk, ACCT_TRANSDATA,
+						tmp_size / (double)1024);
 			}
 			rest_size -= tmp_size;
 		} else {
@@ -4558,6 +4568,9 @@ int send_file_data(vemva_t vaddr, off_t s_off, size_t f_sz,
 				"to vemva(%lx) of size(%ld) for tsk:pid(%d)",
 				vh_addr, ve_addr, sent_data, tsk->pid);
 			return -EFAULT;
+		} else {
+			update_accounting_data(tsk, ACCT_TRANSDATA,
+						sent_data / (double)1024);
 		}
 		map_sz -= pgsz;
 		i++;
@@ -5446,7 +5459,11 @@ int sync_vhva(vemaa_t vemaa, vhva_t vhva, struct ve_task_struct *tsk)
 			VEOS_DEBUG("Error (%s) while syncing VHVA", strerror(-ret));
 			VEOS_TRACE("returned with error");
 			return ret;
+		} else {
+			update_accounting_data(tsk, ACCT_TRANSDATA,
+						sz / (double)1024);
 		}
+
 	}
 
 	return ret;
@@ -6101,6 +6118,7 @@ int __amm_alloc_mm_struct(struct ve_mm_struct **mm)
 	INIT_LIST_HEAD(&((*mm)->list_file_backed_mem));
 	INIT_LIST_HEAD(&((*mm)->list_mmap_mem));
 	INIT_LIST_HEAD(&((*mm)->mmap_page_priv));
+	INIT_LIST_HEAD(&((*mm)->swapped_pages));
 	(*mm)->dmaatb_progress = NOT_SWAPPED;
 __amm_alloc_mm_error:
 	return ret;

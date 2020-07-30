@@ -174,24 +174,27 @@ int create_phdr(struct dump_params *cprm,
 			if (NULL == buf) {
 				ret = -errno;
 				VEOS_CRIT("Failed to allocate buffer for"
-					"creating segment: %s",
-					strerror(-ret));
+						"creating segment: %s",
+						strerror(-ret));
 				goto end;
 			}
 			if ((void *)start && (ve_pmap->prmsn)) {
 				if (-1 == amm_dma_xfer(
-					VE_DMA_VEMVA_WO_PROT_CHECK,
-						(uint64_t)start,
-						cprm->tsk->pid,
-						VE_DMA_VHVA,
-						(uint64_t)(buf),
-						(int)getpid(),
-						buffer_size,
-						0)) {
+							VE_DMA_VEMVA_WO_PROT_CHECK,
+							(uint64_t)start,
+							cprm->tsk->pid,
+							VE_DMA_VHVA,
+							(uint64_t)(buf),
+							(int)getpid(),
+							buffer_size,
+							0)) {
 					VEOS_ERROR("failed to "
 							"get segment data");
 					ret = -1;
 					goto end1;
+				} else{
+					update_accounting_data(cprm->tsk, ACCT_TRANSDATA,
+							buffer_size / (double)1024);
 				}
 			}
 			VEOS_DEBUG("GOING TO DUMP: pos: %p, begin: %p,"
@@ -512,6 +515,9 @@ void fill_psinfo(struct elf_prpsinfo *psinfo,
 				VEOS_WARN("ve_recv_data failed to "
 						"receive argv");
 				break;
+			} else{
+				update_accounting_data(p, ACCT_TRANSDATA,
+						sizeof(uint64_t) / (double)1024);
 			}
 			VEOS_DEBUG("fill_psinfo: ARGV: %p", (void *)addr);
 
@@ -527,7 +533,11 @@ void fill_psinfo(struct elf_prpsinfo *psinfo,
 				VEOS_WARN("ve_recv_data failed to "
 						"receive argv2");
 				break;
+			} else{
+				update_accounting_data(p, ACCT_TRANSDATA,
+						ELF_PRARGSZ / (double)1024);
 			}
+
 
 			if ((len > 0) &&
 					((psarg_off + strlen(temp+offset))
@@ -675,6 +685,9 @@ static int fill_auxv_note(struct memelfnote *note,
 					(int)getpid(), len, 0)) {
 			VEOS_WARN("ve_recv_data failed to "
 					"receive auxv");
+		} else{
+			update_accounting_data(p, ACCT_TRANSDATA,
+						len / (double)1024);
 		}
 	}
 end:
@@ -1263,7 +1276,7 @@ int fill_ve_core_data(struct _psuedo_pmap *ve_pmap,
 	ve_pmap = head;
 end:
 	/* Work done, now free the dynamic memory */
-	if (!ve_cprm->vaddr)
+	if (ve_cprm->vaddr)
 		free(ve_cprm->vaddr);
 	struct elf_thread_core_info *thd = info.thread;
 	struct elf_thread_core_info *temp = NULL;

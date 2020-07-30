@@ -73,6 +73,7 @@ int sys_accelerated_io_init(veos_handle *handle, void **vhva,
 		retval = -EINVAL;
 		return retval;
 	}
+
 	vh_buff_size = SIZE_8MB * core_num;
 	PSEUDO_DEBUG("Core number is %d", core_num);
 	PSEUDO_DEBUG("VH buffer size is %ld", vh_buff_size);

@@ -42,6 +42,7 @@
 #include "proto_buff_schema.pb-c.h"
 #include "velayout.h"
 #include "pseudo_ptrace.h"
+#include "veos_sock.h"
 
 /**
  * @brief This function sends new VE process intimation to PSM.
@@ -62,10 +63,11 @@ int pseudo_psm_send_new_ve_process(int veos_sock_fd, struct new_ve_proc ve_proc)
 	ProtobufCBinaryData new_ve_proc_msg = {0};
 	void *buf = NULL;
 	ssize_t pseudo_msg_len = 0, msg_len = 0;
+	ProtobufCBinaryData ve_version = {0};
 
 	PSEUDO_TRACE("Entering");
 
-	new_ve_proc.pseudo_veos_cmd_id = NEW_VE_PROC;
+	new_ve_proc.pseudo_veos_cmd_id = NEW_VE_PROC_COMPT;
 
 	new_ve_proc.has_pseudo_pid = true;
 	new_ve_proc.pseudo_pid = syscall(SYS_gettid);
@@ -75,6 +77,11 @@ int pseudo_psm_send_new_ve_process(int veos_sock_fd, struct new_ve_proc ve_proc)
 
 	new_ve_proc.has_pseudo_msg = true;
 	new_ve_proc.pseudo_msg = new_ve_proc_msg;
+
+	ve_version.len = strlen(VERSION_STRING);
+	ve_version.data = (uint8_t *)VERSION_STRING;
+	new_ve_proc.has_veos_version = true;
+	new_ve_proc.veos_version = ve_version;
 
 	pseudo_msg_len = pseudo_veos_message__get_packed_size(&new_ve_proc);
 	buf = malloc(pseudo_msg_len);
@@ -709,7 +716,6 @@ int ve_set_user_reg(veos_handle *handle, int regid, uint64_t regval,
 	ssize_t retval = -1;
 
 	PSEUDO_TRACE("Entering");
-
 	retval = ve_set_user_reg_req(handle->veos_sock_fd, regid, regval,
 						mask);
 	if (0 > retval)
@@ -1432,6 +1438,59 @@ int pseudo_psm_recv_fork_ack(int veos_sock_fd)
 }
 
 /**
+ * @brief This function is used to compare the versions.
+ *
+ * @param veos_ver[in] version number received from VEOS
+ * @param pseudo_ver[in] version number of pseudo
+ *
+ * @return,
+ * -1 if veos version is smallar than pseudo version
+ * 1 if veos version is greater than pseudo version
+ * 0 if both veos and pseudo version is same.
+ */
+int pseudo_version_compare(char *veos_ver, char *pseudo_ver)
+{
+	int veos_len = 0, pseudo_len = 0;
+	int veos_num = 0, pseudo_num = 0;
+	int vlv = 0, plv = 0;
+
+	veos_len = strlen(veos_ver);
+	PSEUDO_DEBUG("VEOS version: %s  length: %d", veos_ver, veos_len);
+	pseudo_len = strlen(pseudo_ver);
+	PSEUDO_DEBUG("PSEUDO version: %s  length: %d", pseudo_ver,  pseudo_len);
+	for (vlv = 0, plv = 0; (vlv < veos_len || plv < pseudo_len);) {
+		/* Store each digit of 'veos_ver' in 'veos_num' one by one */
+		while (vlv < veos_len && veos_ver[vlv] != '.') {
+			veos_num = veos_num * 10 + (veos_ver[vlv] - '0');
+			vlv++;
+		}
+
+		/* Store each digit of 'pseudo_ver' in 'pseudo_num' one by one */
+		while (plv < pseudo_len && pseudo_ver[plv] != '.') {
+			pseudo_num = pseudo_num * 10 + (pseudo_ver[plv] - '0');
+			plv++;
+		}
+
+		/* Now compare each digit of veos version with pseudo version */
+
+		if (veos_num < pseudo_num) {
+			PSEUDO_DEBUG("veos version is older than pseudo");
+			return -1;
+		}
+		if (pseudo_num < veos_num) {
+			PSEUDO_DEBUG("veos version is newer than pseudo");
+			return 1;
+		}
+
+		veos_num = pseudo_num = 0;
+		vlv++;
+		plv++;
+	}
+	PSEUDO_DEBUG("veos version is equal to pseudo");
+	return 0;
+}
+
+/**
  * pseudo_psm_recv_load_binary_req: This function waits for the request
  * of load VE binary from PSM.
  *
@@ -1452,6 +1511,8 @@ int pseudo_psm_recv_load_binary_req(int veos_sock_fd,
 	PseudoVeosMessage *ld_binary_req = NULL;
 	struct new_proc_info new_ve_proc = {0};
 	char buff[MAX_PROTO_MSG_SIZE] = {0};
+	char *recvd_version = NULL;
+	int version = 0;
 
 	PSEUDO_TRACE("Entering");
 
@@ -1470,6 +1531,38 @@ int pseudo_psm_recv_load_binary_req(int veos_sock_fd,
 			fprintf(stderr, "Internal message protocol "
 					"buffer error\n");
 			/* FATAL ERROR: abort current process */
+			pseudo_abort();
+		}
+
+		if (ld_binary_req->has_veos_version == false) {
+			PSEUDO_ERROR("veos version is older than ve_exec (v%s)",
+						VERSION_STRING);
+			fprintf(stderr,
+				"Compatibility Error: veos (older than v2.6.0) "
+					"and ve_exec (v%s) are not compatible\n",
+						VERSION_STRING);
+			pseudo_abort();
+		}
+
+		recvd_version = malloc(ld_binary_req->veos_version.len);
+		if (NULL == recvd_version) {
+			retval = -errno;
+			PSEUDO_ERROR("Memory allocation for version buffer failed %s",
+					strerror(errno));
+			goto hndl_return;
+		}
+		memset(recvd_version, '\0', ld_binary_req->veos_version.len);
+		memcpy(recvd_version, ld_binary_req->veos_version.data,
+				ld_binary_req->veos_version.len);
+		version = pseudo_version_compare(recvd_version, VERSION_STRING);
+		if (version == -1) {
+			PSEUDO_ERROR("veos (v%s) is older than ve_exec (v%s)",
+					recvd_version, VERSION_STRING);
+			fprintf(stderr,
+				"Compatibility Error: veos (v%s) and "
+					"ve_exec (v%s) are not compatible\n",
+						recvd_version, VERSION_STRING);
+			free(recvd_version);
 			pseudo_abort();
 		}
 
@@ -1496,6 +1589,9 @@ int pseudo_psm_recv_load_binary_req(int veos_sock_fd,
 			pseudo_veos_message__free_unpacked(ld_binary_req, NULL);
 	}
 
+hndl_return:
+	if(recvd_version)
+		free(recvd_version);
 	PSEUDO_TRACE("Exiting");
 	return retval;
 }
@@ -2578,6 +2674,132 @@ int64_t pseudo_psm_recv_get_rusage_ack(int veos_sock_fd, struct ve_rusage *ve_r)
 			PSEUDO_DEBUG("PSEUDO recieved RUSAGE ACK");
 			retval = pseudo_msg->syscall_retval;
 			memcpy(ve_r, pseudo_msg->pseudo_msg.data,
+					pseudo_msg->pseudo_msg.len);
+		}
+	}
+	pseudo_veos_message__free_unpacked(pseudo_msg, NULL);
+hndl_return:
+	PSEUDO_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief This function will prepare request to be sent to PSM to get
+ * times of VE process.
+ *
+ * @param[in] veos_sock_fd Descriptor used to communicate with PSM
+ * @param[in] Times structure containing the iformation of task.
+ *
+ * @return On failure, returns -1 and on success, returns any positive value
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int64_t pseudo_psm_send_get_times_req(int veos_sock_fd,
+		struct ve_times_info times_task)
+{
+	ssize_t retval = -1;
+	PseudoVeosMessage ve_times_req = PSEUDO_VEOS_MESSAGE__INIT;
+	ProtobufCBinaryData pseudo_info = {0};
+	ssize_t pseudo_msg_len = -1 , msg_len = -1;
+	void *buf = NULL;
+
+	PSEUDO_TRACE("Entering");
+
+	ve_times_req.pseudo_veos_cmd_id = GET_TIMES;
+
+	ve_times_req.has_pseudo_pid = true;
+	ve_times_req.pseudo_pid = syscall(SYS_gettid);
+
+	pseudo_info.len  = sizeof(times_task);
+	pseudo_info.data = (uint8_t *)&times_task;
+
+	ve_times_req.has_pseudo_msg = true;
+	ve_times_req.pseudo_msg = pseudo_info;
+
+	pseudo_msg_len = pseudo_veos_message__get_packed_size(&ve_times_req);
+	buf = malloc(pseudo_msg_len);
+	if (NULL == buf) {
+		PSEUDO_ERROR("malloc for message buffer failed.");
+		retval = -1;
+		goto malloc_error;
+	}
+	memset(buf, '\0', pseudo_msg_len);
+	msg_len = pseudo_veos_message__pack(&ve_times_req, buf);
+	if (pseudo_msg_len != msg_len) {
+		PSEUDO_ERROR("Internal message protocol buffer error");
+		PSEUDO_DEBUG("Expected length: %ld, Returned length: %ld",
+				pseudo_msg_len, msg_len);
+		fprintf(stderr, "Internal message protocol buffer error\n");
+		pseudo_abort();
+	}
+
+	retval = pseudo_veos_send_cmd(veos_sock_fd, buf,
+			pseudo_msg_len);
+	if (retval < pseudo_msg_len) {
+		PSEUDO_ERROR("Failed to send request to veos");
+		PSEUDO_DEBUG("Expected bytes: %ld, transferred bytes: %ld",
+				pseudo_msg_len, retval);
+		retval = -1;
+	}
+
+	free(buf);
+malloc_error:
+	PSEUDO_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief This function will wait for the acknowledgement from PSM and
+ *	 the times for VE process.
+ *
+ * @param[in] veos_sock_fd Descriptor used to communicate with PSM
+ * @param[out] ve_t Pointer to struct ve_times
+ *
+ * @return On failure, returns -1 or -errno  and on success, returns 0
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int64_t pseudo_psm_recv_get_times_ack(int veos_sock_fd, struct ve_times *ve_t)
+{
+	ssize_t retval = -1;
+	char buf[MAX_PROTO_MSG_SIZE] = {0};
+	PseudoVeosMessage *pseudo_msg = NULL;
+
+	PSEUDO_TRACE("Entering");
+	if (!ve_t)
+		goto hndl_return;
+
+	retval = pseudo_veos_recv_cmd(veos_sock_fd,
+			(void *)&buf, MAX_PROTO_MSG_SIZE);
+
+	if (-1 == retval) {
+		PSEUDO_ERROR("Failed to receive times"
+				" acknowledgement from veos");
+		retval = -1;
+		goto hndl_return;
+	}
+	pseudo_msg = pseudo_veos_message__unpack(NULL,
+			retval, (const uint8_t *)(&buf));
+	if (NULL == pseudo_msg) {
+		PSEUDO_ERROR("Internal message protocol buffer error");
+		fprintf(stderr, "Internal message protocol buffer error\n");
+		pseudo_abort();
+	}
+	/* Check message for ACK */
+	if (pseudo_msg->has_syscall_retval) {
+		if (pseudo_msg->syscall_retval < 0) {
+			PSEUDO_ERROR("Failure acknowledgement received"
+					" for times");
+			PSEUDO_DEBUG("Failure acknowledgement received"
+					" for times, return value %ld",
+					pseudo_msg->syscall_retval);
+			retval = pseudo_msg->syscall_retval;
+		} else {
+			PSEUDO_DEBUG("PSEUDO recieved TIMES ACK");
+			retval = pseudo_msg->syscall_retval;
+			memcpy(ve_t, pseudo_msg->pseudo_msg.data,
 					pseudo_msg->pseudo_msg.len);
 		}
 	}

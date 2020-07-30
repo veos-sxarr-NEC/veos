@@ -1220,3 +1220,54 @@ size_t calc_allocated_sz(struct buddy_mempool *mp)
 	}
 	return sz;
 }
+
+/**
+* @brief This function will checks there is a free buddy block of the specified
+*  size .
+*
+* @param[in] mp VE Buddy mempool.
+* @param[in] size size of buddy block.
+*
+* @return return 0 on exist, -1 not exist.
+*/
+int
+check_free_buddy(struct buddy_mempool *mp, size_t size)
+{
+	unsigned long j = 0;
+	unsigned long order = 0;
+	struct list_head *list = NULL;
+	int ret = -1;
+
+	VEOS_TRACE("invoked");
+
+	if (mp == NULL) {
+		VEOS_DEBUG("invalid buddy mempool");
+		goto hndl_return;
+	}
+
+	order = size_to_order(size);
+	VEOS_DEBUG("buddy mempool max order is %lu", mp->pool_order);
+	VEOS_DEBUG("buddy mempool min order is %lu", mp->min_order);
+
+	if (order > mp->pool_order) {
+		VEOS_DEBUG("order greater than buddy max order");
+		goto hndl_return;
+	}
+
+	/* Fixup requested order to be at least the minimum supported */
+	if (order < mp->min_order)
+		order = mp->min_order;
+
+	VEOS_DEBUG("request to allocate mem blk of order %lu", order);
+
+	for (j = order; j <= mp->pool_order; j++) {
+		/* Try to allocate the first block in the order j list */
+		list = &mp->frb->free[j];
+		if (!(list_empty(list)))
+			ret = 0;
+	}
+
+hndl_return:
+	VEOS_TRACE("returned");
+	return ret;
+}

@@ -680,10 +680,16 @@ void delete_entries(struct ve_task_struct *del_task_struct)
 	/* Check if accounting is enabled, if yes the dump
 	 * struct ve_acct in accounting file.
 	 */
-	if (veos_acct.active == true &&
+	pthread_mutex_lock_unlock(&(veos_acct.ve_acct_lock), LOCK,
+                 "Failed to acquire task accounting lock");
+
+	if (veos_acct.file &&
 			del_task_struct->sighand->ref_count == 1 &&
-			!del_task_struct->dummy_task)
+			!del_task_struct->dummy_task){
 		veos_acct_ve_proc(del_task_struct);
+	}
+	pthread_mutex_lock_unlock(&(veos_acct.ve_acct_lock), UNLOCK,
+                "Failed to acquire task accounting lock");
 
 	pid = del_task_struct->pid;
 	core_id = del_task_struct->core_id;
@@ -874,8 +880,6 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 	}
 
 	group_leader = del_task_curr->group_leader;
-	/* Collect accounting information */
-	psm_acct_collect(del_task_curr->exit_code, del_task_curr);
 
 	core_id = del_task_curr->core_id;
 
@@ -919,7 +923,11 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 	if (del_task_curr == VE_CORE(0, core_id)->curr_ve_task) {
 		VEOS_DEBUG("Invoke psm_unassign_migrate_task");
 		psm_unassign_migrate_task(del_task_curr);
+		if (del_task_curr->reg_dirty == true)
+			psm_save_current_user_context(del_task_curr);
 	}
+	/* Collect accounting information */
+	psm_acct_collect(del_task_curr->exit_code, del_task_curr);
 
 	if (del_task_curr->ve_task_state == ZOMBIE) {
 		retval = vedl_delete_ve_task(VE_HANDLE(0),

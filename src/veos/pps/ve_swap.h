@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 NEC Corporation
+ * Copyright (C) 2019-2020 NEC Corporation
  * This file is part of the VEOS.
  * The VEOS is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -55,11 +55,21 @@ extern log4c_category_t *cat_os_pps;
 /* Size of buffer page in Byte */
 #define PPS_BUFFPAGE_SIZE_BYTE	(PPS_BUFFPAGE_SIZE * 1024 * 1024)
 
-#define PPS_INTER_SWAPIN 1
-#define PPS_INTER_TERM 2
-#define PPS_DIR_INVALID 3
-#define PPS_ALLOC_RETRY 4
-#define PPS_END_OF_PIDS -1
+#define PPS_INTER_SWAPIN	1
+#define PPS_INTER_TERM		2
+#define PPS_DIR_INVALID		3
+#define PPS_ALLOC_RETRY		4
+#define NO_PPS_BUFF		5
+#define PPS_END_OF_PIDS		-1
+#define PPS_FILE_OFF            -1
+#define PPS_SKIP_PID            0
+
+#define PPS_MEM_MODE   1
+#define PPS_FILE_MODE  2
+#define PPS_MIX_MODE   3
+#define PPS_TRANSFER_BUFFER_SIZE 64 
+#define PPS_TRANSFER_BUFFER_SIZE_BYTE (PPS_TRANSFER_BUFFER_SIZE * 1024 * 1024)
+#define PPS_PAGE_SIZE_64MB	(64 * 1024 * 1024)
 
 /**
  * This structure contains information about Swapped-out ATB or
@@ -79,6 +89,7 @@ struct ve_swapped_virtual {
  */
 struct ve_swapped_physical {
 	void *buf_page; /* !< Buffer pages */
+	off_t file_offset; /* !< File offsets */
 	uint64_t perm;    /* !< Permission of Swapped-out page. */
 	size_t pgsz;      /* !< Page size of Swapped-out VE page. */
 	uint64_t flag;    /* !< Flag of Swapped-out VE page. */
@@ -109,14 +120,16 @@ struct ve_ipc_sync {
 	pthread_cond_t swapping_cond; /* Condition variable to wait swapping becomes 0 */
 };
 
-int veos_alloc_ppsbuf(size_t);
+int veos_alloc_ppsbuf(size_t, size_t);
 int veos_pps_log4c_init(void);
 void *ve_swap_thread(void *);
 int ve_do_swapout(struct ve_task_struct *);
 int ve_do_swapin(struct ve_task_struct *);
 void veos_pps_free_buf_page(void *, size_t, int);
+void veos_pps_free_file_offset(void *, size_t, int);
 int get_task_exit_status(struct ve_task_struct *);
 void veos_update_substatus(struct ve_task_struct *, enum swap_status);
+int veos_check_substatus(struct ve_task_struct *, enum swap_status);
 int veos_pps_save_memory_content(pgno_t);
 int del_swapped_pages(struct ve_task_struct *);
 void veos_operate_all_ve_task_lock(struct ve_task_struct *, lock_unlock_t);
@@ -134,4 +147,10 @@ void del_doing_swap_request(struct veos_swap_request_info *request);
 bool veos_check_pps_enable(void);
 void ve_swap_out_start(struct ve_ipc_sync *);
 void ve_swap_in_finish(struct ve_ipc_sync *);
+int veos_init_pps_file_info(char *, size_t, char *);
+int veos_open_pps_file(struct ve_node_struct *);
+void veos_del_pps_file(struct ve_node_struct *);
+int print_pps_mode_info(char, size_t, bool, bool);
+int check_swap_out_in_process(int);
+bool check_swap_in_need_wait(struct ve_node_struct *);
 #endif

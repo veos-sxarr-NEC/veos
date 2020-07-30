@@ -245,6 +245,11 @@ static void veos_termination(int abnormal)
 	}
 
 	veos_free_ppsbuf();
+	pthread_mutex_lock_unlock(&(p_ve_node->pps_file_lock), LOCK,
+				"Failed to aqcuire pps_file_lock");
+	veos_del_pps_file(p_ve_node);
+	pthread_mutex_lock_unlock(&(p_ve_node->pps_file_lock), UNLOCK,
+				"Failed to release pps_file_lock");
 
 	if (ve_dma_close_p(p_ve_node->dh) != 0)
 		veos_abort("Failed to finalize DMA manager");
@@ -295,6 +300,10 @@ static void usage(char *veos_path)
 	"    --pcisync3=pcisyar3,pcisymr3  The values of PCISYAR3 and PCISYMR3\n"
 	"                                  which VEOS sets.\n"
 	"    --ve-swap-mem-max=value       Maximum value of memory that can be\n"
+	"                                  swapped out per VE node.\n"
+	"    --ve-swap-file-path=value     Path of file that can be swapped out\n"
+	"                                  per VE node.\n"
+	"    --ve-swap-file-max=value      Maximum value of file that can be\n"
 	"                                  swapped out per VE node.\n"
 	"    --cleanup                     Starts a VEOS and terminates it\n"
 	"                                  immediately, in order to ensure all VE\n"
@@ -416,6 +425,9 @@ static int veos_cleanup(void)
 		}
 	}
 
+	/* remove PPS file if it already exist. */
+	remove(VE_NODE(0)->pps_file.path);
+
 hndl_error_dma:
 	if (ve_dma_close_p(VE_NODE(0)->dh) != 0)
 		veos_abort("Failed to finalize DMA manager");
@@ -533,21 +545,28 @@ int main(int argc, char *argv[])
 	pthread_attr_t attr;
 	pthread_rwlockattr_t rw_attr;
 	size_t pps_buf_size = 0;
+	size_t pps_file_size = 0;
+	char pps_file_path[PATH_MAX-2] = {'\0'};
+	size_t pps_file_buf_size = 0;
+	bool mem_mode_flg = false;
+	bool file_mode_flg = false;
 
 	struct option long_options[] = {
-			{"pcisync1",        required_argument, NULL,  0 },
-			{"pcisync2",        required_argument, NULL,  0 },
-			{"pcisync3",        required_argument, NULL,  0 },
-			{"cleanup",         no_argument,       NULL,  0 },
-			{"ve-swap-mem-max", required_argument, NULL,  0 },
-			{"help",            no_argument,       NULL, 'h'},
-			{"sock",            required_argument, NULL, 's'},
-			{"dev",             required_argument, NULL, 'd'},
-			{"ived",            required_argument, NULL, 'i'},
-			{"vemm",            required_argument, NULL, 'm'},
-			{"timer-interval",  required_argument, NULL, 't'},
-			{"time-slice",      required_argument, NULL, 'T'},
-			{"version",         no_argument,       NULL, 'V'},
+			{"pcisync1",          required_argument, NULL,  0 },
+			{"pcisync2",          required_argument, NULL,  0 },
+			{"pcisync3",          required_argument, NULL,  0 },
+			{"cleanup",           no_argument,       NULL,  0 },
+			{"ve-swap-mem-max",   required_argument, NULL,  0 },
+			{"ve-swap-file-path", required_argument, NULL,  0 },
+			{"ve-swap-file-max",  required_argument, NULL,  0 },
+			{"help",              no_argument,       NULL, 'h'},
+			{"sock",              required_argument, NULL, 's'},
+			{"dev",               required_argument, NULL, 'd'},
+			{"ived",              required_argument, NULL, 'i'},
+			{"vemm",              required_argument, NULL, 'm'},
+			{"timer-interval",    required_argument, NULL, 't'},
+			{"time-slice",        required_argument, NULL, 'T'},
+			{"version",           no_argument,       NULL, 'V'},
 			{0, 0, 0, 0}
 			};
 
@@ -622,6 +641,32 @@ int main(int argc, char *argv[])
 						long_options[index].name);
 					exit(EXIT_FAILURE);
 				}
+				mem_mode_flg = true;
+				break;
+			} else if (index == OPT_VESWAP_FILE_PATH) {
+				snprintf(pps_file_path, sizeof(pps_file_path),
+								"%s", optarg);
+				if (pps_file_path[0] == '\0') {
+					pps_file_buf_size = 0;
+					fprintf(stderr, "%s option error\n",
+						long_options[index].name);
+					exit(EXIT_FAILURE);
+				}
+				pps_file_buf_size = PPS_TRANSFER_BUFFER_SIZE;
+				file_mode_flg = true;
+				break;
+			} else if (index == OPT_VESWAP_FILE_MAX) {
+				pps_file_size =
+					veos_convert_sched_options(optarg,
+						0, INT64_MAX / (1024 * 1024));
+				if (pps_file_size == -1) {
+					pps_file_buf_size = 0;
+					fprintf(stderr, "%s option error\n",
+						long_options[index].name);
+					exit(EXIT_FAILURE);
+				}
+				pps_file_buf_size = PPS_TRANSFER_BUFFER_SIZE;
+				file_mode_flg = true;
 				break;
 			} else {
 				fprintf(stderr, "Wrong option specified\n");
@@ -674,6 +719,22 @@ int main(int argc, char *argv[])
 							, strerror(errno));
 		retval = 1;
 		goto hndl_return;
+	}
+
+	/* Out put PPS mode */
+	if (print_pps_mode_info(pps_file_path[0], pps_file_size, mem_mode_flg,
+		file_mode_flg) != 0) {
+		retval = 1;
+		goto hndl_return;
+	}
+	/* Out put PPS info */
+	if ((mem_mode_flg) || (file_mode_flg)) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
+				"PPS buffer size is %ld", pps_buf_size);
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
+				"PPS file size is %ld", pps_file_size);
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
+				"PPS file path is %s", pps_file_path);
 	}
 
 	retval = pthread_rwlockattr_init(&rw_attr);
@@ -776,11 +837,19 @@ int main(int argc, char *argv[])
 		goto hndl_sem;
 	}
 
-	if (veos_alloc_ppsbuf(pps_buf_size) != 0) {
+	if (veos_alloc_ppsbuf(pps_buf_size, pps_file_buf_size) != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
 				"Initializing Partial Process Swapping failed");
 		retval = 1;
 		goto hndl_termination;
+	}
+
+	if (veos_init_pps_file_info(pps_file_path, pps_file_size,
+		drv_sock_file) != 0) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
+				"Initializing PPS file info failed");
+		retval = 1;
+		goto hndl_termination;	
 	}
 
 	if (veos_init_pci_sync() != 0) {

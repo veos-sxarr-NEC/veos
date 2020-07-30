@@ -779,3 +779,21 @@ hndl_return:
 	PSEUDO_TRACE("Exiting");
 	return ret;
 }
+
+int ve_sys_get_veos_pid(veos_handle *handle)
+{
+	int ret;
+
+	PSEUDO_TRACE("Entering");
+
+	if (handle == NULL) {
+                ret = -EFAULT;
+                PSEUDO_ERROR("%s",strerror(-ret));
+                goto hndl_return;
+        }
+
+	ret = ve_request_veos(handle, GET_VEOS_PID, NULL, NULL);;
+hndl_return:
+	PSEUDO_TRACE("Exiting");
+        return ret;
+}
