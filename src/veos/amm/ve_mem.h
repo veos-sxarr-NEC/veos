@@ -250,6 +250,8 @@ struct mmap_desc{
 	uint64_t reference_count; /*!< For PPS, Number for judgement 
 						to delete this structure.*/
 	uint64_t sum_virt_pages; /*!<Sum of mapped pages*/
+	uint64_t ns_pages; /*!< Number of pages which is not capable of swap-out
+								in each mapping */
 	pthread_mutex_t mmap_desc_lock; 
 };
 

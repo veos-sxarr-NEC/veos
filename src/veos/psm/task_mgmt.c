@@ -591,7 +591,7 @@ void calc_sys_load_per_sched_interval(struct ve_node_struct *p_ve_node)
 	 * load in last 1min, 5min, 15min.
 	 */
 	populate_1_5_15_sys_load(p_ve_node,
-			per_node_load * p_ve_node->nr_active,
+			p_ve_node->nr_active,
 			time_slice);
 
 	p_ve_node->nr_active = nr_active;
@@ -984,7 +984,7 @@ free_sched_count:
 	free(tsk->thread_sched_count);
 	tsk->thread_sched_count = NULL;
 free_ived:
-	if (veos_clean_ived_proc_property(tsk) != 0) {
+	if (tsk->ived_resource && veos_clean_ived_proc_property(tsk) != 0) {
 		VEOS_ERROR("Failed to claen ived property");
 		retval = -EFAULT;
 	}
@@ -1811,7 +1811,8 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 			"failed to release signal lock");
 
 	/* Clean and Re-initialise ived proc property */
-	veos_clean_ived_proc_property(del_task_struct);
+	if (del_task_struct->ived_resource)
+		veos_clean_ived_proc_property(del_task_struct);
 
 	del_task_struct->execed_proc = true;
 
@@ -2587,7 +2588,8 @@ void psm_acct_collect(int exit_code, struct ve_task_struct *tsk)
 
 	/* In case of thread group */
 	if (tsk->group_leader == tsk) {
-		pacct->ac_mem = (get_pss(tsk->p_ve_mm) + get_uss(tsk->p_ve_mm)) / 1024;
+		pacct->ac_mem = (get_pss(tsk->p_ve_mm, NULL) +
+					get_uss(tsk->p_ve_mm, NULL)) / 1024;
 		pacct->ac_exitcode = exit_code;
 	}
 
@@ -2696,7 +2698,7 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	int num_proc_numa_node_min = MAX_TASKS_PER_NODE;
 	int actual_node_id = -1;
 	pid_t sid = -1;
-	struct stat statbuf;
+	struct stat statbuf = {0};
 	char proc_self_path[PATH_MAX] = {0};
 	unsigned int  dev_major = 0, dev_minor = 0;
 
@@ -2985,14 +2987,6 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
 			"Failed to release tasklist_lock lock");
 
-	VEOS_DEBUG("Inserting pid: %d of core: %d to init list",
-				pid, *ve_core_id);
-	/* Insert an entry for this task in INIT tasks list */
-	pthread_rwlock_lock_unlock(&init_task_lock, WRLOCK,
-			"Failed to acquire init_task write lock");
-	list_add_tail(&tsk->tasks, &ve_init_task.tasks);
-	pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
-		"Failed to release init_task lock");
 
 	/* Get SHM/LHM area */
 	if (!rpm_task_create) {
@@ -3051,6 +3045,15 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 		goto delete_ve_task;
         }
 
+	VEOS_DEBUG("Inserting pid: %d of core: %d to init list",
+				pid, *ve_core_id);
+	/* Insert an entry for this task in INIT tasks list */
+	pthread_rwlock_lock_unlock(&init_task_lock, WRLOCK,
+			"Failed to acquire init_task write lock");
+	list_add_tail(&tsk->tasks, &ve_init_task.tasks);
+	pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
+		"Failed to release init_task lock");
+
 	VE_NODE(*ve_node_id)->total_forks++;
 	retval = 0;
 	goto hndl_return;
@@ -3061,7 +3064,7 @@ remove_from_core:
 free_dma_data:
 	if (ve_put_ipc_sync(tsk->ipc_sync) != 0)
 		VEOS_ERROR("Failed to clean ipc_sync");
-	if (veos_clean_ived_proc_property(tsk) != 0)
+	if (tsk->ived_resource && veos_clean_ived_proc_property(tsk) != 0)
 		VEOS_ERROR("Failed to clean ived property");
 	free(tsk->core_dma_desc);
 	tsk->core_dma_desc = NULL;

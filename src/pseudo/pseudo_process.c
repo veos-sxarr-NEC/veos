@@ -151,9 +151,9 @@ void pseudo_abort()
 			}
 			ve_state_val = atoi(buf);
 			if(ve_state_val == VE_ST_UNAVAILABLE){
-				PSEUDO_DEBUG("Node %d is UNAVAILABLE",
+				PSEUDO_ERROR("VE Node %d is UNAVAILABLE",
 								node_num);
-				fprintf(stdout, "Node %d is UNAVAILABLE\n",
+				fprintf(stderr, "VE Node %d is UNAVAILABLE\n",
 								node_num);
 			}
 			close(fd);
@@ -1143,6 +1143,10 @@ int main(int argc, char *argv[], char *envp[])
 					retval);
 			fprintf(stderr, "connection lost\n");
 			close(veos_sock_fd);
+			pseudo_abort();
+		} else if (retval == 0) {
+			PSEUDO_ERROR("Duplicate process with PID %d already exists at VEOS.", getpid());
+			fprintf(stderr, "VE process setup failed as pid duplication detected\n");
 			pseudo_abort();
 		}
 	}

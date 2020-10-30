@@ -2704,7 +2704,7 @@ ret_t ve_poll(int syscall_num, char *syscall_name, veos_handle *handle)
 	/* Copy back FD's to VE area */
 	if (NULL != (void *)args[0]) {
 		if (0 > ve_send_data(handle, args[0],
-					sizeof(struct pollfd),
+					nfds*sizeof(struct pollfd),
 					(uint64_t *)(fds))) {
 			PSEUDO_ERROR("Failed to send data to VE memory");
 			PSEUDO_DEBUG("%s Failed(%s) to send data:"
@@ -6981,6 +6981,7 @@ ret_t ve_fcntl(int syscall_num, char *syscall_name, veos_handle *handle)
 	ret_t retval = -1;
 	uint64_t args[3] = {0};
 	struct f_owner_ex f_owner = {0};
+	sigset_t signal_mask = { {0} };
 
 	PSEUDO_TRACE("Entering");
 	/* get arguments */
@@ -7008,11 +7009,17 @@ ret_t ve_fcntl(int syscall_num, char *syscall_name, veos_handle *handle)
 		retval = ve_generic_offload(syscall_num, syscall_name, handle);
 		break;
 	case F_GETOWN:
+		/* unblock all signals except the one actualy blocked by VE process */
+		PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+		sigfillset(&signal_mask);
+		pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 		/* call VH system call */
 		retval = syscall(syscall_num,
 				args[0],
 				args[1],
 				args[2]);
+		/* Post-processing of syscall started, blocking signals */
+		pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 		/* In case f_owner of the args[0] is a process group,
 		 * the return value is a negative value between the
 		 * range of -1 to -4095. Same negative value is
@@ -7065,8 +7072,14 @@ ret_t ve_fcntl(int syscall_num, char *syscall_name, veos_handle *handle)
 			}
 		}
 
+		/* unblock all signals except the one actualy blocked by VE process */
+		PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+		sigfillset(&signal_mask);
+		pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 		retval = syscall(syscall_num, args[0], args[1],
 					args[2] ? &f_owner : NULL);
+		/* Post-processing of syscall started, blocking signals */
+		pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 		if (retval == -1) {
 			retval = -errno;
 			PSEUDO_ERROR("%s syscall is failed %s",
@@ -12366,8 +12379,8 @@ ret_t ve_inotify_rm_watch(int syscall_num, char *syscall_name, veos_handle *hand
  *	int openat(int dirfd, const char *pathname, int flags);
  *	int openat(int dirfd, const char *pathname, int flags, mode_t mode);
  *
- *	This function uses generic handler "ve_hndl_int_p_char" as openat()
- *	functionality for VE has common pre and post processing needs.
+ *	This function fetches Path from VEMVA using VE driver interface
+ *	and offloads the functionality to VH OS system call.
  *
  * @param[in] syscall_num System Call number.
  * @param[in] syscall_name System Call name.
@@ -12377,7 +12390,85 @@ ret_t ve_inotify_rm_watch(int syscall_num, char *syscall_name, veos_handle *hand
  */
 ret_t ve_openat(int syscall_num, char *syscall_name, veos_handle *handle)
 {
-	return ve_hndl_int_p_char(syscall_num, syscall_name, handle);
+        ret_t retval = -1;
+        char *path_buff = NULL;
+        uint64_t args[4] = {0};
+        sigset_t signal_mask = { {0} };
+
+        PSEUDO_TRACE("Entering");
+        /* get arguments */
+        retval = vedl_get_syscall_args(handle->ve_handle, args, 4);
+        if (retval < 0) {
+                PSEUDO_ERROR("failed to fetch syscall "
+                                "arguments, (%s) returned %d",
+                                        SYSCALL_NAME, (int)retval);
+                retval = -EFAULT;
+                goto hndl_return;
+        }
+
+        if (args[1]) {
+                /* allocate memory to receive contents of 2nd argument */
+                path_buff = (char *)calloc(PATH_MAX, sizeof(char));
+                if (NULL == path_buff) {
+                        retval = -errno;
+                        PSEUDO_ERROR("Failed to create internal memory"
+                                        " buffer");
+                        PSEUDO_DEBUG("patch_buff : calloc %s failed %s",
+                                        SYSCALL_NAME, strerror(errno));
+                        goto hndl_return;
+                }
+
+                /*receive contents of 2nd argument */
+                retval = ve_recv_string(handle, args[1], (char *)path_buff,
+                                 PATH_MAX);
+                if (retval < 0) {
+                        PSEUDO_ERROR("failed to receive string "
+                                "from ve, (%s) returned %d",
+                                        SYSCALL_NAME, (int)retval);
+                        if (-2 == retval)
+                                retval = -ENAMETOOLONG;
+                        else
+                                retval = -EFAULT;
+                        goto hndl_return1;
+                }
+        }
+        /* unblock all signals except the one actualy blocked by VE process */
+        PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+        sigfillset(&signal_mask);
+        pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+        /* call VH system call */
+        retval = syscall(syscall_num,
+                        args[0],
+                        path_buff,
+                        args[2],
+                        args[3]);
+
+        /* Post-processing of syscall started, blocking signals */
+        pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+        if (-1 == retval) {
+                retval = -errno;
+                PSEUDO_ERROR("syscall %s failed %s",
+                                SYSCALL_NAME, strerror(errno));
+                if (EINTR == -retval)
+			/* If VHOS syscall is interrupted by signal
+			 * set retval to -VE_ERESTARTSYS. VE process
+			 * will restart the syscall if SA_RESTART
+			 * flag is provided for signal
+			 * */
+                        retval = -VE_ERESTARTSYS;
+        } else {
+                PSEUDO_DEBUG("syscall %s returned %d",
+                                SYSCALL_NAME, (int)retval);
+        }
+        PSEUDO_DEBUG("Blocked signals for post-processing");
+
+hndl_return1:
+        free(path_buff);
+        path_buff = NULL;
+hndl_return:
+        /* write return value */
+        PSEUDO_TRACE("Exiting");
+        return retval;
 }
 
 /**

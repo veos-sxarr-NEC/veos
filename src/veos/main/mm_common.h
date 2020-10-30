@@ -103,7 +103,7 @@ struct ve_mm_struct {
 		env_end, rss_max, crss_max,
 		rsslim, shared_rss,
 		pgsz, rss_data,
-		rss_stack, vm_size;
+		rss_stack, vm_size, mns;
 	uint64_t anon;
 	uint64_t anonhuge;
 	struct list_head list_file_backed_mem; /*!< list of the mapped pages */

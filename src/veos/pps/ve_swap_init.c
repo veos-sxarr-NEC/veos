@@ -579,7 +579,7 @@ veos_init_pps_file_info(char *pps_file_path, size_t pps_file_size,
 	if (gethostname(hostname, sizeof(hostname)) != 0) {
 		PPS_DEBUG(cat_os_pps, "Can not get host name, errno is %d",
 									errno);
-		strcpy(hostname, "UnknownHost");
+		strncpy(hostname, "UnknownHost", sizeof(hostname));
 	}
 	snprintf(vnode->pps_file.path, PATH_MAX * 2, "%s_%s.%d",
 					pps_file_path, hostname, node_num);

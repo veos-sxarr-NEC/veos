@@ -841,6 +841,7 @@ int copy_entry(atb_entry_t *new_pte, atb_entry_t *old_pte,
 			mmap_mem->mmap_descripter = mmap_desc;
 			mmap_mem->virt_page = 1;
 			list_add_tail(&mmap_mem->list_mmap_pages, &mm->mmap_page_priv);
+			VE_PAGE(vnode, pgno_dst)->private_data = mmap_desc;
 		}
 
 		/* copy_entry handling only atb soft image of numa node 0 */
@@ -1833,6 +1834,7 @@ pgno_t __replace_page(atb_entry_t *pte, struct ve_mm_struct *mm, int numa_node)
 		new_mmap_desc->in_mem_pages = 1;
 		new_mmap_desc->reference_count = 1;
 		new_mmap_desc->sum_virt_pages = 1;
+		new_mmap_desc->ns_pages = 1;
 		new_ve_page->private_data = (void *)new_mmap_desc;
 	} else if (MMAP_DESC_PRIVATE(old_flag, old_perm)) {
 		/*Use existing structure mmap_mem and mmap_desc*/
@@ -1840,6 +1842,7 @@ pgno_t __replace_page(atb_entry_t *pte, struct ve_mm_struct *mm, int numa_node)
 		old_mmap_desc = (struct mmap_desc *)old_ve_page->private_data;
 		old_mmap_desc->in_mem_pages += 1;
 		old_mmap_desc->reference_count += 1;
+		old_mmap_desc->ns_pages += 1;
 		new_ve_page->private_data = (void *)old_mmap_desc;
 	} else if (MMAP_DESC(old_flag, old_perm)) {
 		/*copy data mmap_desc to mmap_desc*/
@@ -1855,6 +1858,7 @@ pgno_t __replace_page(atb_entry_t *pte, struct ve_mm_struct *mm, int numa_node)
 		new_mmap_desc->pgsz = old_mmap_desc->pgsz;
 		new_mmap_desc->in_mem_pages = 1;
 		new_mmap_desc->reference_count = 1;
+		new_mmap_desc->ns_pages = 1;
 		new_mmap_desc->sum_virt_pages = 1;
 		pthread_mutex_lock_unlock(&old_mmap_desc->mmap_desc_lock, UNLOCK,
 					"Failed to release file desc lock");

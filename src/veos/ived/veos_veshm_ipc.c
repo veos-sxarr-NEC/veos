@@ -101,6 +101,7 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 	size_t   vemva_size;
 	int slot;
 	uint64_t *allocated_pci = NULL;
+	bool update_mns;
 
 	int ived_req_sock = -1;
 	RpcVeshmArg request = RPC_VESHM_ARG__INIT;
@@ -422,12 +423,17 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 
 		get_pciatb_ent = 1;
 		for (i = 0; i < entry->pciatb_entries-1 ; i++){
+			if (!((i + 1) < (entry->pciatb_entries -1)))
+				update_mns = true;
+			else
+				update_mns = false;
 			/* Request PCIATB entry one by one */
 			/* NOTE: This approach can be improved. */
 			slot = veos_alloc_pciatb
 				(request_open->pid_of_owner,
 				 start_vemva + pciatb_pagesize * i, 
-				 pciatb_pagesize, PROT_READ|PROT_WRITE, true);
+				 pciatb_pagesize, PROT_READ|PROT_WRITE, true,
+				 update_mns);
 			if (slot < 0){
 				entry->pciatb_slot[i] = -1;
 				IVED_ERROR(log4cat_veos_ived, 

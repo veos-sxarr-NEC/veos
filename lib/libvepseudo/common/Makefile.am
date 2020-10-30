@@ -23,6 +23,7 @@ BUILT_SOURCES = \
 libpseudocommon_la_CFLAGS = \
 	-g -Wall -Werror -DDEBUG -D_GNU_SOURCE -std=gnu99 \
 	-I$(top_srcdir)/src/veos/dma \
+	-I$(top_srcdir)/src/veos/pps \
 	-I$(top_srcdir)/src/pseudo \
 	-I$(srcdir)/../psm \
 	-I$(srcdir)/../amm \

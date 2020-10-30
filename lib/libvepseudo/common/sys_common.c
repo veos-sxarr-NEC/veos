@@ -42,6 +42,7 @@
 #include "pseudo_vhshm.h"
 #include "sys_veaio.h"
 #include "sys_accelerated_io.h"
+#include "exception.h"
 
 /**
  * @brief This function will be invoked to handle the MONC interrupt
@@ -154,6 +155,7 @@ ret_t ve_generic_offload(int syscall_num, char *syscall_name,
 {
 	uint64_t args[6] = {0};
 	ret_t retval = -1;
+	sigset_t signal_mask = { {0} };
 
 	PSEUDO_TRACE("Entering");
 
@@ -180,6 +182,13 @@ ret_t ve_generic_offload(int syscall_num, char *syscall_name,
 					goto hndl_return;
 				}
 			}
+		break;
+		case __NR_fcntl:
+			/* unblock all signals except the one actualy blocked by VE process */
+			PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+			sigfillset(&signal_mask);
+			pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+			break;
 	}
 
 	/* call VH system call */
@@ -190,6 +199,13 @@ ret_t ve_generic_offload(int syscall_num, char *syscall_name,
 			args[3],
 			args[4],
 			args[5]);
+	switch (syscall_num)
+	{
+		case __NR_fcntl:
+			/* Post-processing of syscall started, blocking signals */
+			pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+			break;
+	}
 	/* write return value */
 	if (-1 == retval) {
 		retval = -errno;
@@ -1315,6 +1331,7 @@ ret_t ve_hndl_int_int_p_flock_buf(int syscall_num, char *syscall_name, veos_hand
 	ret_t retval = -1;
 	struct flock ve_file_lock = {0};
 	uint64_t args[3] = {0};
+	sigset_t signal_mask = { {0} };
 
 	PSEUDO_TRACE("Entering");
 
@@ -1344,9 +1361,15 @@ ret_t ve_hndl_int_int_p_flock_buf(int syscall_num, char *syscall_name, veos_hand
 
 	}
 
+	/* unblock all signals except the one actualy blocked by VE process */
+	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
+	sigfillset(&signal_mask);
+	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 	/* call VH system call */
 	retval = syscall(syscall_num, args[0], args[1],
 			args[2] ? &ve_file_lock : NULL);
+	/* Post-processing of syscall started, blocking signals */
+	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 	if (-1 == retval) {
 		retval = -errno;
 		PSEUDO_ERROR("syscall %s failed %s",
@@ -1482,7 +1505,9 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 	case VE_SYSVE_GET_VEOS_PID:
 		retval = ve_sys_get_veos_pid(handle);
 		break;
-
+	case VE_SYSVE_GET_MNS:
+		retval = ve_sys_get_mns(handle, args[1]);
+		break;
 	default:
 		/* write return value */
 		retval = -EINVAL;

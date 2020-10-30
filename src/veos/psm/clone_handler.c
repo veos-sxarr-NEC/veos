@@ -872,25 +872,6 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
 				"Failed to release tasklist_lock lock");
 
-	} else {
-		/* Add an entry of this process in its parent's children list */
-		VEOS_DEBUG("Acquiring tasklist_lock");
-		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
-				"Failed to acquire tasklist_lock lock");
-
-		list_add_tail(&new_task->siblings,
-				&new_task->parent->children);
-
-		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
-				"Failed to release tasklist_lock lock");
-
-		/* Add an entry of this process in INIT task list */
-		pthread_rwlock_lock_unlock(&init_task_lock, WRLOCK,
-				"Failed to acquire init_task write lock");
-		list_add_tail(&new_task->tasks, &ve_init_task.tasks);
-		pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
-				"Failed to release init_task lock");
-
 	}
 	goto hndl_return;
 
@@ -977,6 +958,23 @@ int do_ve_fork(unsigned long clone_flags,
 	if (VE_NODE(0)->num_ve_proc >= MAX_TASKS_PER_NODE) {
 		VEOS_ERROR("Reached maximum(%d) VEOS tasks limit",
 				MAX_TASKS_PER_NODE);
+		retval = -EAGAIN;
+		goto hndl_return;
+	}
+	new_task = find_ve_task_struct(fork_info->child_pid);
+	if (NULL != new_task) {
+		VEOS_ERROR("Duplicate process with PID %d is : %p"
+				" Core : %d"
+				" binary : %s already exists",
+				fork_info->child_pid,
+				new_task,
+				new_task->core_id,
+				new_task->ve_comm);
+		VEOS_ERROR("Failed to create new task due to PID conflict");
+		put_ve_task_struct(new_task);
+		/* PID conflict occurs at VEOS. This is a race scenario wherein VEOS
+		 * contains entry for VE task but correponding pseudo was earlier freed
+		 * */
 		retval = -EAGAIN;
 		goto hndl_return;
 	}
@@ -1135,7 +1133,24 @@ int do_ve_fork(unsigned long clone_flags,
 					sizeof(uint64_t) / (double)1024);
 	}
 
+	if(!(clone_flags & CLONE_THREAD)) {
+		/* Add an entry of this process in its parent's children list */
+		VEOS_DEBUG("Acquiring tasklist_lock");
+		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
+				"Failed to acquire tasklist_lock lock");
 
+		list_add_tail(&new_task->siblings,
+				&new_task->parent->children);
+
+		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
+				"Failed to release tasklist_lock lock");
+		/* Add an entry of this process in INIT task list */
+		pthread_rwlock_lock_unlock(&init_task_lock, WRLOCK,
+				"Failed to acquire init_task write lock");
+		list_add_tail(&new_task->tasks, &ve_init_task.tasks);
+		pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
+				"Failed to release init_task lock");
+	}
 	/* If all successful, return the core ID assigned
 	 * to newly created VE process/VE thread */
 	retval = child_core_id;

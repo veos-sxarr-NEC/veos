@@ -143,6 +143,8 @@ int ve_mark_ipc_sync(struct ve_task_struct *);
 int ve_unlock_swapped_proc_lock(struct ve_task_struct *);
 struct ve_ipc_sync *ve_alloc_ipc_sync(void);
 int is_ve_page_swappable(pgno_t pgno, struct ve_node_struct *vnode);
+int is_ve_page_swappable_core(uint64_t, uint64_t, uint64_t, pgno_t,
+						struct ve_task_struct *);
 void del_doing_swap_request(struct veos_swap_request_info *request);
 bool veos_check_pps_enable(void);
 void ve_swap_out_start(struct ve_ipc_sync *);
@@ -153,4 +155,5 @@ void veos_del_pps_file(struct ve_node_struct *);
 int print_pps_mode_info(char, size_t, bool, bool);
 int check_swap_out_in_process(int);
 bool check_swap_in_need_wait(struct ve_node_struct *);
+int64_t veos_pps_get_cns(struct ve_task_struct *, pid_t);
 #endif

@@ -37,6 +37,7 @@
 #include "process_mgmt_comm.h"
 #include "mm_transfer.h"
 #include "handle.h"
+#include "ve_swap_request.h"
 
 #define VE_VEHVA_SYS_COM_REG_PAGE0_ADDR       0x000000001000
 #define VE_VEHVA_SYS_COM_REG_PAGE1_ADDR       0x000000002000
@@ -662,6 +663,7 @@ int ve_request_veos(veos_handle *handle,
 		pseudo_abort();
 	}
 
+	ret = recv_msg->syscall_retval;
 	/* set results */
 	if (reply_msg != NULL) {
 		*reply_msg = recv_msg;
@@ -669,7 +671,6 @@ int ve_request_veos(veos_handle *handle,
 	} else {
 		pseudo_veos_message__free_unpacked(recv_msg, NULL);
 	}
-	ret = recv_msg->syscall_retval;
 
 	free(msg_buf);
 err_ret_nofree:
@@ -796,4 +797,65 @@ int ve_sys_get_veos_pid(veos_handle *handle)
 hndl_return:
 	PSEUDO_TRACE("Exiting");
         return ret;
+}
+
+/**
+ * @brief Handler of ve_get_nonswappable().
+ *        This function requests veos to tell maximum non-swappable memory size.
+ *
+ * @param [in] handle VEOS handle of pseudo process.
+ * @param [in] buff Address of VE memory in which maximum non-swappable memory
+ *                  size will be stored.
+ * @return 0 on Success, -errno on failure.
+ */
+int64_t
+ve_sys_get_mns(veos_handle *handle, uint64_t buff)
+{
+	int64_t retval = 0;
+	int ret;
+	PseudoVeosMessage *reply_msg = NULL;
+	ProtobufCBinaryData data;
+	pid_t pid = getpid();
+	struct ve_ns_info_proc *ns_info;
+
+	PSEUDO_TRACE("Entering");
+
+	if (buff == 0) {
+		retval = -EFAULT;
+		goto handle_return;
+	}
+	data.len = sizeof(pid_t);
+	data.data = (uint8_t *)&pid;
+
+	PSEUDO_DEBUG("Request CMD_GET_MNS from %ld", syscall(SYS_gettid));
+	retval = ve_request_veos(handle, CMD_GET_MNS, &data, &reply_msg);
+	PSEUDO_DEBUG("VEOS return %ld against CMD_GET_MNS from %ld",
+						retval, syscall(SYS_gettid));
+	if (retval < 0) {
+		PSEUDO_ERROR("Failed to communicate VEOS about CMD_GET_MNS");
+		if (reply_msg == NULL)
+			goto handle_return;
+		else
+			goto handle_unpacked;
+	}
+	if (reply_msg->has_pseudo_msg != true) {
+		PSEUDO_ERROR("Responce against CMD_GET_MNS is invalid");
+		retval = -ECANCELED;
+		goto handle_unpacked;
+	}
+	ns_info = (struct ve_ns_info_proc *)reply_msg->pseudo_msg.data;
+
+	PSEUDO_DEBUG("Send mns(%ld) to 0x%lx", ns_info->ns, buff);
+	ret = ve_send_data(handle, buff, sizeof(int64_t), (void *)&ns_info->ns);
+	if (ret != 0) {
+		retval = -EFAULT;
+		PSEUDO_ERROR("Faild to send mns %s", strerror(-ret));
+	}
+
+handle_unpacked:
+	pseudo_veos_message__free_unpacked(reply_msg, NULL);
+
+handle_return:
+	PSEUDO_TRACE("Exiting");
+	return retval;
 }

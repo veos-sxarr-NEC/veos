@@ -171,6 +171,8 @@ int amm_copy_mm_struct(struct ve_mm_struct *mm_old,
 	struct file_backed_mem *file_tmp = NULL, *file_n = NULL;
 	struct file_desc *file_desc_tmp = NULL;
 	int index = 0;
+	uint64_t uss = 0, pss = 0;
+	uint64_t uss_cns = 0, pss_cns = 0;
 
 	VEOS_TRACE("invoked");
 	VEOS_TRACE("copy mm from(%p) to (%p)", mm_old, mm_new);
@@ -231,6 +233,12 @@ int amm_copy_mm_struct(struct ve_mm_struct *mm_old,
 		}
 		pthread_mutex_lock_unlock(&mm_old->thread_group_mm_lock,
 			UNLOCK,	"Failed to release mm-thread-group-lock");
+		uss = get_uss(mm, &uss_cns);
+		pss = get_pss(mm, &pss_cns);
+		mm->rss_max =  uss + pss;
+		mm->mns = (uss_cns + pss_cns);
+		VEOS_DEBUG("child rss_max = %ld", mm->rss_max);
+		VEOS_DEBUG("child mns = %ld", mm->mns);
 		break;
 	case REQUEST_FOR_VFORK_PROCESS:
 		VEOS_DEBUG("request to replicate mm for new tsk (vfork)");
@@ -997,6 +1005,7 @@ int amm_do_mmap(vemva_t vaddr, size_t size, prot_t perm,
 	int index = 0;
 	uint64_t uss = 0, pss = 0;
 	int from_node = INVALID_NUMA_NODE;
+	uint64_t uss_cns = 0, pss_cns = 0;
 
 	VEOS_TRACE("invoked");
 
@@ -1014,8 +1023,8 @@ int amm_do_mmap(vemva_t vaddr, size_t size, prot_t perm,
 
 	pthread_mutex_lock_unlock(&mm->thread_group_mm_lock, LOCK,
 				"Failed to acquire mm-thread-group-lock");
-	uss = get_uss(mm);
-	pss = get_pss(mm);
+	uss = get_uss(mm, NULL);
+	pss = get_pss(mm, NULL);
 	VEOS_DEBUG("tsk(%p):pid(%d): actual rss limit(%ld) and"
 			"current rss used(%ld)",
 			tsk, tsk->pid, tsk->sighand->rlim[RLIMIT_RSS].rlim_cur,
@@ -1293,10 +1302,14 @@ map_sigbus:
 		mm->shared_rss += size;
 
 	mm->vm_size += size;
-	uss = get_uss(mm);
-	pss = get_pss(mm);
+	uss = get_uss(mm, &uss_cns);
+	pss = get_pss(mm, &pss_cns);
 	if (mm->rss_max < (uss + pss))
 		mm->rss_max =  uss + pss;
+	if (mm->mns < (uss_cns + pss_cns))
+		mm->mns = (uss_cns + pss_cns);
+	VEOS_DEBUG("rss_max : %ld byte", mm->rss_max);
+	VEOS_DEBUG("mns : %ld byte", mm->mns);
 
 	pthread_mutex_lock_unlock(&mm->thread_group_mm_lock,
 			UNLOCK, "Failed to release mm-thread-group-lock");
@@ -1466,7 +1479,8 @@ int amm_do_munmap(vemva_t vaddr, size_t size,
 		if (((PG_SHM & pgflag) || (MAP_SHARED & pgflag)) && !veshm)
 			mm->shared_rss -= pgsz;
 
-		update_proc_shm_struct(vaddr, pgno, mm);
+		if (!veshm)
+			update_proc_shm_struct(vaddr, pgno, mm);
 
 		if (pgflag & MAP_ANON) {
 			if (pgsz == PAGE_SIZE_64MB)
@@ -1487,7 +1501,8 @@ int amm_do_munmap(vemva_t vaddr, size_t size,
 		if (pb[i] < 0)
 			continue;
 		pgno = pfnum(pb[i], PG_2M);
-		decrement_virt_page(VE_PAGE(vnode, pgno), mm);
+		if (!veshm)
+			decrement_virt_page(VE_PAGE(vnode, pgno), mm);
 
 		result = amm_put_page(pb[i]);
 		if (result < 0) {
@@ -1740,6 +1755,7 @@ int amm_do_mprotect(vemva_t vaddr, ssize_t size, uint64_t perm,
 	struct ve_node_struct *vnode = VE_NODE(0);
 	int index = 0;
 	int mp_num = 0;
+	uint64_t uss_cns = 0, pss_cns = 0;
 
 	VEOS_TRACE("invoked");
 	memset(dirs, -1, sizeof(dirs));
@@ -1862,6 +1878,11 @@ next:
 	 * On succcess update the ATB structure maintained in mm
 	 */
 done:
+	get_uss(mm, &uss_cns);
+	get_pss(mm, &pss_cns);
+	if (mm->mns < (uss_cns + pss_cns))
+		mm->mns = (uss_cns + pss_cns);
+	VEOS_DEBUG("mns : %ld byte", mm->mns);
 	for (index = 0; index < vnode->numa_count; index++)
 		memcpy(&(mm->atb[index]), &atb[index], sizeof(atb_reg_t));
 
@@ -3037,6 +3058,11 @@ int amm_do_mmap_handling(struct ve_mm_struct *mm, size_t pgsz, flag_t flags,
 				mdesc->reference_count++;
 				pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
 					LOCK, "Failed to get ve page lock");
+				if (is_ve_page_swappable_core(
+					VE_PAGE(vnode, map[start])->pci_count,
+					flags, perm, map[start],
+					VE_PAGE(vnode, map[start])->owner))
+					mdesc->ns_pages++;
 				VE_PAGE(vnode, map[start])->private_data =
 					(void *)mdesc;
 				pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
@@ -3076,6 +3102,11 @@ int amm_do_mmap_handling(struct ve_mm_struct *mm, size_t pgsz, flag_t flags,
 				mmem->virt_page++;
 				pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
 						LOCK, "Failed to get ve page lock");
+				if (is_ve_page_swappable_core(
+					VE_PAGE(vnode, map[start])->pci_count,
+					flags, perm, map[start],
+					VE_PAGE(vnode, map[start])->owner))
+					mdesc->ns_pages++;
 				VE_PAGE(vnode, map[start])->private_data = (void *)mdesc;
 				pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
 					UNLOCK, "Failed to release ve page lock");
@@ -3165,6 +3196,7 @@ struct mmap_desc *init_mmap_desc(void)
 	mdesc->in_mem_pages = 0;
 	mdesc->reference_count = 0;
 	mdesc->sum_virt_pages = 0;
+	mdesc->ns_pages = 0;
 	if (0 != pthread_mutex_init(&(mdesc->mmap_desc_lock), NULL)) {
 		VEOS_DEBUG("mmap_desc_lock initialization is failed");
 		free(mdesc);
@@ -3344,6 +3376,8 @@ int amm_do_put_page(vemaa_t pb, bool is_amm)
 			} else if (MMAP_DESC(page->flag, page->perm)) {
 				struct mmap_desc *mmap_d = 
 					((struct mmap_desc *)(page->private_data));
+				if (is_ve_page_swappable(pgnum, vnode))
+					mmap_d->ns_pages--;
 				mmap_d->in_mem_pages--;
 				page->private_data = NULL;
 				if (page->swapped_info == NULL) {
@@ -5302,6 +5336,7 @@ int veos_handle_ptrace_poke_req(struct ve_task_struct *tsk, vemva_t vaddr)
 	pgno_t pgno = -1;
 	pgno_t new_pgno = -1;
 	struct ve_node_struct *vnode = VE_NODE(0);
+	uint64_t uss_cns = 0, pss_cns = 0;
 
 	VEOS_TRACE("invoked");
 
@@ -5353,6 +5388,11 @@ int veos_handle_ptrace_poke_req(struct ve_task_struct *tsk, vemva_t vaddr)
 			ret = -1;
 			goto error;
 		}
+		get_uss(mm, &uss_cns);
+		get_pss(mm, &pss_cns);
+		if (mm->mns < (uss_cns + pss_cns))
+			mm->mns = (uss_cns + pss_cns);
+		VEOS_DEBUG("mns : %ld byte", mm->mns);
 		ret = 0;
 	} else {
 		VEOS_DEBUG("No need to replace page %ld, already traced", pgno);
@@ -5714,6 +5754,7 @@ void amm_copy_mm_data(struct ve_mm_struct *mm_old, struct ve_mm_struct *mm_new)
 	mm_new->auxv_addr = mm_old->auxv_addr;
 	mm_new->auxv_size = mm_old->auxv_size;
 	mm_new->mem_policy = mm_old->mem_policy;
+	mm_new->mns = mm_old->mns;
 
 }
 
@@ -6048,6 +6089,7 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 	mm->argv_size = 0;
 	mm->auxv_addr = 0;
 	mm->auxv_size = 0;
+	mm->mns = 0;
 err_exit:
 	free(mm->vehva_header.bmap_4k);
 	free(mm->vehva_header.bmap_64m);

@@ -109,6 +109,6 @@ int rm_or_ls_segment(proc_t *, bool, struct ve_mapheader *);
 void veos_key_id_query(int shmid, bool *shmid_valid, bool is_key, long);
 int is_capable(proc_t *, int *, bool);
 int get_shm_info(int, sdata_t *, long);
-uint64_t get_pss(struct ve_mm_struct *);
-uint64_t get_uss(struct ve_mm_struct *);
+uint64_t get_pss(struct ve_mm_struct *, uint64_t *);
+uint64_t get_uss(struct ve_mm_struct *, uint64_t *);
 #endif

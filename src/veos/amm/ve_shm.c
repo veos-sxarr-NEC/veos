@@ -227,6 +227,7 @@ int amm_do_shmat(key_t key, int shmid, vemva_t shmaddr, size_t size,
 	dir_t dir_num = 0;
 	int i = 0;
 	uint64_t rss_cur = 0;
+	uint64_t uss_cns = 0, pss_cns = 0;
 
 	struct ve_node_struct *vnode = VE_NODE(0);
 	int index = 0;
@@ -256,8 +257,9 @@ int amm_do_shmat(key_t key, int shmid, vemva_t shmaddr, size_t size,
 		goto shmat_err;
 	}
 
-	if (tsk->sighand->rlim[RLIMIT_RSS].rlim_cur < (get_uss(tsk->p_ve_mm) +
-					get_pss(tsk->p_ve_mm) + size)) {
+	if (tsk->sighand->rlim[RLIMIT_RSS].rlim_cur <
+					(get_uss(tsk->p_ve_mm, NULL) +
+					get_pss(tsk->p_ve_mm, NULL) + size)) {
 		VEOS_DEBUG("Can't get memories more than resource limit");
 		ret = -ENOMEM;
 		goto shmat_err;
@@ -381,9 +383,13 @@ int amm_do_shmat(key_t key, int shmid, vemva_t shmaddr, size_t size,
 
 	mm->shared_rss += shm_ent->size;
 	mm->vm_size += shm_ent->size;
-	rss_cur = get_uss(mm) + get_pss(mm);
+	rss_cur = get_uss(mm, &uss_cns) + get_pss(mm, &pss_cns);
 	if (mm->rss_max < rss_cur)
 		mm->rss_max = rss_cur;
+	if (mm->mns < (uss_cns + pss_cns))
+		mm->mns = (uss_cns + pss_cns);
+	VEOS_DEBUG("rss_max : %ld byte", mm->rss_max);
+	VEOS_DEBUG("mns : %ld byte", mm->mns);
 
 	pthread_mutex_lock_unlock(&mm->thread_group_mm_lock, UNLOCK,
 			"Failed to release thread-group-mm-lock");
@@ -1175,9 +1181,10 @@ query_done:
 * @return if success returns pss.
 *		mm is NULL, veos abort.
 **/
-uint64_t get_pss(struct ve_mm_struct *mm)
+uint64_t get_pss(struct ve_mm_struct *mm, uint64_t *ns)
 {
 	double pss_add = 0;
+	double cns_add = 0, cns_tmp = 0;
 	uint64_t pss = 0;
 	struct shm_map *shm_map = NULL;
 	struct shm *shm_segment = NULL;
@@ -1215,6 +1222,14 @@ uint64_t get_pss(struct ve_mm_struct *mm)
 			"Failed to release file desc lock");
 	}
 
+	cns_add = pss_add;
+	if (ns != NULL)
+		VEOS_DEBUG("Non-swappable memory size of "
+			   "SystemV shared memory and "
+			   "RO private filebacked memory and "
+			   "RW shared filebacked memory  : %ld byte",
+			   (uint64_t)(cns_add + 0.5));
+
 	/* calculate shared anonymous mmaped memory */
 	list_for_each_entry(mmap_mem, &mm->list_mmap_mem, list_mmap_pages) {
 		mmap_desc = mmap_mem->mmap_descripter;
@@ -1225,12 +1240,23 @@ uint64_t get_pss(struct ve_mm_struct *mm)
 				mmap_mem->virt_page *
 				mmap_desc->in_mem_pages) /
 				mmap_desc->sum_virt_pages;
+			cns_tmp += (double)(mmap_desc->pgsz *
+				mmap_mem->virt_page *
+				mmap_desc->ns_pages) /
+				mmap_desc->sum_virt_pages;
 		}
 		pthread_mutex_lock_unlock(&mmap_desc->mmap_desc_lock, UNLOCK,
 			"Failed to release mmap desc lock");
 	}
 
 	/*Round off the pss_add*/
+	if (ns != NULL) {
+		VEOS_DEBUG("Non-swappable memory size of "
+			   "RW anonymous shared memory and "
+			   "RO private anonymous memory : %ld byte",
+			   (uint64_t)(cns_tmp + 0.5));
+		*ns = (uint64_t)(cns_add + cns_tmp + 0.5);
+	}
 	pss = (uint64_t)(pss_add + 0.5);
 	return pss;
 }
@@ -1243,9 +1269,10 @@ uint64_t get_pss(struct ve_mm_struct *mm)
 * @return if success returns pss.
 *		mm is NULL, veos abort.
 **/
-uint64_t get_uss(struct ve_mm_struct *mm)
+uint64_t get_uss(struct ve_mm_struct *mm, uint64_t *ns)
 {
 	uint64_t uss = 0;
+	uint64_t cns = 0;
 	struct mmap_desc *mdesc = NULL;
 	struct mmap_mem *mmem = NULL;
 
@@ -1258,9 +1285,18 @@ uint64_t get_uss(struct ve_mm_struct *mm)
 			pthread_mutex_lock_unlock(&mdesc->mmap_desc_lock, LOCK,
 					"Failed to get mmap desc lock");
 			uss += mdesc->in_mem_pages * mdesc->pgsz;
+			cns += mdesc->ns_pages * mdesc->pgsz;
 			pthread_mutex_lock_unlock(&mdesc->mmap_desc_lock, UNLOCK,
 					"Failed to release mmap desc lock");
 		}
 	}
+
+	if (ns != NULL) {
+		VEOS_DEBUG("Non-swappable memory size of "
+			   "RW private anonymous/filebacked memory : %ld byte",
+			   cns);
+		*ns = cns;
+	}
+
 	return uss;
 }

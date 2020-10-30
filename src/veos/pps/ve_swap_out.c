@@ -42,6 +42,61 @@
 #include "ve_shm.h"
 
 /**
+ * @brief Return current non-swappable memory size of a specified process.
+ *
+ * @param[in] tsk Pointer to ve_task_struct of specified process.
+ * @param[in] pid PID of specified process.
+ *
+ * @return Current non-swappable memory size on Success, -errno on failure.
+ */
+int64_t
+veos_pps_get_cns(struct ve_task_struct *tsk, pid_t pid)
+{
+	int64_t cns = 0;
+	uint64_t uss_cns, pss_cns;
+	struct ve_task_struct *group_leader = NULL;
+	struct ve_task_struct *tmp;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	if (tsk == NULL) {
+		PPS_ERROR(cat_os_pps, "specified ve_task_struct is null");
+		return -ECANCELED;
+	}
+
+	pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock), LOCK,
+				  "Failed to acquire thread_group_mm_lock");
+	group_leader = tsk->group_leader;
+	veos_operate_all_ve_task_lock(group_leader, LOCK);
+	if (tsk->group_leader->pid != tsk->pid) {
+		PPS_DEBUG(cat_os_pps, "%d is child thread", pid);
+		cns = -ESRCH;
+	} else if (group_leader->ptraced) {
+		PPS_DEBUG(cat_os_pps, "%d is traced", pid);
+		cns = -EPERM;
+	} else {
+		list_for_each_entry(
+			tmp, &(group_leader->thread_group), thread_group) {
+			if (tmp->ptraced) {
+				PPS_DEBUG(cat_os_pps, "%d is traced", pid);
+				cns = -EPERM;
+			}
+		}
+	}
+	veos_operate_all_ve_task_lock(group_leader, UNLOCK);
+	if (cns == 0) {
+		get_uss(tsk->p_ve_mm, &uss_cns);
+		get_pss(tsk->p_ve_mm, &pss_cns);
+		cns = uss_cns + pss_cns;
+		PPS_DEBUG(cat_os_pps, "PID %d, cns : %ld", pid, cns);
+	}
+	pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock), UNLOCK,
+				  "Failed to release thread_group_mm_lock");
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return cns;
+}
+
+/**
  * @brief Check whether PPS is enabled or not.
  *
  * @return true on PPS is enabled, false on not.
@@ -684,36 +739,70 @@ is_ve_page_swappable(pgno_t pgno, struct ve_node_struct *vnode)
 	struct ve_page *page = VE_PAGE(vnode, pgno);
 
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
+	retval = is_ve_page_swappable_core(
+		page->pci_count, page->flag, page->perm, pgno, page->owner);
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return retval;
+}
 
-	if (page->pci_count > 0) {
+/**
+ *
+ * @brief Check whether specified VE page is capable of Swap-out or not.
+ *        This function can be used in memory allocation procedure.
+ *
+ * @param[in] pci_count Number indicates how many times page was registered with pciatb.
+ * @param[in] flag Flag of VE page.
+ * @param[in] perm Permission of VE page.
+ * @param[in] pgno VE page number.
+ * @param[in] owner Owner of VE page.
+ *
+ * @retval 0 on swappable
+ * @retval -1 on not swappable.
+ *
+ * @note Acquire ve_page_node_lock before invoking this. */
+int
+is_ve_page_swappable_core(
+		uint64_t pci_count, uint64_t flag,
+		uint64_t perm, pgno_t pgno, struct ve_task_struct *owner)
+{
+	int retval = -1;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	assert(pthread_mutex_trylock(&(VE_NODE(0)->ve_pages_node_lock))
+								== EBUSY);
+
+	PPS_DEBUG(cat_os_pps, "pgno : %ld, flag : 0x%lx, perm : %ld",
+							pgno, flag, perm);
+	if (pci_count > 0) {
 		PPS_DEBUG(cat_os_pps, "%ld is registerer with PCIATB", pgno);
 		goto hndl_return;
 	}
 
-	if (page->flag & MAP_VDSO) {
+	if (flag & MAP_VDSO) {
 		PPS_DEBUG(cat_os_pps, "%ld is VDSO", pgno);
 		goto hndl_return;
 	}
 
-	if ((page->flag & PG_SHM) || (page->flag & MAP_SHARED)) {
+	if ((flag & PG_SHM) || (flag & MAP_SHARED)) {
 		PPS_DEBUG(cat_os_pps, "%ld is shared", pgno);
 		goto hndl_return;
 	}
 
-	if (page->flag & PG_PTRACE) {
+	if (flag & PG_PTRACE) {
 		PPS_DEBUG(cat_os_pps, "%ld is traced", pgno);
 		goto hndl_return;
 	}
 
-	if (!(page->flag & MAP_ANON) &&
-		!((page->flag & MAP_PRIVATE) && (page->perm & PROT_WRITE))) {
+	if (!(flag & MAP_ANON) &&
+		!((flag & MAP_PRIVATE) && (perm & PROT_WRITE))) {
 		PPS_DEBUG(cat_os_pps,
 			"%ld is not anonymous or read-only fileback memory",
 			pgno);
 		goto hndl_return;
 	}
 
-	if (page->owner != NULL) {
+	if (owner != NULL) {
 		PPS_DEBUG(cat_os_pps, "%ld has owner", pgno);
 		goto hndl_return;
 	}

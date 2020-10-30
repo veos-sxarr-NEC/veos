@@ -166,6 +166,8 @@ void ve_send_signal_req(pid_t tid, int signum, siginfo_t *signal_info
 *
 *	This function unblocks the signal mapped from exception, it also
 *	reset the signal handler to default.
+*	As per requirement of #2012 this function also sets core file size
+*	to zero, to avoid VH core file generation in case of VE exception.
 *
 * @param signum Signal number(mapped from h/w exception)
 *
@@ -177,6 +179,14 @@ int ve_set_sigaction_default(int signum)
 	struct sigaction pseudo_act;
 	int retval = -1;
 
+	/*Added for #2012 to avoid generation of VH corefile*/
+	struct rlimit core_lim;
+	core_lim.rlim_cur = 0;
+	core_lim.rlim_max = 0;
+	if (-1 == setrlimit(RLIMIT_CORE, &core_lim)) {
+		retval = -errno;
+		return retval;
+	}
 	sigemptyset(&mask);
 	sigaddset(&mask, signum);
 	sigdelset(&ve_proc_sigmask, signum);

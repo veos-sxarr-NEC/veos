@@ -4298,13 +4298,23 @@ int psm_handle_get_pseudo_vefd_req(struct veos_thread_arg *pti)
 
 	pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
 	tsk  = find_ve_task_struct(pid);
-	if (tsk) {
-		VEOS_DEBUG("VE process with PID %d"
-				" is executed by execve", pid);
+	if (tsk && tsk->execed_proc == true) {
+		if (tsk->rpm_create_task == true)
+			VEOS_DEBUG("VE process with PID %d"
+					" is executed by RPM", pid);
+		else
+			VEOS_DEBUG("VE process with PID %d"
+					" is executed by execve", pid);
 		group_leader = tsk->group_leader;
 		pseudo_vefd = group_leader->pseudo_vefd;
 		put_ve_task_struct(tsk);
 
+	} else if (tsk) {
+		VEOS_ERROR("Duplicate process with PID %d "
+				"already exists", pid);
+		VEOS_ERROR("Failed to create new task due to PID conflict");
+		put_ve_task_struct(tsk);
+		pseudo_vefd = 0;
 	} else {
 		VEOS_DEBUG("VE process with PID %d"
 				" is executed by ve_exec", pid);

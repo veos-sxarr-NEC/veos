@@ -91,4 +91,5 @@ struct veos_cmd_entry pseudo_veos_cmd[PSEUDO_VEOS_MAX_MSG_NUM] = {
 	{"NEW_VE_PROC_COMPT", psm_handle_exec_ve_proc_req},
 	{"GET_TIMES", psm_handle_get_times_req},
 	{"GET_VEOS_PID", veos_handle_get_veos_pid_req},
+	{"CMD_GET_MNS", veos_handle_get_mns},
 };

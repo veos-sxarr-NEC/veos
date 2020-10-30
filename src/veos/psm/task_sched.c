@@ -1063,8 +1063,8 @@ int psm_calc_task_exec_time(struct ve_task_struct *curr_ve_task)
 			curr_ve_task->pid, curr_ve_task->exec_time);
 
 	/*1679 ac_total_mem in each context switch*/
-	uss = get_uss(curr_ve_task->p_ve_mm);
-	pss = get_pss(curr_ve_task->p_ve_mm);
+	uss = get_uss(curr_ve_task->p_ve_mm, NULL);
+	pss = get_pss(curr_ve_task->p_ve_mm, NULL);
 	exec_time_ticks = (exec_time) / ((double)(USECOND / AHZ));
 	size = ((uss + pss) / (double)1024) * exec_time_ticks;
 	update_accounting_data(curr_ve_task, ACCT_TOTAL_MEM, size);

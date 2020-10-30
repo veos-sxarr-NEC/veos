@@ -673,6 +673,7 @@ enum pseudo_veos_msg_id {
 	NEW_VE_PROC_COMPT,
 	GET_TIMES,
 	GET_VEOS_PID,
+	CMD_GET_MNS,
 	PSEUDO_VEOS_MAX_MSG_NUM,
 	CMD_INVALID = -1,
 };

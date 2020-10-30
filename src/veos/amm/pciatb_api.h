@@ -137,7 +137,7 @@ do {\
 int amm_init_pciatb(struct ve_node_struct *);
 void veos_set_pciatb(pciatb_entry_t *, int, int);
 int64_t veos_get_vhsaa_pciatb(vemaa_t, pid_t);
-int64_t veos_alloc_pciatb(pid_t, uint64_t, size_t, uint64_t, bool);
+int64_t veos_alloc_pciatb(pid_t, uint64_t, size_t, uint64_t, bool, bool);
 int64_t veos_delete_pciatb(uint64_t, size_t);
 void veos_set_pciatb_attr(uint64_t, uint64_t);
 int veos_amm_set_pcisyar(uint8_t, uint64_t);

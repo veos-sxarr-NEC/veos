@@ -31,6 +31,7 @@
 #include "veos.h"
 #include "task_mgmt.h"
 #include "veos_sock.h"
+#include "ve_swap_request.h"
 #define VMFLAGS_LENGTH  81
 #define VE_MAX_REGVALS  64
 #define MAX_CORE_IN_HEX  4
@@ -39,6 +40,7 @@
 #define PACKET_COUNT 4
 #define VEO_PROCESS_EXIST       515     /*!< Identifier for VEO API PID */
 #define VE_VALID_THREAD         516     /*!< Identifier for process/thread */
+#define NS_DIV 2
 
 extern log4c_category_t *cat_os_pps;
 
@@ -79,6 +81,7 @@ enum veos_rpm_subcmd {
 	VE_SWAP_NODEINFO,
 	VE_SWAP_OUT,
 	VE_SWAP_IN,
+	VE_SWAP_GET_CNS,
 	VE_RPM_INVALID = -1,
 };
 
@@ -502,6 +505,20 @@ struct ve_swap_node_info {
 	unsigned long long node_swapped_sz;     /*!< swapped memory size of VE nodes*/
 };
 
+/**
+ * @brief This contains 'cns(Current Non-swappable memory Size)' of some processes.
+ *        VEOS returns Current non-swappable memory size of each VE process
+ *        by using this.
+ */
+struct ve_cns_info {
+	/* The size of struct ve_ns_info_proc is 16 byte, because of 'aligned'.
+	 * And this is sent by protobuf messages.
+	 * The size of protobuf messages should be less than 4096 byte.
+	 * This is why 'MAX_SWAP_PROCESS / NS_DIV'
+	 * */
+	struct ve_ns_info_proc info[MAX_SWAP_PROCESS / NS_DIV];
+};
+
 int veos_write_buf(int, void *, int);
 int veos_rpm_send_cmd_ack(int, uint8_t *, int64_t, int64_t);
 int rpm_handle_getpriority_req(struct veos_thread_arg *);
@@ -534,4 +551,5 @@ int rpm_handle_ve_swapin_req(struct veos_thread_arg *pti);
 int rpm_handle_ve_swapstatusinfo_req(struct veos_thread_arg *pti);
 int rpm_handle_ve_swapnodeinfo_req(struct veos_thread_arg *pti);
 int rpm_handle_ve_swapinfo_req(struct veos_thread_arg *pti); 
+int rpm_handle_ve_get_cns_req(struct veos_thread_arg *);
 #endif

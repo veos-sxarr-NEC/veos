@@ -42,6 +42,7 @@
 #include "ve_shm.h"
 #include "buddy.h"
 #include "ve_swap.h"
+#include "ve_swap_request.h"
 #include "psm_comm.h"
 
 /**
@@ -1941,6 +1942,40 @@ int rpm_handle_ve_swapout_req(struct veos_thread_arg *pti)
 		if(p_ve_node->pps_buf_size > 0) {
 			retval_to_cmd_eio = true;
 		} else {
+			pthread_rwlock_lock_unlock(
+				&(p_ve_node->ve_relocate_lock), RDLOCK,
+				"Failed to acquire ve_relocate_lock read lock");
+			/* Change sub-status back */
+			for (i = 0; i < request_info->pid_number; i++) {
+				pid = request_info->pid_array[i];
+				ve_task = find_ve_task_struct(pid);
+				if (ve_task == NULL) {
+					VEOS_DEBUG("VE task with pid %d not "
+								"found", pid);
+					continue;
+				}
+
+				pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+					thread_group_mm_lock), LOCK,
+					"Failed to acquire "
+					"thread_group_mm_lock");
+
+				group_leader = ve_task->group_leader;
+				veos_operate_all_ve_task_lock(group_leader,
+									LOCK);
+				/* The original sub-status is not needed to
+				 * change back when original sub-status is not
+				 * ACTIVE, because open pps file is done only
+				 * the first time */
+				veos_update_substatus(group_leader, ACTIVE);
+				veos_operate_all_ve_task_lock(group_leader,
+									UNLOCK);
+				pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
+					thread_group_mm_lock), UNLOCK,
+					"Failed to release "
+					"thread_group_mm_lock");
+				put_ve_task_struct(ve_task);
+			}
 			retval_to_cmd = -EFAULT;
 			goto hndl_open_fail_req;
 		}
@@ -1952,7 +1987,9 @@ int rpm_handle_ve_swapout_req(struct veos_thread_arg *pti)
 	if (!p_ve_node->swap_request_pids_enable) {
 		VEOS_DEBUG("VEOS is terminating");
 		pthread_mutex_lock_unlock(&(p_ve_node->swap_request_pids_lock),
-		UNLOCK, "Failed to release swap_request lock");
+			UNLOCK, "Failed to release swap_request lock");
+		pthread_rwlock_lock_unlock(&(p_ve_node->ve_relocate_lock),
+			RDLOCK, "Failed to acquire ve_relocate_lock read lock");
 		goto hndl_free_req;
 	}
 
@@ -2672,6 +2709,93 @@ hndl_return1:
 }
 
 /**
+ * @brief Handler of 'veswap -n'.
+ *        This function tells current non-swappable memory size of specified
+ *        processes to 'veswap -n'.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return Positive value on Success, -1 on failure.
+ */
+int
+rpm_handle_ve_get_cns_req(struct veos_thread_arg *pti)
+{
+	int worker_retval, i, ret;
+	int command_retval = 0;
+	ProtobufCBinaryData rpm_pseudo_msg = {0};
+	struct ve_swap_pids pids;
+	struct ve_task_struct *tsk;
+	struct ve_cns_info cns_info;
+	pid_t pid;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Data which veswap sent is not found");
+		worker_retval = -1;
+		goto hndl_return;
+	}
+	rpm_pseudo_msg = (((PseudoVeosMessage *)
+					(pti->pseudo_proc_msg))->pseudo_msg);
+	if (rpm_pseudo_msg.len != sizeof(struct ve_swap_pids)) {
+		VEOS_ERROR("Data which veswap sent is invalid");
+		command_retval = -ECANCELED;
+		goto hndl_send_ack;
+	}
+	memcpy(&pids, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
+
+	ret = swap_pid_check(pids);
+	if (ret != 0) {
+		command_retval = -ECANCELED;
+		goto hndl_send_ack;
+	}
+	memset(&cns_info, 0, sizeof(struct ve_cns_info));
+	VEOS_DEBUG("VE_SWAP_GET_CNS request for %d processes is received",
+							pids.process_num);
+
+	for (i = 0; i < pids.process_num; i++) {
+		pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, pids.pid[i]);
+		if (pid <= 0) {
+			cns_info.info[i].ns = -errno;
+			cns_info.info[i].pid = pids.pid[i];
+			VEOS_DEBUG("PID conversion failed, host: %d"
+				"pids.pid[%d]: %d error: %s",
+				pti->cred.pid, i, pids.pid[i], strerror(errno));
+			continue;
+		}
+		cns_info.info[i].pid = pid;
+		VEOS_DEBUG("VE_SWAP_GET_CNS, pid : %d -vedl_host_pid()-> %d",
+							pids.pid[i], pid);
+		tsk = find_ve_task_struct(pid);
+		if (tsk == NULL) {
+			VEOS_ERROR("VE_SWAP_GET_CNS : tsk %d is not found", pid);
+			cns_info.info[i].ns = -ESRCH;
+			continue;
+		} else if (is_dumping_core(tsk)) {
+			VEOS_ERROR("VE_SWAP_GET_CNS : tsk %d is dumping", pid);
+			cns_info.info[i].ns = -EPERM;
+		} else if ((ret = check_process_for_swap(pti, tsk)) != 0) {
+			VEOS_ERROR("VE_SWAP_GET_CNS : tsk %d is invalid", pid);
+			cns_info.info[i].ns = ret;
+		} else {
+			cns_info.info[i].ns = veos_pps_get_cns(tsk, pid);
+			VEOS_DEBUG("pid : %d, ns : %ld",
+				   cns_info.info[i].pid, cns_info.info[i].ns);
+		}
+		put_ve_task_struct(tsk);
+	}
+
+hndl_send_ack:
+	worker_retval = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+						(uint8_t *)&cns_info,
+						sizeof(struct ve_cns_info),
+						command_retval);
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return worker_retval;
+}
+
+/**
  * @brief Handles "RPM_QUERY" request from RPM commmand.
  *
  * @param[in] pti Contains the request message received from RPM command
@@ -3007,6 +3131,14 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 	case VE_SWAP_INFO:
 		VEOS_DEBUG("RPM request : VE_SWAP_INFO");
 		retval = rpm_handle_ve_swapinfo_req(pti);
+		if (0 > retval) {
+			VEOS_ERROR("Query request failed");
+			goto hndl_return;
+		}
+		break;
+	case VE_SWAP_GET_CNS:
+		VEOS_DEBUG("RPM request : VE_SWAP_GET_CNS");
+		retval = rpm_handle_ve_get_cns_req(pti);
 		if (0 > retval) {
 			VEOS_ERROR("Query request failed");
 			goto hndl_return;

@@ -128,5 +128,6 @@ int veos_handle_get_pci_sync_req(veos_thread_arg_t *);
 int veos_handle_get_veos_pid_req(veos_thread_arg_t *);
 extern int veos_handle_map_dmades(veos_thread_arg_t *);
 extern int veos_handle_unmap_dmades(veos_thread_arg_t *);
+int veos_handle_get_mns(veos_thread_arg_t *pti);
 
 #endif

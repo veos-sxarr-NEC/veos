@@ -135,7 +135,7 @@ int veos_pidstat_info(pid_t pid, struct velib_pidstat *pidstat)
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
 	pidstat->vsize = get_vm_size(tsk->p_ve_mm); /*In Bytes*/
-	pidstat->rss = (get_uss(tsk->p_ve_mm) +	get_pss(tsk->p_ve_mm))/1024;
+	pidstat->rss = (get_uss(tsk->p_ve_mm, NULL) + get_pss(tsk->p_ve_mm, NULL))/1024;
 								/*In KBytes*/
 	pidstat->startcode = tsk->p_ve_mm->start_code;
 	pidstat->endcode = tsk->p_ve_mm->end_code;
@@ -232,7 +232,7 @@ int veos_pidstatm_info(int pid, struct velib_pidstatm *pidstatm)
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
 	pidstatm->size = tsk->p_ve_mm->vm_size; /*In Bytes*/
-	pidstatm->resident = get_uss(tsk->p_ve_mm) + get_pss(tsk->p_ve_mm);
+	pidstatm->resident = get_uss(tsk->p_ve_mm, NULL) + get_pss(tsk->p_ve_mm, NULL);
 								/*In Bytes*/
 	pidstatm->share = tsk->p_ve_mm->shared_rss; /* In Bytes */
 	pidstatm->trs = ALIGN(tsk->p_ve_mm->end_code, tsk->p_ve_mm->pgsz) -
