@@ -1468,6 +1468,13 @@ out:
 	{
 	        PSEUDO_DEBUG("%s",ve_grow_err_str[grow_err]);
 		fprintf(stderr, "Unable to grow stack\n");
+                /* Disabling core dump at VH side */
+                struct rlimit core_lim;
+                core_lim.rlim_cur = 0;
+                core_lim.rlim_max = 0;
+                if (-1 == setrlimit(RLIMIT_CORE, &core_lim)) {
+                        PSEUDO_DEBUG("Disabling of coredump failed, setrlimit failed %d", errno);
+                }
 		pseudo_abort();
 	}
 

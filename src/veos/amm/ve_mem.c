@@ -5916,15 +5916,6 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 	for (index = 0; index < vnode->numa_count; index++)
 		atb[index] = &(mm->atb[index]);
 
-	/** Traverse the SHM list and delete list */
-	list_for_each_entry_safe(shm_tmp, tmp, &(mm->shm_head), shm_list) {
-		VEOS_DEBUG("In shm list current mapping %p with vemva 0x%lx",
-				shm_tmp, shm_tmp->shmaddr);
-		shm_tmp->shm_segment->nproc--;
-		list_del(&(shm_tmp->shm_list));
-		free(shm_tmp);
-		shm_tmp = NULL;
-	}
 
 	/** Traverse the File desc list and delete list */
 	list_for_each_entry_safe(file_tmp, file_n, &(mm->list_file_backed_mem),
@@ -6008,8 +5999,19 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 				VEOS_TRACE("pgd[%d][%d] with VE page %ld",
 						dirno, ent, pgno);
 				seg = VE_PAGE(vnode, pgno)->private_data;
+
+				/** If shm struct is for veshm, continue */
+				list_for_each_entry_safe(shm_tmp, tmp, &(mm->shm_head), shm_list) {
+					if (seg == shm_tmp->shm_segment) {
+						found = 1;
+					}
+				}
+				if (found == 0)
+					continue;
+				found = 0;
+
 				pthread_mutex_lock_unlock(&seg->shm_lock, LOCK,
-					"Failed acquire shm segmnt lock");
+						"Failed acquire shm segmnt lock");
 				seg->nattch--;
 				if (!seg->nattch) {
 					pthread_mutex_lock_unlock(&seg->shm_lock,
@@ -6050,6 +6052,7 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 		for (index = 0; index < vnode->numa_count; index++)
 			ps_invalid(&atb[index]->dir[dirno]);
 	}
+
 
 	/*Here we are releasing pindowed VH page*/
 	ret = vedl_release_pindown_page(vnode->handle, mm->shm_lhm_addr_vhsaa);
@@ -6098,6 +6101,17 @@ err_exit:
 	pthread_mutex_destroy(&mm->vehva_header.vehva_4k_lock);
 	pthread_mutex_destroy(&mm->vehva_header.vehva_2m_lock);
 	pthread_mutex_destroy(&mm->vehva_header.vehva_64m_lock);
+
+	/** Traverse the SHM list and delete list */
+	list_for_each_entry_safe(shm_tmp, tmp, &(mm->shm_head), shm_list) {
+		VEOS_DEBUG("In shm list current mapping %p with vemva 0x%lx",
+				shm_tmp, shm_tmp->shmaddr);
+		shm_tmp->shm_segment->nproc--;
+		list_del(&(shm_tmp->shm_list));
+		free(shm_tmp);
+		shm_tmp = NULL;
+	}
+
 	VEOS_TRACE("returned");
 	return ret;
 }

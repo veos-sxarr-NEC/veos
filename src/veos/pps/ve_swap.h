@@ -71,6 +71,15 @@ extern log4c_category_t *cat_os_pps;
 #define PPS_TRANSFER_BUFFER_SIZE_BYTE (PPS_TRANSFER_BUFFER_SIZE * 1024 * 1024)
 #define PPS_PAGE_SIZE_64MB	(64 * 1024 * 1024)
 
+#define PPS_F_HDR_OPEN_FD_REQ           0
+#define PPS_F_HDR_OPEN_FD_RET           1
+#define PPS_F_HDR_WRITE_REQ             10
+#define PPS_F_HDR_WRITE_RET             11
+#define PPS_F_HDR_CLOSE_FD_REQ          20
+#define PPS_F_HDR_CLOSE_FD_RET          21
+#define PPS_F_HDR_START_RET             90
+#define PPS_F_HDR_TERMINATE_REQ         91
+
 /**
  * This structure contains information about Swapped-out ATB or
  * Swapped-out DMAATB per ATB entry or DMAATB entry.
@@ -120,6 +129,19 @@ struct ve_ipc_sync {
 	pthread_cond_t swapping_cond; /* Condition variable to wait swapping becomes 0 */
 };
 
+/**
+ * This structure contains information of between 
+ * VEOS and PPS file handler process.
+ */
+struct ve_swap_file_hdr_comm {
+	int kind;	/* comminication kind */
+	size_t cnt;	/* write size for pwrite() */
+	off_t off;	/* offset for pwrite() */
+	ssize_t ssize_ret; /* return value fot pwrite() */
+	int int_ret;	/* return value for open() and close() */
+	int r_errno;	/* errno */
+};
+	
 int veos_alloc_ppsbuf(size_t, size_t);
 int veos_pps_log4c_init(void);
 void *ve_swap_thread(void *);
@@ -149,11 +171,15 @@ void del_doing_swap_request(struct veos_swap_request_info *request);
 bool veos_check_pps_enable(void);
 void ve_swap_out_start(struct ve_ipc_sync *);
 void ve_swap_in_finish(struct ve_ipc_sync *);
-int veos_init_pps_file_info(char *, size_t, char *);
+int veos_init_pps_file_info(char *, size_t, char *, uid_t, gid_t);
 int veos_open_pps_file(struct ve_node_struct *);
 void veos_del_pps_file(struct ve_node_struct *);
 int print_pps_mode_info(char, size_t, bool, bool);
 int check_swap_out_in_process(int);
 bool check_swap_in_need_wait(struct ve_node_struct *);
 int64_t veos_pps_get_cns(struct ve_task_struct *, pid_t);
+int recv_pps_file_handler_comm(int, struct ve_swap_file_hdr_comm *);
+int send_pps_file_handler_comm(int, struct ve_swap_file_hdr_comm);
+
+
 #endif

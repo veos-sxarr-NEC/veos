@@ -108,17 +108,19 @@ sh -c "rm -f ${RPM_BUILD_ROOT}%{_libdir}/lib*.a \
       ${RPM_BUILD_ROOT}%{_libdir}/lib*.la"
 
 %pre
-for dev in /dev/veslot*; do
-    if [ $dev == '/dev/veslot*' ]; then
-        break
-    fi
-    sysfs_path=/sys`/usr/bin/udevadm info -q path $dev`/os_state
-    os_state=`cat $sysfs_path`
-    if [ $os_state != "1" ]; then
-        echo "Error: OS state is not offline"
-        exit 1
-    fi
-done
+if [ $1 -gt 1 ] ; then
+    for dev in /dev/veslot*; do
+	if [ $dev == '/dev/veslot*' ]; then
+            break
+	fi
+	sysfs_path=/sys`/usr/bin/udevadm info -q path $dev`/os_state
+	os_state=`cat $sysfs_path`
+	if [ $os_state != "1" ]; then
+            echo "Error: OS state is not offline"
+            exit 1
+	fi
+    done
+fi
 
 %post
 /sbin/ldconfig

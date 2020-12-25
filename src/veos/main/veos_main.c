@@ -37,6 +37,8 @@
 #include <sys/mman.h>
 #include <log4c.h>
 #include <libudev.h>
+#include <pwd.h>
+#include <grp.h>
 #include "veos.h"
 #include "veos_handler.h"
 #include "velayout.h"
@@ -51,6 +53,7 @@
 #include "ve_swap.h"
 
 #define IPC_QUEUE_LEN 20
+#define UG_NAME_MAX 32
 
 static char veos_sock_file[PATH_MAX] = {'\0'};
 char drv_sock_file[PATH_MAX] = {'\0'};
@@ -248,6 +251,12 @@ static void veos_termination(int abnormal)
 	pthread_mutex_lock_unlock(&(p_ve_node->pps_file_lock), LOCK,
 				"Failed to aqcuire pps_file_lock");
 	veos_del_pps_file(p_ve_node);
+	struct ve_swap_file_hdr_comm msg;
+	if (!p_ve_node->pps_file.is_created_by_root){
+		memset(&msg, '\0', sizeof(struct ve_swap_file_hdr_comm));
+		msg.kind = PPS_F_HDR_TERMINATE_REQ;
+		send_pps_file_handler_comm(p_ve_node->pps_file.sockfd, msg);
+	}
 	pthread_mutex_lock_unlock(&(p_ve_node->pps_file_lock), UNLOCK,
 				"Failed to release pps_file_lock");
 
@@ -305,6 +314,10 @@ static void usage(char *veos_path)
 	"                                  per VE node.\n"
 	"    --ve-swap-file-max=value      Maximum value of file that can be\n"
 	"                                  swapped out per VE node.\n"
+	"    --ve-swap-file-user=value     User name of the user who creates\n"
+	"                                  the file to swap out\n"
+	"    --ve-swap-file-group=value    Group name of the group who creates\n"
+	"                                  the file to swap out\n"
 	"    --cleanup                     Starts a VEOS and terminates it\n"
 	"                                  immediately, in order to ensure all VE\n"
 	"                                  core, user mode DMA and privileged DMA\n"
@@ -548,6 +561,12 @@ int main(int argc, char *argv[])
 	size_t pps_file_size = 0;
 	char pps_file_path[PATH_MAX-2] = {'\0'};
 	size_t pps_file_buf_size = 0;
+	uid_t pps_file_uid = 0;
+	gid_t pps_file_gid = 0;
+	char pps_file_username[UG_NAME_MAX + 1] = {'\0'};
+	char pps_file_groupname[UG_NAME_MAX + 1] = {'\0'};
+	struct passwd *pwd;
+	struct group *grp;
 	bool mem_mode_flg = false;
 	bool file_mode_flg = false;
 
@@ -559,6 +578,8 @@ int main(int argc, char *argv[])
 			{"ve-swap-mem-max",   required_argument, NULL,  0 },
 			{"ve-swap-file-path", required_argument, NULL,  0 },
 			{"ve-swap-file-max",  required_argument, NULL,  0 },
+			{"ve-swap-file-user", required_argument, NULL,  0 },
+			{"ve-swap-file-group",required_argument, NULL,  0 },
 			{"help",              no_argument,       NULL, 'h'},
 			{"sock",              required_argument, NULL, 's'},
 			{"dev",               required_argument, NULL, 'd'},
@@ -668,6 +689,40 @@ int main(int argc, char *argv[])
 				pps_file_buf_size = PPS_TRANSFER_BUFFER_SIZE;
 				file_mode_flg = true;
 				break;
+			} else if (index == OPT_VESWAP_FILE_USER) {
+				snprintf(pps_file_username, 
+					sizeof(pps_file_username), "%s", 
+								optarg);
+				if ((pwd = getpwnam(pps_file_username)) == 
+								NULL){
+					fprintf(stderr, "%s option error %s. "
+						"Unable to get user information"
+						" due to %s\n",
+						long_options[index].name,
+							pps_file_username,
+							strerror(errno));
+					exit(EXIT_FAILURE);
+				}else{
+					pps_file_uid = pwd->pw_uid;
+				}
+				break;
+			} else if (index == OPT_VESWAP_FILE_GROUP) {
+				snprintf(pps_file_groupname, 
+					sizeof(pps_file_groupname), "%s", 
+								optarg);
+				if ((grp = getgrnam(pps_file_groupname)) == 
+								NULL){
+					fprintf(stderr, "%s option error %s. "
+						"Unable to get group infomation"
+						" due to %s\n",
+						long_options[index].name, 
+							pps_file_groupname,
+							strerror(errno));
+					exit(EXIT_FAILURE);
+				}else{
+					pps_file_gid = grp->gr_gid;
+				}
+				break;
 			} else {
 				fprintf(stderr, "Wrong option specified\n");
 				exit(EXIT_FAILURE);
@@ -735,6 +790,12 @@ int main(int argc, char *argv[])
 				"PPS file size is %ld", pps_file_size);
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
 				"PPS file path is %s", pps_file_path);
+	}
+	/* Out put PPS uid/gid info */
+	if (file_mode_flg) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
+		"PPS file is created by uid:%d gid:%d", pps_file_uid, 
+								pps_file_gid);
 	}
 
 	retval = pthread_rwlockattr_init(&rw_attr);
@@ -836,20 +897,20 @@ int main(int argc, char *argv[])
 		retval = 1;
 		goto hndl_sem;
 	}
+	
+	if (veos_init_pps_file_info(pps_file_path, pps_file_size,
+		drv_sock_file, pps_file_uid, pps_file_gid) != 0) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
+				"Initializing PPS file info failed");
+		retval = 1;
+		goto hndl_termination;	
+	}
 
 	if (veos_alloc_ppsbuf(pps_buf_size, pps_file_buf_size) != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
 				"Initializing Partial Process Swapping failed");
 		retval = 1;
 		goto hndl_termination;
-	}
-
-	if (veos_init_pps_file_info(pps_file_path, pps_file_size,
-		drv_sock_file) != 0) {
-			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
-				"Initializing PPS file info failed");
-		retval = 1;
-		goto hndl_termination;	
 	}
 
 	if (veos_init_pci_sync() != 0) {

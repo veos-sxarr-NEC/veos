@@ -155,7 +155,7 @@ hndl_return:
  * @return Pointer to PPS buffer on Success, NULL on failure.
  */
 static void
-*veos_pps_alloc_ppsbuf(size_t pps_buf_size, bool is_pps_buf)
+*veos_pps_alloc_ppsbuf(size_t pps_buf_size, bool is_pps_buf, bool is_shared)
 {
 	int ret;
 	uint64_t tmp;
@@ -173,9 +173,16 @@ static void
 	PPS_DEBUG(cat_os_pps, "round up to %ldMB", size);
 	size *= 1024 * 1024ULL;
 
-	ptr = mmap(NULL, size, PROT_READ|PROT_WRITE,
+	if(!is_shared){
+		ptr = mmap(NULL, size, PROT_READ|PROT_WRITE,
 			MAP_POPULATE|MAP_PRIVATE|MAP_ANONYMOUS|MAP_HUGETLB,
 			-1, 0);
+	}else{
+		ptr = mmap(NULL, size, PROT_READ|PROT_WRITE,
+			MAP_POPULATE|MAP_ANONYMOUS|MAP_HUGETLB|MAP_SHARED,
+			-1, 0);
+	}
+
 	if (ptr == MAP_FAILED) {
 		if (errno == ENOMEM)
 			fprintf(stderr, "Need more free HugePages\n");
@@ -423,6 +430,174 @@ hndl_return:
 }
 
 /**
+ * @brief This function create child process (PPS file handler).
+ * The process open and write PPS file with specified user and group.
+ *
+ * @param[in] path path of PPS file
+ * @param[in] file descriptor for socket
+ * @param[in] uid user id 
+ * @param[in] gid group id
+ * @param[out] chld_pid child process
+ *
+ * @retval 0 on Success
+ * @retval -1 on Failure
+ */
+int fork_pps_file_handler(char *path, int sockfd[], uid_t uid, gid_t gid, 
+							pid_t *chld_pid)
+{
+	pid_t pps_file_handler_pid;
+	int status = -1;
+	int p_ret_status = -1;
+	struct ve_swap_file_hdr_comm p_msg;
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	pps_file_handler_pid = fork();
+	if (-1 == pps_file_handler_pid) {
+		PPS_ERROR(cat_os_pps,"Failed to create PPS file handler "
+								"process");
+		close(sockfd[0]);
+		close(sockfd[1]);
+		goto hndl_return;
+	} else if (0 == pps_file_handler_pid) {
+		int pps_f_fd = -1;
+		int ret_status = -1;
+		ssize_t write_ret;
+		int cls_ret = -1;
+		struct ve_swap_file_hdr_comm msg;
+	
+		close(sockfd[1]);
+
+		/* Set the gid to the current process */
+		if (setgid(gid) == -1){
+			PPS_ERROR(cat_os_pps,"Faild to set gid to PPS file "
+				"handler Child process");
+			memset(&msg,'\0',sizeof(struct ve_swap_file_hdr_comm));
+			msg.kind = PPS_F_HDR_START_RET;
+			msg.int_ret = -1;
+			msg.r_errno = errno;
+			ret_status = send_pps_file_handler_comm(
+							sockfd[0], msg);
+			goto chld_close_proc_file;
+		}
+
+		/* Set the uid to the current process */
+		if (setuid(uid) == -1){
+			PPS_ERROR(cat_os_pps,"Faild to set uid to PPS file "
+				"handler Child process");
+			memset(&msg,'\0',sizeof(struct ve_swap_file_hdr_comm));
+			msg.kind = PPS_F_HDR_START_RET;
+			msg.int_ret = -1;
+			msg.r_errno = errno;
+			ret_status = send_pps_file_handler_comm(
+							sockfd[0], msg);
+			goto chld_close_proc_file;
+		}
+		
+		/* Enter a loop that receives a request from VEOS process.
+		 * Exit the loop when a termination request or communication 
+		 * error occurs. */
+		memset(&msg,'\0',sizeof(struct ve_swap_file_hdr_comm));
+		msg.kind = PPS_F_HDR_START_RET;
+		msg.int_ret = 0;
+		msg.r_errno = 0;
+		ret_status = send_pps_file_handler_comm(
+							sockfd[0], msg);
+		if (ret_status < 0){
+			PPS_ERROR(cat_os_pps,"send error at sending start ack"
+				" in PPS file handler Child process");
+			goto chld_close_proc_file;
+		}
+		while(1){
+			memset(&msg,'\0',sizeof(struct ve_swap_file_hdr_comm));
+			ret_status = recv_pps_file_handler_comm(sockfd[0], 
+						&msg);
+			if (ret_status < 0){
+				break;
+			}
+			if (msg.kind == PPS_F_HDR_TERMINATE_REQ){
+				break;
+			}
+			if (msg.kind == PPS_F_HDR_OPEN_FD_REQ){
+				/* Get file descriptor of pps_to_file */
+				memset(&msg, '\0', 
+					sizeof(struct ve_swap_file_hdr_comm));
+				pps_f_fd = open(path, O_RDWR | O_CREAT, 
+								S_IRWXU);
+				msg.kind = PPS_F_HDR_OPEN_FD_RET;
+				msg.int_ret = pps_f_fd;
+				msg.r_errno = errno;
+				ret_status = send_pps_file_handler_comm(
+							sockfd[0], msg);
+				if (ret_status < 0){
+					PPS_ERROR(cat_os_pps,"send error at "
+						"sending fd in PPS file "
+						"handler Child process");
+					break;
+				}
+			}
+			if (msg.kind == PPS_F_HDR_WRITE_REQ){
+				write_ret = pwrite(pps_f_fd, 
+				pps_file_transfer_buffer_addr, msg.cnt, 
+								msg.off);
+				memset(&msg, '\0', 
+					sizeof(struct ve_swap_file_hdr_comm));
+				msg.kind = PPS_F_HDR_WRITE_RET;
+				msg.ssize_ret = write_ret;
+				msg.r_errno = errno;
+				ret_status = send_pps_file_handler_comm(
+							sockfd[0], msg);
+				if (ret_status < 0){
+					PPS_ERROR(cat_os_pps,"Send error in "
+					"PPS file handler Child process");
+					break;
+				}
+			}
+			if (msg.kind == PPS_F_HDR_CLOSE_FD_REQ){
+				cls_ret = close(pps_f_fd);
+				memset(&msg, '\0', 
+					sizeof(struct ve_swap_file_hdr_comm));
+				msg.kind = PPS_F_HDR_CLOSE_FD_RET;
+				msg.int_ret = cls_ret;
+				msg.r_errno = errno;
+				ret_status = send_pps_file_handler_comm(
+							sockfd[0], msg);
+				if (ret_status < 0){
+					PPS_ERROR(cat_os_pps,"Send error in "
+					"PPS file handler Child process");
+					break;
+				}
+			}
+		}
+
+		close(pps_f_fd);
+chld_close_proc_file:
+		close(sockfd[0]);
+		PPS_INFO(cat_os_pps,"PPS file handler Child "
+					"process exit");
+		_exit(ret_status);
+	}
+
+	close(sockfd[0]);
+	memset(&p_msg,'\0',sizeof(struct ve_swap_file_hdr_comm));
+	p_ret_status = recv_pps_file_handler_comm(sockfd[1], &p_msg);
+	if (p_ret_status < 0){
+		close(sockfd[1]);
+		goto hndl_return;
+	}
+	if (p_msg.int_ret < 0){
+		errno = p_msg.r_errno;
+		close(sockfd[1]);
+		goto hndl_return;
+	}
+	*chld_pid = pps_file_handler_pid;
+	status = 0;
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return status;
+}
+
+
+/**
  * @brief This function allocates PPS buffer for PPS and locks all buffer into
  * RAM, and initializes management information of PPS buffer. And then, this
  * function creates "swap thread".
@@ -437,6 +612,9 @@ veos_alloc_ppsbuf(size_t pps_buf_size, size_t pps_file_buf_size)
 {
 	int retval = -1;
 	int ret;
+	pid_t chld_pid = -1;
+	int socket_fd[2];
+	int fork_sts = -1;
 
 	struct ve_node_struct *vnode = VE_NODE(0);
 
@@ -447,7 +625,8 @@ veos_alloc_ppsbuf(size_t pps_buf_size, size_t pps_file_buf_size)
 	pthread_cond_init(&(vnode->swap_request_pids_cond), NULL);
 
 	if (pps_buf_size != 0) {
-		pps_buffer_addr = veos_pps_alloc_ppsbuf(pps_buf_size, true);
+		pps_buffer_addr = veos_pps_alloc_ppsbuf(pps_buf_size, true, 
+									false);
 			if (pps_buffer_addr == NULL)
 				goto hndl_return;
 
@@ -457,11 +636,45 @@ veos_alloc_ppsbuf(size_t pps_buf_size, size_t pps_file_buf_size)
 	}
 	if (pps_file_buf_size != 0) {
 		pps_file_transfer_buffer_addr =
-			veos_pps_alloc_ppsbuf(pps_file_buf_size, false);
+			veos_pps_alloc_ppsbuf(pps_file_buf_size, false, 
+					!(vnode->pps_file.is_created_by_root));
 		vnode->pps_file_transfer_buffer = pps_file_transfer_buffer_addr;
 		if (pps_file_transfer_buffer_addr == NULL) {
 			goto hndl_free_buddy;
 		}
+		pthread_mutex_lock_unlock(&(vnode->pps_file_lock), LOCK,
+					"Failed to aqcuire pps_file_lock");
+		if(!vnode->pps_file.is_created_by_root){
+                	if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, socket_fd) 
+									!= 0) {
+                        	PPS_ERROR(cat_os_pps, "Failed to create "
+				"communication channel for PPS file handler"
+				" due to %s", strerror(errno));
+				pthread_mutex_lock_unlock(
+					&(vnode->pps_file_lock), UNLOCK,
+					"Failed to release pps_file_lock");
+				goto hndl_free_buddy;
+                	}
+			fork_sts = fork_pps_file_handler(
+				vnode->pps_file.path, socket_fd, 
+				vnode->pps_file.uid, vnode->pps_file.gid, 
+				&chld_pid);
+			if (fork_sts < 0){
+                        	PPS_ERROR(cat_os_pps, "Failed to create "
+				"process of PPS file handler"
+				" due to %s", strerror(errno));
+				pthread_mutex_lock_unlock(
+					&(vnode->pps_file_lock), UNLOCK,
+					"Failed to release pps_file_lock");
+				goto hndl_free_buddy;
+			}
+
+		}
+		vnode->pps_file.child_pid = chld_pid;
+		vnode->pps_file.sockfd = socket_fd[1];
+		pthread_mutex_lock_unlock(&(vnode->pps_file_lock), UNLOCK,
+				"Failed to release pps_file_lock");
+
 	}
 
 	ret = veos_pps_create_swap_thread();
@@ -554,12 +767,14 @@ hndl_return:
  *
  * @param[in] Path of veswap file
  * @param[in] Size of veswap file
+ * @param[in] uid to create veswap file
+ * @param[in] gid to create veswap file
  *
  * @retval None
  */
 int
 veos_init_pps_file_info(char *pps_file_path, size_t pps_file_size,
-							char *drv_sock_file)
+		char *drv_sock_file, uid_t pps_file_uid, gid_t pps_file_gid)
 {
 	int retval = 0;
 	int node_num = 0;
@@ -619,6 +834,18 @@ veos_init_pps_file_info(char *pps_file_path, size_t pps_file_size,
 		PPS_ERROR(cat_os_pps, "Failed to initialize buddy of PPS file");
 		retval = -1;
 	}
+	 /* Set uid and gid */
+	vnode->pps_file.uid = pps_file_uid;
+	vnode->pps_file.gid = pps_file_gid;
+	
+	if((pps_file_uid == 0) && (pps_file_gid == 0)){
+		vnode->pps_file.is_created_by_root = true;
+	}else{
+		vnode->pps_file.is_created_by_root = false;
+	}
+	vnode->pps_file.child_pid = -1;
+	vnode->pps_file.sockfd = -1;
+
 
 hndl_return:
 	PPS_TRACE(cat_os_pps, "Out %s", __func__);
@@ -674,6 +901,46 @@ static int veos_mkdir_pps_file(char *file_dir)
 }
 
 /**
+ * @brief This function request to open PPS file 
+ * to PPS file handler.
+ *
+ * @param[in] file descriptor for socket
+ *
+ * @retval file descriptor on Success
+ * @retval -1 on Failure
+ */
+int open_pps_file_handler(int sockfd)
+{
+	int pps_file_fd = -1;
+	int ret_stat = -1;
+	struct ve_swap_file_hdr_comm msg;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+	memset(&msg, '\0', sizeof(struct ve_swap_file_hdr_comm));
+	msg.kind = PPS_F_HDR_OPEN_FD_REQ;
+	ret_stat = send_pps_file_handler_comm(sockfd, msg);
+	if(ret_stat < 0){
+		PPS_ERROR(cat_os_pps,"send req open fd %s", 
+						strerror(errno));
+		goto hndl_return;
+	}
+	memset(&msg, '\0', sizeof(struct ve_swap_file_hdr_comm));
+	ret_stat = recv_pps_file_handler_comm(sockfd, &msg);
+	if(ret_stat < 0){
+		PPS_ERROR(cat_os_pps,"recv open fd %s", 
+						strerror(errno));
+		goto hndl_return;
+	}
+	if(msg.int_ret < 0){
+		errno = msg.r_errno;
+	}
+	pps_file_fd = msg.int_ret;
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return pps_file_fd;
+}
+
+/**
  * @brief This function open PPS file.
  *
  * @param[in] vnode Pointer to ve_node_struct structure
@@ -716,16 +983,24 @@ int veos_open_pps_file(struct ve_node_struct *vnode)
 							vnode->pps_file.path);
 	PPS_DEBUG(cat_os_pps, "dir of pps file is %s", pps_file_dir);
 	errno = 0;
-	pps_file_fd = open(vnode->pps_file.path, O_RDWR | O_CREAT, S_IRWXU);	
-	if ((pps_file_fd == -1) && (errno == ENOENT)) {
-		ret = veos_mkdir_pps_file(pps_file_dir);
-		if (ret != 0) {
-			PPS_ERROR(cat_os_pps, "Failed to make dir of PPS file"
-						" due to %s", strerror(errno));
-			goto hndl_return;
+
+	if(vnode->pps_file.is_created_by_root){
+		/* open as root */
+		pps_file_fd = open(vnode->pps_file.path, O_RDWR | O_CREAT, 
+								S_IRWXU);	
+		if ((pps_file_fd == -1) && (errno == ENOENT)) {
+			ret = veos_mkdir_pps_file(pps_file_dir);
+			if (ret != 0) {
+				PPS_ERROR(cat_os_pps, "Failed to make dir of"
+					"PPS file due to %s", strerror(errno));
+				goto hndl_return;
+			}
+			pps_file_fd = open(vnode->pps_file.path, O_RDWR | 
+					O_CREAT, S_IRWXU);
 		}
-		pps_file_fd = open(vnode->pps_file.path, O_RDWR | O_CREAT,
-								S_IRWXU);
+	}else{
+		/* open as non-root */
+		pps_file_fd = open_pps_file_handler(vnode->pps_file.sockfd);	
 	}
 
 	if (pps_file_fd == -1) {
@@ -757,6 +1032,8 @@ hndl_return:
 void veos_del_pps_file(struct ve_node_struct *vnode)
 {
 	struct stat s_buf;
+	struct ve_swap_file_hdr_comm msg;
+	int ret_stat = -1;
 
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
 
@@ -773,6 +1050,18 @@ void veos_del_pps_file(struct ve_node_struct *vnode)
 		PPS_DEBUG(cat_os_pps, "File is not need to delete");
 		goto hndl_exit;
 	}
+
+	if(!vnode->pps_file.is_created_by_root){
+		memset(&msg, '\0', sizeof(struct ve_swap_file_hdr_comm));
+		msg.kind = PPS_F_HDR_CLOSE_FD_REQ;
+		ret_stat = send_pps_file_handler_comm(vnode->pps_file.sockfd, msg);
+		if (ret_stat < 0){
+			goto fd_close;
+		}
+		memset(&msg, '\0', sizeof(struct ve_swap_file_hdr_comm));
+		recv_pps_file_handler_comm(vnode->pps_file.sockfd, &msg);
+	}
+fd_close:
 	close(vnode->pps_file.fd);
 	vnode->pps_file.fd = -1;
 	vnode->pps_file.is_opened = false;

@@ -1444,6 +1444,214 @@ hndl_return:
 }
 
 /**
+ * @brief This function send data between VEOS and PPS file handler process
+ *
+ * @param[in] sockfd File descriptor of socket
+ * @param[in] communication data of send
+ *
+ * @retval >0 on Success,
+ * @retval -1 on Failure.
+ *
+ */
+
+int send_pps_file_handler_comm(int sockfd, struct ve_swap_file_hdr_comm message)
+{
+	struct msghdr msg;
+	char buf[CMSG_SPACE(sizeof(int))];
+	int status = 0;
+	struct iovec iov;
+	struct cmsghdr *cmsg;
+	int *ppsffd;
+	ssize_t size;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+	int pps_f_fd = -1;
+	memset(&msg, '\0', sizeof(struct msghdr));
+	memset(buf, '\0', sizeof(buf));
+	memset(&iov, '\0', sizeof(struct iovec));
+
+	/* Transmit at least 1 byte of real data in order to send ancillary
+	 * data */
+	iov.iov_base = &message;
+	iov.iov_len = sizeof(struct ve_swap_file_hdr_comm);
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+
+	if((message.kind == PPS_F_HDR_OPEN_FD_RET) && !(message.int_ret < 0)){
+		/* Only when sending valid file descriptor */
+		pps_f_fd = message.int_ret;
+		msg.msg_control = buf;
+		msg.msg_controllen = sizeof(buf);
+
+		/* Set message header to describe ancillary data that we want
+		 * to send */
+		cmsg = CMSG_FIRSTHDR(&msg);
+		if (NULL == cmsg) {
+			PPS_ERROR(cat_os_pps,"control data err in file handler"
+				" comm. errno: %d",errno);
+			status = -1;
+			goto hndl_return;
+		}
+
+		cmsg->cmsg_level = SOL_SOCKET;
+		cmsg->cmsg_type = SCM_RIGHTS;
+		cmsg->cmsg_len = CMSG_LEN(sizeof(pps_f_fd));
+		ppsffd = (int *) CMSG_DATA(cmsg);
+		memcpy(ppsffd, &pps_f_fd, sizeof(int));
+	}
+
+	/* Do the actual send */
+	size = sendmsg(sockfd, &msg, 0);
+	if (size != sizeof(struct ve_swap_file_hdr_comm)) {
+		PPS_ERROR(cat_os_pps, "sendmsg err in file handler comm. "
+				" %s(%d)", strerror(errno),errno);
+		status = -1;
+		goto hndl_return;
+	}
+	status = 0;
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return status;
+}
+
+/**
+ * @brief This function recieve data between VEOS and PPS file handler process
+ *
+ * @param[in] sockfd socket descriptor
+ * @param[out] communication data of recieve
+ *
+ * @retval 0 on Success
+ * @retval -1 on Failure
+ */
+int recv_pps_file_handler_comm(int sockfd, struct ve_swap_file_hdr_comm *message)
+{
+	struct msghdr msgh;
+	ssize_t size;
+	int status = 0;
+	struct iovec iov;
+	struct cmsghdr *cmsg;
+	unsigned char *data;
+	union {
+		struct cmsghdr cmh;
+		char c_buffer[CMSG_SPACE(sizeof(int))];
+	} control_un;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+	memset(&msgh, '\0', sizeof(struct msghdr));
+	memset(&iov, '\0', sizeof(struct iovec));
+
+	/* Set 'control_un' to dsescribe ancillary data that we want to
+	 * receive */
+	control_un.cmh.cmsg_len = CMSG_LEN(sizeof(int));
+	control_un.cmh.cmsg_level = SOL_SOCKET;
+	control_un.cmh.cmsg_type = SCM_RIGHTS;
+
+	/* Set 'msg' fields to describe 'control_un' */
+	msgh.msg_control = control_un.c_buffer;
+	msgh.msg_controllen = sizeof(control_un.c_buffer);
+
+	/* Set fields of 'msgh' to point to buffer used to receive(real)
+	 * data read by recvmsg() */
+	iov.iov_base = message;
+	iov.iov_len = sizeof(struct ve_swap_file_hdr_comm);
+	msgh.msg_iov = &iov;
+	msgh.msg_iovlen = 1;
+
+	/* Receive real plus ancillary data */
+	size = recvmsg(sockfd, &msgh, MSG_WAITALL);
+	if (size != sizeof(struct ve_swap_file_hdr_comm)){
+		if (size < 0){
+			PPS_ERROR(cat_os_pps,"recvmsg err in file handler comm."
+				" size:%ld error:%s(%d)",size,strerror(errno),
+					errno);
+			status = -1;
+		}else{
+			PPS_ERROR(cat_os_pps,"recvmsg message shortage in file "
+			 "handler comm. size:%ld error:%s(%d)",size,
+				strerror(errno),errno);
+			status = -1;
+		}
+		goto hndl_return;
+	}
+
+	if((message->kind == PPS_F_HDR_OPEN_FD_RET) && !(message->int_ret < 0)){
+		/* when valid file descriptor return,
+		 * Get the received file descriptor (which is typically a 
+		 * different file descriptor number that was used in the sending
+		 * process) */
+		cmsg = CMSG_FIRSTHDR(&msgh);
+		if ((NULL==cmsg) || (cmsg->cmsg_len != CMSG_LEN(sizeof(int)))) {
+			PPS_ERROR(cat_os_pps,"Bad cmsg header / message length");
+			status = -1;
+			goto hndl_return;
+		}
+
+		if ((cmsg->cmsg_level != SOL_SOCKET) ||
+			(cmsg->cmsg_type != SCM_RIGHTS)) {
+			PPS_ERROR(cat_os_pps,"Bad access rights received from "
+					"sender process");
+			status = -1;
+			goto hndl_return;
+		}
+
+		data = CMSG_DATA(cmsg);
+		message->int_ret = *(int *)data;
+	}
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return status;
+}
+
+
+/**
+ * @brief This function request to write PPS file to PPS file handler
+ *
+ * @param[in] sockfd File descriptor of socket
+ * @param[in] pgsz Page size of VE page which is going to be freed
+ * @param[in] offset Offset of PPS file
+ *
+ * @retval write size,
+ * @retval -1 on Failure. 
+ *
+ */
+ssize_t 
+write_pps_file_handler(int sockfd, size_t pgsz, off_t offset)
+{
+	int retval = -1;
+	ssize_t write_sz = -1;
+	struct ve_swap_file_hdr_comm msg;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+	memset(&msg, '\0', sizeof(struct ve_swap_file_hdr_comm));
+	msg.kind = PPS_F_HDR_WRITE_REQ;
+	msg.cnt = pgsz;
+	msg.off = offset;
+	retval = send_pps_file_handler_comm(sockfd, msg);
+	if(retval < 0){
+		PPS_ERROR(cat_os_pps,
+		"Failed to send data from file handler");
+		write_sz = -1;
+		goto hndl_return;
+	}
+	memset(&msg, '\0', sizeof(struct ve_swap_file_hdr_comm));
+	retval = recv_pps_file_handler_comm(sockfd, &msg);
+	if(retval < 0){
+		PPS_ERROR(cat_os_pps,
+		"Failed to recv data from file handler");
+		write_sz = -1;
+		goto hndl_return;
+	}
+	if (msg.ssize_ret < 0){
+		errno = msg.r_errno;
+	}
+	write_sz = msg.ssize_ret;
+
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return write_sz;
+}
+
+/**
  * @brief Transfer content of VE page which is going to be freed,
  * to PPS buffer pages
  *
@@ -1484,11 +1692,35 @@ veos_pps_do_save_file_content(uint64_t page_start, size_t pgsz,
 		goto hndl_return;
 	}
 
-	write_ret = pwrite(vnode->pps_file.fd, buf, pgsz, offset);
-	if (write_ret != pgsz) {
-		PPS_ERROR(cat_os_pps,
-		"Failed to write data to PPS file due to %s", strerror(errno));
-		goto hndl_return;
+	if(vnode->pps_file.is_created_by_root){
+		write_ret = pwrite(vnode->pps_file.fd, buf, pgsz, offset);
+		if (write_ret != pgsz) {
+			if(write_ret == -1){
+				PPS_ERROR(cat_os_pps,
+				"Failed to write data to PPS file due to %s",
+							strerror(errno));
+			}else{
+				PPS_ERROR(cat_os_pps,
+				"Failed to write data to PPS file %ld %ld %ld", 
+							write_ret, pgsz, offset);
+			}
+			goto hndl_return;
+		}
+	}else{
+		write_ret = write_pps_file_handler(vnode->pps_file.sockfd, pgsz, 
+								offset);
+		if (write_ret != pgsz) {
+			if(write_ret == -1){
+				PPS_ERROR(cat_os_pps,
+				"Failed to write data to PPS file due to %s", 
+							strerror(errno));
+			}else{
+				PPS_ERROR(cat_os_pps,
+				"Failed to write data to PPS file %ld %ld", 
+							write_ret, pgsz);
+			}
+			goto hndl_return;
+		}
 	}
 
 	retval = 0;

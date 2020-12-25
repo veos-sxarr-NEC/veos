@@ -160,6 +160,11 @@ struct ve_swap_file_info {
 	bool not_del_after_swapin;  /* !< Flag indicating whether the PPS file
 					can be deleted after swap in when no
 					resource is swapped out */
+	uid_t uid;           /* !< uid to create the PPS file */
+	gid_t gid;           /* !< gid to create the PPS file */
+	bool is_created_by_root;  /* !< Flag whether the PPS file is create by root */
+	pid_t child_pid;     /* !< pid of the child process that creates the PPS file */
+	int sockfd;          /* !< file descriptor for socket */
 };
 
 /**
@@ -267,6 +272,8 @@ struct ve_sys_load {
 #define OPT_VESWAPMAX        4
 #define OPT_VESWAP_FILE_PATH 5
 #define OPT_VESWAP_FILE_MAX  6
+#define OPT_VESWAP_FILE_USER  7
+#define OPT_VESWAP_FILE_GROUP  8
 
 
 #define NOT_REQUIRED 0

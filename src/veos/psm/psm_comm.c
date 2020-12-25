@@ -883,7 +883,10 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 		tsk->block_status = BLOCK_RECVD;
 		pthread_rwlock_lock_unlock(&(tsk->p_ve_core->ve_core_lock), WRLOCK,
 				"Failed to acquire execve task's core write lock");
-		psm_set_task_state(tsk, WAIT);
+		if ((tsk->ve_task_state != STOP) &&
+                       (tsk->ve_task_state != ZOMBIE)) {
+                       psm_set_task_state(tsk, WAIT);
+               }
 		pthread_rwlock_lock_unlock(&(tsk->p_ve_core->ve_core_lock), UNLOCK,
 				"Failed to release execve task's core write lock");
 

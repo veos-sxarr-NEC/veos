@@ -284,9 +284,9 @@ hndl_start:
 
 	node_swapped_sz = 0;
 	if (list_empty(&vnode->swap_request_pids_queue)) {
-		pthread_mutex_lock_unlock(&(vnode->pps_file_lock), LOCK,
-				"Failed to aqcuire pps_file_lock");
 		if (vnode->pps_file.is_opened) {
+			pthread_mutex_lock_unlock(&(vnode->pps_file_lock), LOCK,
+					"Failed to aqcuire pps_file_lock");
 			if (vnode->pps_buf_size > 0) {
 				pthread_mutex_lock_unlock(
 					&(vnode->pps_mp->buddy_mempool_lock),
@@ -303,7 +303,28 @@ hndl_start:
 			}
 			if ((node_swapped_sz == 0)) {
 				vnode->pps_file.not_del_after_swapin = false;
+				/* Release the lock so that the VEOS command works 
+				 * even if it stops at the file closing process. */
+				pthread_mutex_lock_unlock(
+					&(vnode->pps_file_offset->buddy_mempool_lock),
+					UNLOCK,
+					"Failed to release PPS file buddy lock");
+				if (vnode->pps_buf_size > 0) {
+					pthread_mutex_lock_unlock(
+					&(vnode->pps_mp->buddy_mempool_lock),
+					UNLOCK,
+					"Failed to release PPS buddy lock");
+				}
+				pthread_mutex_lock_unlock(&(vnode->swap_request_pids_lock),
+					UNLOCK,
+					"Failed to release swap_request lock");
 				veos_del_pps_file(vnode);
+				pthread_mutex_lock_unlock(&(vnode->pps_file_lock), UNLOCK,
+					"Failed to release pps_file_lock");
+				/* After closing processing, execute swap thread processing
+				 * again. Because pthread_cond_broadcase() may have been 
+				 * issued by unlocking. */
+				goto hndl_start;
 			}
 			pthread_mutex_lock_unlock(
 				&(vnode->pps_file_offset->buddy_mempool_lock),
@@ -315,9 +336,9 @@ hndl_start:
 					UNLOCK,
 					"Failed to release PPS buddy lock");
 			}
+			pthread_mutex_lock_unlock(&(vnode->pps_file_lock), UNLOCK,
+					"Failed to release pps_file_lock");
 		}
-		pthread_mutex_lock_unlock(&(vnode->pps_file_lock), UNLOCK,
-				"Failed to release pps_file_lock");
 
 		pthread_cond_wait(&(vnode->swap_request_pids_cond),
 					&(vnode->swap_request_pids_lock));
