@@ -1103,6 +1103,7 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 		IVED_ERROR(log4cat_veos_ived, 
 			   "Getting requester process (%d) data failed",
 			   req_user_pid);
+		put_ve_task_struct(owner_tsk);
 		reply->error = -ESRCH;
 		goto err_ret_nolock;
 	}

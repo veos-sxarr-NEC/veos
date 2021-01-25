@@ -532,6 +532,7 @@ int rpm_handle_get_regvals_req(struct veos_thread_arg *pti)
 	}
 	if (tsk->uid != pti->cred.uid && pti->cred.uid != 0) {
 		VEOS_DEBUG("VE regvals access not permitted");
+		put_ve_task_struct(tsk);
 		retval = -EPERM;
 		goto hndl_return;
 	}
