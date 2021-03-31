@@ -160,6 +160,22 @@ int create_phdr(struct dump_params *cprm,
 		start = (uint64_t)ve_pmap->begin;
 
 		do {
+			/* Abruptly terminate the core dumping activity if the
+			 * process receives SIGINT or SIGKILL while core dumping
+			 */
+			if (cprm->tsk->sighand->got_sigint
+						|| terminate_flag) {
+				VEOS_ERROR("Coredumping interrupted by SIGINT, "
+							"coredump stopped");
+				ret = -EINVAL;
+				goto end;
+			} else if (cprm->tsk->group_leader->exit_code_set == true
+				&& cprm->tsk->group_leader->exit_code == SIGKILL) {
+				VEOS_ERROR("Coredumping interrupted by SIGKILL,"
+							" coredump stopped");
+				ret = -EINVAL;
+				goto end;
+			}
 			/* Segement size could be as big as memory
 			 * allocated to VE card. To avoid large memory
 			 * request to VH, always dump segment information

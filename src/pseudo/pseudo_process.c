@@ -60,6 +60,8 @@
 #include "handle.h"
 #include <libudev.h>
 #include <libved.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 
 #define PROGRAM_NAME "ve_exec"
 #define ISDIGIT(c)      ((unsigned)c-'0' < 10)
@@ -117,6 +119,7 @@ void pseudo_abort()
 	int ret = -1;
 	char buf[PATH_MAX];
 	int readlen = 0, node_num = -1;
+	struct rlimit core_limit;/*Added for #2121 to disable core dump of ve_exec when VE NODE is unavailable*/
 	/* Set SIGABRT action to DEFAULT */
 	act.sa_handler = SIG_DFL;
 	sigaction(SIGABRT, &act, NULL);
@@ -155,6 +158,13 @@ void pseudo_abort()
 								node_num);
 				fprintf(stderr, "VE Node %d is UNAVAILABLE\n",
 								node_num);
+				core_limit.rlim_cur = 0;
+                                core_limit.rlim_max = 0;
+                                if (-1 == setrlimit(RLIMIT_CORE, &core_limit)) {
+					PSEUDO_ERROR("Seting core file size to zero failed");
+					goto err_abort;
+                                }
+
 			}
 			close(fd);
 		}

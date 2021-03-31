@@ -80,7 +80,7 @@ vhcall_handle sys_vhcall_install(veos_handle *handle, uintptr_t filename)
 		retval = -EFAULT;
 		goto err_return;
 	}
-	retval = (intptr_t)dlopen(pathbuf, RTLD_LAZY);
+	retval = (intptr_t)dlopen(pathbuf, RTLD_LAZY|RTLD_GLOBAL);
 	if (0 == retval) {
 		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
 				"dlopen() failed: %s\n", dlerror());

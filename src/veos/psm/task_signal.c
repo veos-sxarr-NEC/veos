@@ -3020,6 +3020,8 @@ void veos_polling_thread(void)
 				if (!tsk->exit_code_set) {
 					tsk->exit_code = SIGKILL;
 					tsk->exit_code_set = true;
+					tsk->group_leader->exit_code = SIGKILL;
+					tsk->group_leader->exit_code_set = true;
 				}
 				pthread_mutex_lock_unlock(&(tsk->ve_task_lock),
 					UNLOCK,
