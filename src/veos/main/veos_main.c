@@ -51,11 +51,13 @@
 #include "config.h"
 #include "vesync.h"
 #include "ve_swap.h"
+#include "veos_sock.h"
 
 #define IPC_QUEUE_LEN 20
 #define UG_NAME_MAX 32
 
 static char veos_sock_file[PATH_MAX] = {'\0'};
+static char veos_vhve_sock_file[PATH_MAX] = {'\0'};
 char drv_sock_file[PATH_MAX] = {'\0'};
 /* Buffer to store IVED's socket file path. */
 char ived_sock_file[PATH_MAX] = {'\0'};
@@ -377,6 +379,7 @@ static int veos_cleanup(void)
 
 	/* Delete remaining socket file. */
 	remove(veos_sock_file);
+        remove(veos_vhve_sock_file);
 
 	no_update_os_state = 1;
 
@@ -523,9 +526,79 @@ hndl_error:
 	return -1;
 }
 
+/**
+ * @brief Creates a socket to listen connections for VH process.
+ *
+ * @return File descriptor number on success, -1 on failure
+ *
+ * @internal
+ *
+ * @author VHVE
+ */
+static int veos_create_vhve_socket(void)
+{
+	int l_sock_vhve;
+
+	struct sockaddr_un sa = {0};
+
+	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "In Func");
+	/* create socket */
+	l_sock_vhve = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (l_sock_vhve == -1) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Creating socket failed");
+		goto hndl_error;
+	}
+
+	/* create sockaddr_un */
+	sa.sun_family = AF_UNIX;
+	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_DEBUG,
+			"veos sock is %s", veos_vhve_sock_file);
+
+	if ((sizeof(sa.sun_path)) < (strlen(veos_vhve_sock_file) + 1)) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Socket file path is too long");
+		goto hndl_close;
+	}
+	strncpy(sa.sun_path, veos_vhve_sock_file, sizeof(sa.sun_path) - 1);
+
+	/* VEOS socket file has already removed.
+	 * bind()
+	 */
+	if (bind(l_sock_vhve, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Binding socket failed");
+		goto hndl_close;
+	}
+
+	/* change permission */
+	chmod(sa.sun_path, 0777);
+
+	/* listen */
+	if ((listen(l_sock_vhve, IPC_QUEUE_LEN)) != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Listing socket failed");
+		goto hndl_close;
+	}
+
+	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
+	return l_sock_vhve;
+
+hndl_close:
+	errno = 0;
+	if (close(l_sock_vhve) != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Closing socket failed");
+	}
+
+hndl_error:
+	remove(sa.sun_path);
+	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
+	return -1;
+}
 
 /**
- * @brief main() for veos
+ * @brier main() for veos
  *
  * @param[in] argc Received argument count
  * @param[in] argv Argument buffers received
@@ -542,7 +615,7 @@ int veos_main(int argc, char *argv[])
 int main(int argc, char *argv[])
 #endif
 {
-	int l_sock;
+	int l_sock[2];
 	int index = 0;
 	int s, retval = 0;
 	/* Buffer to store VEMM's socket file path. */
@@ -555,6 +628,7 @@ int main(int argc, char *argv[])
 	pthread_t veos_thread;
 	pthread_t veos_poller_thread;
 	pthread_t veos_sigstop_thread;
+	pthread_t veos_zombie_cleaner_thread;
 	pthread_attr_t attr;
 	pthread_rwlockattr_t rw_attr;
 	size_t pps_buf_size = 0;
@@ -603,6 +677,9 @@ int main(int argc, char *argv[])
 		case 'd':
 			snprintf(drv_sock_file, sizeof(drv_sock_file),
 								"%s", optarg);
+			snprintf(veos_vhve_sock_file, sizeof(veos_vhve_sock_file),
+				"%s/veos%d_vhve.sock",VEOS_SOC_PATH,
+				get_ve_node_num_from_sock_file(drv_sock_file));
 			opt_dev = 1;
 			break;
 		case 'i':
@@ -850,6 +927,8 @@ int main(int argc, char *argv[])
 
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO, "VEOS socket file %s",
 						veos_sock_file);
+        VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO, "VEOS VHVE socket file %s",
+                                                veos_vhve_sock_file);
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO, "VE driver file %s",
 						drv_sock_file);
 
@@ -889,6 +968,7 @@ int main(int argc, char *argv[])
 
 	/* remove veos socket file if it already exist. */
 	remove(veos_sock_file);
+        remove(veos_vhve_sock_file);
 
 	/* Initialize veos */
 	if (veos_init() != 0) {
@@ -929,12 +1009,20 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	l_sock = veos_create_socket();
-	if (l_sock < 0) {
+	l_sock[0] = veos_create_socket();
+	if (l_sock[0] < 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
 						"Failed to create socket");
 		retval = 1;
 		goto hndl_vemm;
+	}
+
+	l_sock[1] = veos_create_vhve_socket();
+	if (l_sock[1] < 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
+				"Failed to create socket");
+		retval = 1;
+		goto hndl_close2;
 	}
 
 	if (veos_set_ve_node_state(VE_NODE(0), OS_ST_ONLINE) != 0) {
@@ -996,6 +1084,15 @@ int main(int argc, char *argv[])
 			veos_request_termination(0);
 		}
 	}
+	retval = pthread_create(&veos_zombie_cleaner_thread, &attr,
+			(void *)&veos_zombie_cleanup_thread, NULL);
+	if (retval != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
+			"Faild to create veos_zombie_cleanup_thread: %s",
+			strerror(retval));
+		retval = 1;
+		veos_request_termination(0);
+	}
 	/* Wait to change terminate_flag value from 0 to 1. */
 	sem_wait(&terminate_sem);
 	if (sem_post(&terminate_sem) != 0)
@@ -1011,6 +1108,7 @@ int main(int argc, char *argv[])
 
 	/* Delete socket file. */
 	remove(veos_sock_file);
+        remove(veos_vhve_sock_file);
 
 	/* Requests internal VEMM agent to stop handling new VEMM request */
 	if (opt_vemm != 0) {
@@ -1061,9 +1159,16 @@ hndl_return:
 	exit(retval);
 
 hndl_close:
+        remove(veos_vhve_sock_file);
+        if (close(l_sock[1]) != 0)
+                VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+                                        "Failed to close socket.%s",
+                                        strerror(errno));
+
+hndl_close2:
 	/* Delete socket file. */
 	remove(veos_sock_file);
-	if (close(l_sock) != 0)
+	if (close(l_sock[0]) != 0)
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 					"Failed to close socket.%s",
 					strerror(errno));

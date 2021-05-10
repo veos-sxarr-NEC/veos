@@ -168,7 +168,7 @@ struct dump_info {
 	struct ve_task_struct *ve_task; /*!< pointer to ve task struct */
 	int flag; /*!< flag denote signal generated from h/w exception */
 	int signum; /*!< signal number generating dump */
-	volatile bool dumper_ready; /*!< to secure coredumper thread */
+	volatile bool *dumper_ready_p; /*!< to secure coredumper thread */
 };
 
 /**

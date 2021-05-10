@@ -183,6 +183,7 @@ fi
 # LGPLv2+ and BSD and MIT
 %{_libdir}/libvepseudo.so.*
 %{_libexecdir}/ve_exec
+%{_libdir}/libvhve.so.*
 %doc
 
 %files libveptrace

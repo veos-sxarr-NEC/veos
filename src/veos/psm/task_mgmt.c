@@ -1435,7 +1435,8 @@ void set_state(struct ve_task_struct *task)
 				task->pid, EXITING);
 	pthread_mutex_lock_unlock(&task->ref_lock, LOCK,
 		"Failed to acquire task reference lock");
-	task->exit_status = EXITING;
+	if (task->exit_status != DELETING)
+		task->exit_status = EXITING;
 	pthread_mutex_lock_unlock(&task->ref_lock, UNLOCK,
 		"Failed to acquire task reference lock");
 
@@ -1809,6 +1810,8 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 	del_task_struct->sas_ss_size = 0;
 	pthread_mutex_lock_unlock(&(del_task_struct->sighand->siglock), UNLOCK,
 			"failed to release signal lock");
+	pthread_mutex_lock_unlock(&(del_task_struct->sighand->del_lock), LOCK,
+			"failed to acquire signal lock");
 
 	/* Clean and Re-initialise ived proc property */
 	if (del_task_struct->ived_resource)
@@ -1973,6 +1976,8 @@ skip_wakeup:
 
 	/* Re-initialise udma_context */
 	memset(del_task_struct->udma_context, 0, sizeof(struct ve_udma));
+	pthread_mutex_lock_unlock(&(del_task_struct->sighand->del_lock), UNLOCK,
+			"failed to release signal lock");
 
 hndl_return:
 	VEOS_TRACE("Exiting");
@@ -2112,27 +2117,10 @@ out:
 	return veos_acct.active;
 }
 
-/**
- * @brief Dump the accounting information of struct ve_acct in a
- * accounting file.
- *
- * @param[in] tsk Pointer to VE task struct
- *
- * @internal
- * @author PSMG / Process management
- */
-void veos_acct_ve_proc(struct ve_task_struct *tsk)
+void veos_prepare_acct_info(struct ve_task_struct *tsk)
 {
 	struct pacct_struct *pacct = NULL;
 	struct timeval now = {0};
-	int retval = -1;
-
-	VEOS_TRACE("Entering");
-	if (!tsk)
-		goto hndl_return;
-	if (!veos_acct_check_free_space())
-		goto hndl_return;
-
 	pacct = &(tsk->sighand->pacct);
 	pacct->acct_info.ac_flag = (char)(pacct->ac_flag);
 
@@ -2194,7 +2182,13 @@ void veos_acct_ve_proc(struct ve_task_struct *tsk)
 
 	/* Command name of the program */
 	memcpy(pacct->acct_info.ac_comm, tsk->ve_comm, ACCT_COMM-1);
+}
 
+void veos_dump_acct_info(struct ve_task_struct *tsk)
+{
+	int retval = 0;
+	struct pacct_struct *pacct = NULL;
+	pacct = &(tsk->sighand->pacct);
 	/*printing accounting data before dumping to file*/
 	print_accounting(tsk->pid, pacct);
 
@@ -2205,10 +2199,32 @@ void veos_acct_ve_proc(struct ve_task_struct *tsk)
 		VEOS_ERROR("Failed to write in accounting file");
 		VEOS_DEBUG("Writing in accounting file failed due to: %s",
 				strerror(errno));
+		return;
 	}
-
 	VEOS_DEBUG("Data is successfully dumped in accounting file: %s",
 			veos_acct.file);
+}
+/**
+ * @brief Dump the accounting information of struct ve_acct in a
+ * accounting file.
+ *
+ * @param[in] tsk Pointer to VE task struct
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+void veos_acct_ve_proc(struct ve_task_struct *tsk)
+{
+
+	VEOS_TRACE("Entering");
+	if (!tsk)
+		goto hndl_return;
+	if (!veos_acct_check_free_space())
+		goto hndl_return;
+	veos_prepare_acct_info(tsk);
+	if (tsk->ve_task_state != ZOMBIE)
+		veos_dump_acct_info(tsk);
+
 hndl_return:
 	VEOS_TRACE("Exiting");
 	return;
@@ -4114,8 +4130,8 @@ int64_t psm_handle_getaffinity_request(pid_t pid, size_t cpusetsize, cpu_set_t *
 		goto hndl_return;
 	}
 	tsk = find_ve_task_struct(pid);
-	if (!tsk) {
-		VEOS_ERROR("Failed to find task structure");
+	if (tsk == NULL && !(tsk = checkpid_in_zombie_list(pid))) {
+		VEOS_DEBUG("PID: %d not found.", pid);
 		retval = -ESRCH;
 		goto hndl_return;
 	}
@@ -4165,8 +4181,8 @@ int64_t psm_handle_setaffinity_request(pid_t caller, pid_t pid, cpu_set_t mask)
 	VEOS_DEBUG("Handling set affinity request for PID %d", pid);
 
 	tsk = find_ve_task_struct(pid);
-	if (!tsk) {
-		VEOS_ERROR("Failed to find task structure");
+	if (tsk == NULL && !(tsk = checkpid_in_zombie_list(pid))) {
+		VEOS_DEBUG("PID: %d not found.", pid);
 		retval = -ESRCH;
 		goto hndl_return;
 	}
@@ -4762,7 +4778,6 @@ struct ve_task_struct *find_child_ve_task_struct(pid_t parent_pid,
 	struct ve_task_struct *c_tsk = NULL;
 	struct ve_task_struct *p_tsk = NULL;
 	struct ve_task_struct *tmp_tsk = NULL;
-	struct list_head *p = NULL, *n = NULL;
 
 	VEOS_TRACE("Entering");
 	VEOS_DEBUG("Parent(%d) finding child's(%d) host pid",
@@ -4775,37 +4790,16 @@ struct ve_task_struct *find_child_ve_task_struct(pid_t parent_pid,
 		goto hndl_return;
 	}
 
-	VEOS_DEBUG("Acquiring tasklist_lock");
-	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
-			"Failed to acquire tasklist_lock lock");
-
-	/* Traverse the parent's children list */
-	if (!list_empty(&p_tsk->children)) {
-		list_for_each_safe(p, n, &p_tsk->children) {
-			tmp_tsk = list_entry(p,
-					struct ve_task_struct,
-					siblings);
-			if (tmp_tsk->namespace_pid == child_namespace_pid) {
-				VEOS_DEBUG("Found Child PID %d namespace %d",
+	tmp_tsk = checkpid_in_zombie_list(child_namespace_pid);
+	if (tmp_tsk == NULL) {
+		VEOS_DEBUG("Child PID: %d not found.", child_namespace_pid);
+		goto hndl_return;
+	} else {
+		VEOS_DEBUG("Found Child PID %d namespace %d",
 						tmp_tsk->pid,
 						tmp_tsk->namespace_pid);
-				if (get_ve_task_struct(tmp_tsk)) {
-					VEOS_DEBUG("failed to get "
-							"task reference: %d",
-							tmp_tsk->pid);
-					break;
-				}
-				c_tsk = tmp_tsk;
-				break;
-			}
-		}
-	} else {
-		VEOS_DEBUG("No child exists for Parent %d", parent_pid);
+		c_tsk = tmp_tsk;
 	}
-
-	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
-			"Failed to release tasklist_lock lock");
-	VEOS_DEBUG("Released tasklist_lock");
 hndl_return:
 	/* Release the reference of parent task struct */
 	if (p_tsk)

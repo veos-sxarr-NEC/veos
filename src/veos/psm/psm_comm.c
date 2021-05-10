@@ -3885,6 +3885,8 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 				"Failed to release task lock");
 		pthread_mutex_lock_unlock(&group_leader->ref_lock, LOCK,
 				"Failed to acquire task reference lock");
+		VEOS_DEBUG("pid %d  ref_count = %d",
+				group_leader->pid, group_leader->ref_count);
 		VEOS_DEBUG("Acquired ref_lock, waiting for conditional signal");
 		if (!(group_leader->ref_count == 1) &&
 				pthread_cond_wait(&group_leader->ref_lock_signal,
@@ -3895,7 +3897,7 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 		pthread_mutex_lock_unlock(&group_leader->ref_lock, UNLOCK,
 				"Failed to release task reference lock");
 
-		delete_entries(group_leader);
+		psm_delete_zombie_task(group_leader);
 		retval = 0;
 		goto send_ack1;
 

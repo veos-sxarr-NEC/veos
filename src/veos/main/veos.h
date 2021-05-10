@@ -68,6 +68,7 @@
 #define VEOS_MAX_VE_THREADS (VEOS_THREAD_PAGE_SIZE \
 		/ VEOS_BYTES_PER_VE_THREAD)
 
+#define VHVE_DMAREQ_HASH_SIZE 128
 
 /**
  * @brief VE Nodes
@@ -192,6 +193,10 @@ struct ve_node_struct {
 					* of task lists */
 	pthread_rwlock_t ve_relocate_lock; /*! Global lock for synchronizing task relocation */
 	pthread_cond_t stop_cond;/*!< Conditional lock for SIGSTOP signal */
+	pthread_cond_t zombie_cond;/*!< Conditional lock for zombie task cleanup */
+	pthread_mutex_t zombie_mtx;/*!< Mutex lock specific to zombie task cleanup */
+	volatile int num_zombie_proc; /*!< Number of zombie VE processes created
+				       * using 'time' command on this node */
 	pthread_cond_t pg_allc_cond;/*!< Conditional lock for allocating ve pages protected by ve_node_lock*/
 	uint64_t dirty_pg_num_2M[VE_MAX_NUMA_NODE];
 	uint64_t dirty_pg_num_64M[VE_MAX_NUMA_NODE];

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -29,7 +29,7 @@ int ve_dma_hw_get_readptr(vedl_handle *, system_common_reg_t *);
 uint64_t ve_dma_hw_get_ctlword1(vedl_handle *, system_common_reg_t *);
 uint32_t ve_dma_hw_get_ctlstatus(vedl_handle *, system_common_reg_t *);
 int ve_dma_hw_post_dma(vedl_handle *, system_common_reg_t *, int, uint64_t,
-		       uint64_t, uint64_t, uint64_t, uint32_t, int);
+		       uint64_t, uint64_t, uint64_t, uint32_t, int, int, int);
 void ve_dma_hw_start(vedl_handle *, system_common_reg_t *);
 void ve_dma_hw_post_stop(vedl_handle *, system_common_reg_t *);
 uint64_t ve_dma_hw_desc_status(vedl_handle *, system_common_reg_t *, int);

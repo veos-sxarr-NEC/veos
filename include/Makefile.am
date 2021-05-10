@@ -25,6 +25,7 @@ libvepseudo_headers_HEADERS = \
 	ve_memory.h
 
 noinst_HEADERS = \
+	vhve_request.h \
 	ived_request.h \
 	ve_atomic.h \
 	ve_list.h

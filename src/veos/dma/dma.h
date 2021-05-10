@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -58,9 +58,17 @@ typedef enum ve_dma_status {
 	VE_DMA_STATUS_ERROR,/*!< error occured */
 } ve_dma_status_t;
 
+#define VE_DMA_OPT_SYNC 0x0000000000000001 /* post DMA request with SYNC bit*/
+#define VE_DMA_OPT_RO   0x0000000000000002 /* post DMA request with RO bit */
+#define VE_DMA_OPT_IDO  0x0000000000000004 /* post DMA request with IDO bit */
+#define VE_DMA_OPT_SYNC_API 0x0000000000000008 /* post DMA request from syncronous api*/
+
 ve_dma_hdl *ve_dma_open_p(vedl_handle *);
 int ve_dma_close_p(ve_dma_hdl *);
 
+ve_dma_req_hdl *ve_dma_post_p_va_with_opt(ve_dma_hdl *, ve_dma_addrtype_t, pid_t,
+                                 uint64_t, ve_dma_addrtype_t, pid_t, uint64_t,
+                                 uint64_t, uint64_t, int);
 ve_dma_req_hdl *ve_dma_post_p_va(ve_dma_hdl *, ve_dma_addrtype_t, pid_t,
 				 uint64_t, ve_dma_addrtype_t, pid_t, uint64_t,
 				 uint64_t);
@@ -72,6 +80,5 @@ ve_dma_status_t ve_dma_test(ve_dma_req_hdl *);
 ve_dma_status_t ve_dma_wait(ve_dma_req_hdl *);
 ve_dma_status_t ve_dma_timedwait(ve_dma_req_hdl *, const struct timespec *);
 int ve_dma_req_free(ve_dma_req_hdl *);
-void ve_dma_terminate(ve_dma_req_hdl *);
 void ve_dma_terminate_all(ve_dma_hdl *);
 #endif

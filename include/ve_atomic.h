@@ -30,6 +30,11 @@
                 (TYPE)val, __ATOMIC_SEQ_CST)
 #define VE_ATOMIC_GET(TYPE, var) __atomic_load_n((TYPE *)var, __ATOMIC_SEQ_CST)
 
+#define VE_ATOMIC_FETCH_ADD(TYPE, var, val)\
+		__atomic_fetch_add((TYPE *)var, (TYPE)val, __ATOMIC_SEQ_CST)
+#define VE_ATOMIC_FETCH_SUB(TYPE, var, val)\
+		__atomic_fetch_sub((TYPE *)var, (TYPE)val, __ATOMIC_SEQ_CST)
+
 static inline void ve_atomic_inc(volatile int *x)
 {
         int old = *x;

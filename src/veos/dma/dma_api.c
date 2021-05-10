@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -49,6 +49,7 @@ ve_dma_hdl *ve_dma_open_p(vedl_handle *vh)
 	uint32_t ctl_status;
 	int i;
 	int err;
+	void *ret_from_helper;
 
 	ve_dma_log_init();
 	VE_DMA_TRACE("called");
@@ -59,9 +60,13 @@ ve_dma_hdl *ve_dma_open_p(vedl_handle *vh)
 	}
 	/* initialize a DMA handle */
 	INIT_LIST_HEAD(&ret->waiting_list);
+	INIT_LIST_HEAD(&ret->pin_waiting_request);
 	ret->vedl_handle = vh;
 	ret->should_stop = 0;
+	VE_ATOMIC_SET(int, &ret->blk_count, 0);
 	pthread_mutex_init(&ret->mutex, NULL);
+	pthread_mutex_init(&ret->pin_wait_list_mutex, NULL);
+	pthread_cond_init(&ret->pin_wait_list_cond, NULL);
 	memset(&ret->req_entry, 0, sizeof(ret->req_entry));
 	ret->control_regs = vedl_mmap_cnt_reg(vh);
 	if (ret->control_regs == MAP_FAILED) {
@@ -90,13 +95,27 @@ ve_dma_hdl *ve_dma_open_p(vedl_handle *vh)
 			    strerror(err));
 		goto err_create_helper;
 	}
+	/* start a pindown helper thread */
+	err = pthread_create(&ret->pin_helper, NULL, ve_dma_pindown_helper, ret);
+	if (err != 0) {
+                VE_DMA_CRIT("Failed to create ve_dma_pindown_helper thread. %s",
+                            strerror(err));
+                goto err_create_pin_helper;
+        }
 	veos_commit_rdawr_order();
 	VE_DMA_DEBUG("DMA engine is opend.");
 	return ret;
+err_create_pin_helper:
+	ret->should_stop = 1;
+	err = pthread_join(ret->helper, &ret_from_helper);
+	if (err != 0)
+		VE_DMA_CRIT("Failed to join ve_dma_intr_helper thread. %s",
+		             strerror(err));
 err_create_helper:
 	munmap(ret->control_regs, sizeof(system_common_reg_t));
 err_map_cnt_reg:
 	pthread_mutex_destroy(&ret->mutex);
+	pthread_mutex_destroy(&ret->pin_wait_list_mutex);
 	free(ret);
 	return NULL;
 }
@@ -111,6 +130,7 @@ err_map_cnt_reg:
 int ve_dma_close_p(ve_dma_hdl *hdl)
 {
 	void *ret_from_helper;
+	void *ret_from_pin_helper;
 	int err;
 
 	VE_DMA_TRACE("called");
@@ -135,11 +155,20 @@ int ve_dma_close_p(ve_dma_hdl *hdl)
 	 */
 	veos_commit_rdawr_order();
 	pthread_mutex_unlock(&hdl->mutex);
+	pthread_mutex_lock(&hdl->pin_wait_list_mutex);
+	pthread_cond_signal(&hdl->pin_wait_list_cond);
+	pthread_mutex_unlock(&hdl->pin_wait_list_mutex);
+	err = pthread_join(hdl->pin_helper, &ret_from_pin_helper);
+	if (err != 0)
+                VE_DMA_CRIT("Failed to join ve_dma_pindown_helper thread. %s",
+                             strerror(err));
 	err = pthread_join(hdl->helper, &ret_from_helper);
 	if (err != 0)
 		VE_DMA_CRIT("Failed to join ve_dma_intr_helper thread. %s",
 			     strerror(err));
 	pthread_mutex_destroy(&hdl->mutex);
+	pthread_mutex_destroy(&hdl->pin_wait_list_mutex);
+	pthread_cond_destroy(&hdl->pin_wait_list_cond);
 	munmap(hdl->control_regs, sizeof(system_common_reg_t));
 	free(hdl);
 	VE_DMA_DEBUG("DMA engine is closed.");
@@ -208,6 +237,18 @@ ve_dma_req_hdl *ve_dma_post_p_va(ve_dma_hdl *hdl, ve_dma_addrtype_t srctype,
 				 ve_dma_addrtype_t dsttype, pid_t dstpid,
 				 uint64_t dstaddr, uint64_t length)
 {
+	return ve_dma_post_p_va_with_opt(hdl,srctype,srcpid,srcaddr,
+					dsttype,dstpid,dstaddr,length,
+					VE_DMA_OPT_SYNC | VE_DMA_OPT_SYNC_API,-1);
+}
+
+ve_dma_req_hdl *ve_dma_post_p_va_with_opt(ve_dma_hdl *hdl,
+				ve_dma_addrtype_t srctype,
+				pid_t srcpid, uint64_t srcaddr,
+                		ve_dma_addrtype_t dsttype,
+				pid_t dstpid, uint64_t dstaddr, uint64_t length,
+				uint64_t opt, int vh_sock_fd)
+{
 	ve_dma_req_hdl *ret;
 	int64_t n_dma_req;
 
@@ -263,19 +304,34 @@ ve_dma_req_hdl *ve_dma_post_p_va(ve_dma_hdl *hdl, ve_dma_addrtype_t srctype,
 	ret->engine = hdl;
 	pthread_cond_init(&ret->cond, NULL);
 	ret->cancel = 0;
+	ret->waiting_src.type = 0;
+	ret->waiting_dst.type = 0;
+	ret->waiting_src.pid = 0;
+	ret->waiting_dst.pid = 0;
+	ret->waiting_src.addr = 0;
+	ret->waiting_dst.addr = 0;
+	ret->src_blk = NULL;
+	ret->dst_blk = NULL;
+	ret->length = 0;
+	ret->opt = 0;
+	ret->vh_sock_fd = 0;
+	ret->comp = 0;
+	ret->posting = 1;
 	INIT_LIST_HEAD(&ret->reqlist);
 	INIT_LIST_HEAD(&ret->ptrans_src);
 	INIT_LIST_HEAD(&ret->ptrans_dst);
+	INIT_LIST_HEAD(&ret->pin_waiting_list);
 
-	n_dma_req = ve_dma_reqlist_make(ret, srctype, srcpid, srcaddr, dsttype,
-					dstpid, dstaddr, length);
-	if (n_dma_req <= 0) {
+	n_dma_req = ve_dma_reqlist_make(ret, srctype, srcpid, srcaddr, NULL, dsttype,
+					dstpid, dstaddr, NULL, length, opt, vh_sock_fd);
+	if (n_dma_req < 0) {
 		VE_DMA_ERROR("Error occured on making DMA reqlist entries. "
 			     "(srctype = %d, srcpid = %d, srcaddr = 0x%016lx, "
 			     "dsttype = %d, dstpid = %d, dstaddr = 0x%016lx, "
-			     "length = 0x%lx)",
+			     "length = 0x%lx, opt = 0x%lx, vh_sock_fd = %d)",
 			     srctype, (int)srcpid, srcaddr,
-			     dsttype, (int)dstpid, dstaddr, length);
+			     dsttype, (int)dstpid, dstaddr, length, opt, vh_sock_fd);
+		ve_dma_reqlist_free(ret);
 		pthread_cond_destroy(&ret->cond);
 		free(ret);
 		return NULL;
@@ -314,14 +370,14 @@ ve_dma_status_t ve_dma_xfer_p_va(ve_dma_hdl *hdl, ve_dma_addrtype_t srctype,
 
 	VE_DMA_TRACE("called");
 	ve_dma_req_hdl *req = ve_dma_post_p_va(hdl, srctype, srcpid, srcaddr,
-					       dsttype, dstpid, dstaddr,
-					       length);
+						dsttype, dstpid, dstaddr,
+						length);
 	if (req == NULL)
 		return VE_DMA_STATUS_ERROR;
 
-
 	ret = ve_dma_wait(req);
 	ve_dma_req_free(req);
+
 	return ret;
 }
 
@@ -369,14 +425,13 @@ ve_dma_status_t ve_dma_wait(ve_dma_req_hdl *req)
 	ve_dma_status_t ret;
 	VE_DMA_TRACE("called");
 	pthread_mutex_lock(&req->engine->mutex);
-	ret = ve_dma__test_nolock(req);
-	while (ret == VE_DMA_STATUS_NOT_FINISHED &&
-	       req->engine->should_stop == 0) {
+	while (req->engine->should_stop == 0 &&
+		(req->comp == 0 || req->posting != 0)) {
 		VE_DMA_TRACE("wait for interrupts");
 		pthread_cond_wait(&req->cond, &req->engine->mutex);
 		VE_DMA_TRACE("woken");
-		ret = ve_dma__test_nolock(req);
 	}
+	ret = ve_dma__test_nolock(req);
 	pthread_mutex_unlock(&req->engine->mutex);
 	if (ret == VE_DMA_STATUS_NOT_FINISHED)
 		ret = VE_DMA_STATUS_CANCELED;
@@ -453,15 +508,6 @@ void ve_dma__stop_engine(ve_dma_hdl *hdl)
 		VE_DMA_TRACE("Waiting for DMA halt state (DMA status = %08x)",
 			     ctl_status);
 	}
-}
-
-void ve_dma_terminate(ve_dma_req_hdl *req)
-{
-        ve_dma_hdl *hdl = req->engine;
-        pthread_mutex_lock(&hdl->mutex);
-        ve_dma__terminate_nolock(req);
-        veos_commit_rdawr_order();
-        pthread_mutex_unlock(&hdl->mutex);
 }
 
 /**

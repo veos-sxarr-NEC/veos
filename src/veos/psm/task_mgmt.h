@@ -144,6 +144,14 @@ enum proc_state {
 };
 
 /**
+ * @brief Zombie VE process (whose thread group is empty) cleanup state
+ */
+enum zombie_cleanup_state {
+	CLEANUP_NO = 0,	/*!< ZOMBIE cleanup not required */
+	CLEANUP_NEEDED,	/*!< ZOMBIE cleanup needed*/
+	CLEANUP_DONE	/*!< ZOMBIE cleanup completed */
+};
+/**
  * @brief Process sub status of STOP status
  */
 enum swap_status {
@@ -542,6 +550,7 @@ struct ve_task_struct {
 	unsigned short tty;		/*!< VE process's tty ID */
 	uint64_t initial_pmc_pmmr[16];	/* initial PMC/PMMR counter register values */
 	uint64_t pmc_pmmr[16];		/* updated PMC/PMMR counter register */
+	int zombie_partial_cleanup;	/* Zombie VE process cleanup state */
 };
 
 
@@ -662,4 +671,11 @@ int psm_map_lhm_shm_area(struct ve_task_struct *, int, char *, uint64_t);
 struct ve_task_struct *find_child_ve_task_struct(pid_t, pid_t);
 void send_notice_to_swap_thread(void);
 void update_accounting_data(struct ve_task_struct *tsk, enum acct_data, double);
+bool veos_acct_check_free_space(void);
+void veos_dump_acct_info(struct ve_task_struct *);
+void veos_delete_task_from_parent_and_init(struct ve_task_struct *);
+void veos_zombie_cleanup_thread(void);
+bool check_for_zombie_deletion(struct ve_task_struct *);
+void psm_delete_zombie_task(struct ve_task_struct *);
+struct ve_task_struct*  checkpid_in_zombie_list(int pid);
 #endif

@@ -211,6 +211,23 @@ int init_ve_node_struct(struct ve_node_struct *p_ve_node, int node_id,
 				strerror(p_ret));
 		goto hndl_c_reg;
 	}
+	/* Initialize mutex lock for zombie cleanup thread */
+	p_ret = pthread_mutex_init(&(p_ve_node->zombie_mtx), NULL);
+	if (p_ret != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Mutex init for zombie_mtx failed: %s",
+				strerror(p_ret));
+		goto hndl_c_reg;
+	}
+
+	/* Initialize the conditional variable */
+	p_ret = pthread_cond_init(&(p_ve_node->zombie_cond), NULL);
+	if (p_ret != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Conditional variable init failed: %s",
+				strerror(p_ret));
+		goto hndl_c_reg;
+	}
 
 	/*init ve_node lock*/
 	p_ret = pthread_mutex_init(&(p_ve_node->ve_node_lock), NULL);

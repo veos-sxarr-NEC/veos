@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -26,6 +26,8 @@
 #include <time.h>
 
 #include "ve_list.h"
+
+#define BLOCK_LIMIT 256
 
 /**
  * @brief status of DMA reqlist entry
@@ -58,6 +60,7 @@ struct ve_dma__block {
 	int pgsz;	 /*!< page size */
 	void (*unpin)(vedl_handle *, ve_dma__block *);/*!< unpin function */
 	struct timespec ts, te; /* block creation start and end times */
+	ve_dma_addrtype_t type; /*!< memory type of this block */
 };
 
 /**
@@ -73,6 +76,10 @@ struct ve_dma_reqlist_entry {
 	uint64_t status_hw;/*!< the value of the word 0 of DMA descriptor */
 	enum ve_dma_reqlist_entry_status status;/*!< status of this DMA reqlist entry */
 	int entry;/* 0, 1, ..., VE_DMA_NUM_DESC - 1, or -1 (not posted) */
+	uint64_t opt;
+	int last;
+	struct ve_dma__block *src_block;
+	struct ve_dma__block *dst_block;
 };
 
 /**

@@ -39,15 +39,18 @@
 #include <pthread.h>
 #include "libved.h"
 #include "comm_request.h"
+#include "vhve_request.h"
 
 #define PID_FILE	"pid_file.txt"
 #define VEOS_MAX_THREADS	1056	/* 1024 + 32 */
+#define VEOS_VHVE_MAX_THREADS         128
 
 
 int (*veos_pseudo_handler[PSEUDO_VEOS_MAX_MSG_NUM])(struct veos_thread_arg *);
 
 int amm_send_mprotect_ack(struct veos_thread_arg *, int64_t);
 
+int (*veos_vhve_handler[VHVE_VEOS_MAX_MSG_NUM])(struct veos_vhve_thread_arg *);
 
 /* AMM <------------> PSEUDO*/
 int amm_handle_process_vm_rw_req(veos_thread_arg_t *);
@@ -130,4 +133,7 @@ extern int veos_handle_map_dmades(veos_thread_arg_t *);
 extern int veos_handle_unmap_dmades(veos_thread_arg_t *);
 int veos_handle_get_mns(veos_thread_arg_t *pti);
 
+/* VEOS <--------------> libvhve */
+int veos_handle_vhve_dma_req(veos_vhve_thread_arg_t *);
+extern struct veos_vhve_cmd_entry vhve_veos_cmd[VHVE_VEOS_MAX_MSG_NUM];
 #endif

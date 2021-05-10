@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -123,12 +123,14 @@ static int ve_dma_hw_check_addr_type(const char *msg, uint64_t t)
  * @param dstaddr destination address
  * @param len transfer length in byte
  * @param sync sync bit of this request is enabled when sync is non-zero.
+ * @param ro   ro bit of this request is enabled when ro is non-zero.
+ * @param ido  ido bit of this request is enabled when ido is non-zero.
  *
  * @return 0 on success. Non-zero on failure.
  */
 int ve_dma_hw_post_dma(vedl_handle *h, system_common_reg_t *creg, int entry,
 		       uint64_t srctype, uint64_t srcaddr, uint64_t dsttype,
-		       uint64_t dstaddr, uint32_t len, int sync)
+		       uint64_t dstaddr, uint32_t len, int sync, int ro, int ido)
 {
 	VE_DMA_TRACE("called (entry #%d: srctype=%ld, srcaddr=0x%016lx, "
 		 "dsttype=%ld, dstaddr=0x%016lx, length=0x%x)",
@@ -174,6 +176,8 @@ int ve_dma_hw_post_dma(vedl_handle *h, system_common_reg_t *creg, int entry,
 	/* TODO: use interrupt on exception and read-completion */
 			      VE_DMA_DESC_CTL_INTR_COMPLETION |
 			      (sync ? VE_DMA_DESC_CTL_SYNC : 0) |
+			      (ro ? VE_DMA_DESC_CTL_PCI_RO : 0) |
+			      (ido ? VE_DMA_DESC_CTL_PCI_IDO : 0) |
 			      VE_DMA_DESC_ADDR_SRC(srctype) |
 			      VE_DMA_DESC_ADDR_DST(dsttype) | len);
 	vedl_set_cnt_reg_word(h, creg, VE_DMA_OFFSET_OF_DMADESC(entry) + 0x10,

@@ -1811,12 +1811,12 @@ void *do_ve_coredump(void *ve_dump_info)
 	if (0 != get_ve_task_struct(p_ve_task)) {
 		VEOS_ERROR("Failed to get reference: %d",
 				p_ve_task->pid);
-		((struct dump_info *)ve_dump_info)->dumper_ready = true;
+		*(((struct dump_info *)ve_dump_info)->dumper_ready_p) = true;
 		free(ve_dump_info);
 		goto ve_get_failed;
 	}
 
-	((struct dump_info *)ve_dump_info)->dumper_ready = true;
+	*(((struct dump_info *)ve_dump_info)->dumper_ready_p) = true;
 	signum = ((struct dump_info *)ve_dump_info)->signum;
 	ve_cprm.siginfo = ((struct dump_info *)ve_dump_info)->siginfo;
 	ve_cprm.tsk = ((struct dump_info *)ve_dump_info)->ve_task;
@@ -2054,6 +2054,7 @@ int ve_get_signal(struct ve_task_struct *p_ve_task, int *flag,
 	pthread_t dump_tid;
 	int retval;
 	struct dump_info *ve_dump_info;
+	volatile bool dumper_ready = false;
 	pthread_attr_t attr;
 
 	VEOS_TRACE("Entering");
@@ -2136,7 +2137,7 @@ int ve_get_signal(struct ve_task_struct *p_ve_task, int *flag,
 			ve_dump_info->ve_task = p_ve_task;
 			ve_dump_info->flag = *flag;
 			ve_dump_info->signum = signum;
-			ve_dump_info->dumper_ready = false;
+			ve_dump_info->dumper_ready_p = &dumper_ready;
 
 			retval = pthread_attr_init(&attr);
 			if (0 != retval) {
@@ -2164,7 +2165,7 @@ int ve_get_signal(struct ve_task_struct *p_ve_task, int *flag,
 				free(ve_dump_info);
 				goto destroy_attribute;
 			}
-			while (!ve_dump_info->dumper_ready);
+			while (!dumper_ready);
 			if (0 != pthread_attr_destroy(&attr))
 				VEOS_ERROR("Failed to destroy detached"
 						" attribute[coredump]");
@@ -2866,7 +2867,10 @@ void veos_stopping_thread(void)
 			/* Check if VE process state is already stopped */
 			if (STOP == tmp->ve_task_state)
 				continue;
-
+			if (ZOMBIE == tmp->ve_task_state
+					&& thread_group_empty(tmp)
+					&& tmp->rpm_preserve_task == 1)
+				continue;
 			/* Stopping VE process as pseudo process is in
 			 * stopped state or pseudo process is in Zombie('Z')
 			 * state and other threds in its thread group are STOPED('T').

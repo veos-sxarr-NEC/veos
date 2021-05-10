@@ -377,6 +377,8 @@ int amm_del_mm_struct(struct ve_task_struct *tsk)
 err_exit:
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock,
 			UNLOCK, "Failed to release mm-thread-group-lock");
+	if(tsk->ve_task_state == ZOMBIE)
+		return ret;
 	pthread_mutex_destroy(&mm->thread_group_mm_lock);
 	free(mm);
 	tsk->p_ve_mm = NULL;
@@ -673,6 +675,11 @@ int amm_get_numa_sysfs_info(struct numa_sysfs_info *info)
 		VEOS_DEBUG("Failed to get numa_mem_block_size: %s",
 			   strerror(sverrno));
 		ret = -sverrno;
+		goto hndl_ret;
+	} else if (info->numa_mem_blk_sz == 0) {
+		VEOS_ERROR("info->numa_mem_blk_sz = %ld, %s",
+				info->numa_mem_blk_sz, strerror(EINVAL));
+		ret = -EINVAL;
 		goto hndl_ret;
 	}
 	VEOS_DEBUG("numa_mem_block_size: %ld", info->numa_mem_blk_sz);
@@ -5904,6 +5911,7 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 	struct mmap_mem *mmap_tmp = NULL, *mmap_n = NULL;
 	struct file_backed_mem *file_tmp = NULL, *file_n = NULL;
 	int found = 0;
+	struct list_head local_shm_head;
 
 	struct ve_node_struct *vnode = VE_NODE(0);
 	int index = 0;
@@ -5959,6 +5967,18 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 
 	VEOS_TRACE("iterating tsk(%p):pid(%d) pgtables", tsk, tsk->pid);
 
+	INIT_LIST_HEAD(&local_shm_head);
+	list_for_each_entry_safe(shm_tmp, tmp, &(mm->shm_head), shm_list) {
+		pthread_mutex_lock_unlock(&shm_tmp->shm_segment->shm_lock, LOCK,
+                                                "Failed acquire shm segmnt lock");
+		list_del(&shm_tmp->shm_list);
+		list_add_tail(&(shm_tmp->shm_list), &local_shm_head);
+		shm_tmp->shm_segment->nproc--;
+		pthread_mutex_lock_unlock(&shm_tmp->shm_segment->shm_lock, UNLOCK,
+                                                "Failed release shm segmnt lock");
+	}
+	shm_tmp = NULL;
+		
 	for (dirno = 0; dirno < ATB_DIR_NUM; dirno++) {
 		if (!ps_isvalid(&atb[0]->dir[dirno]))
 			continue;
@@ -6001,7 +6021,7 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 				seg = VE_PAGE(vnode, pgno)->private_data;
 
 				/** If shm struct is for veshm, continue */
-				list_for_each_entry_safe(shm_tmp, tmp, &(mm->shm_head), shm_list) {
+				list_for_each_entry_safe(shm_tmp, tmp, &local_shm_head, shm_list) {
 					if (seg == shm_tmp->shm_segment) {
 						found = 1;
 					}
@@ -6103,10 +6123,9 @@ err_exit:
 	pthread_mutex_destroy(&mm->vehva_header.vehva_64m_lock);
 
 	/** Traverse the SHM list and delete list */
-	list_for_each_entry_safe(shm_tmp, tmp, &(mm->shm_head), shm_list) {
+	list_for_each_entry_safe(shm_tmp, tmp, &(local_shm_head), shm_list) {
 		VEOS_DEBUG("In shm list current mapping %p with vemva 0x%lx",
 				shm_tmp, shm_tmp->shmaddr);
-		shm_tmp->shm_segment->nproc--;
 		list_del(&(shm_tmp->shm_list));
 		free(shm_tmp);
 		shm_tmp = NULL;

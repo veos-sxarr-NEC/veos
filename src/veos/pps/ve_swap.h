@@ -180,6 +180,6 @@ bool check_swap_in_need_wait(struct ve_node_struct *);
 int64_t veos_pps_get_cns(struct ve_task_struct *, pid_t);
 int recv_pps_file_handler_comm(int, struct ve_swap_file_hdr_comm *);
 int send_pps_file_handler_comm(int, struct ve_swap_file_hdr_comm);
-
+int get_ve_node_num_from_sock_file(char *);
 
 #endif

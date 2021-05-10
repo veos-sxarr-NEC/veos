@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2020-2021 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -17,13 +17,19 @@
  * <http://www.gnu.org/licenses/>.
  */
 /**
- * @file dma_intr.h
- * @brief DMA helper thread header
- */
-#ifndef VE_VEOS_DMA_INTR_H
-#define VE_VEOS_DMA_INTR_H
+* @file  vhve_socket.h
+* @brief Socket Creation.
+*
+* This file contains the routines declaration that are used for creation of socket
+* to be used for communication with VEOS modules i.e AMM/PSM.
+*
+* @internal
+* @author VHVE
+*/
+#ifndef __VHVE_SOCKET_H
+#define __VHVE_SOCKET_H
 
-void *ve_dma_intr_helper(void *);
-void *ve_dma_pindown_helper(void *);
-
+int vhve_veos_soc(char *);
+ssize_t vhve_recv_cmd(int, void *, ssize_t);
+ssize_t vhve_send_cmd(int, void *, ssize_t);
 #endif

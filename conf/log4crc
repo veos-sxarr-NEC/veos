@@ -12,6 +12,9 @@
         <appender name="veo_appender" layout="ve" type="rollingfile" rollingpolicy="veo_rp" logdir="." prefix="veo.log"/>
         <rollingpolicy name="veo_rp" type="sizewin" maxsize="4194304" maxnum="10" />
 
+	<category name="veos.vhve" priority="INFO" appender="vhve_appender" />
+        <appender name="vhve_appender" layout="ve" type="stream" />
+
         <category name="veos.pseudo_process" priority="INFO" appender="ve_exec_appender" />
         <appender name="ve_exec_appender" layout="ve" type="stream" />
 

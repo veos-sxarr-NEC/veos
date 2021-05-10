@@ -29,6 +29,7 @@
 
 #include "ve_list.h"
 #include "vedma_hw.h"
+#include "dma_reqlist_private.h"
 
 #define VE_DMA_MAX_LENGTH 0x7FFFFFFFFFFFFFF8UL
 #define VH_PAGE_SHIFT (12)
@@ -63,14 +64,28 @@ struct ve_dma_reqlist_entry;
  */
 struct ve_dma_hdl_struct {
 	struct list_head waiting_list;/*!< wait queue */
+	struct list_head pin_waiting_request;/*!< DMA request waiting pin down*/
 	vedl_handle *vedl_handle;/*!< VEDL handle of the node */
 	pthread_t helper;/*!< interrupt helper thread for the DMA engine */
+	pthread_t pin_helper;/*!< pindown helper thread for the DMA engine */
 	pthread_mutex_t mutex;/*!< mutex for this DMA handle */
+	pthread_mutex_t pin_wait_list_mutex;
+	pthread_cond_t pin_wait_list_cond;
 	int should_stop;/*!< flag denoting that DMA engine should stop and should not accept any more requests */
 	int desc_used_begin;/*!< the start number of used DMA descriptors */
 	int desc_num_used;/*!< the number of used DMA descriptors */
 	struct ve_dma_reqlist_entry *req_entry[VE_DMA_NUM_DESC];/*!< DMA reqlist entry on each DMA descriptor */
 	system_common_reg_t *control_regs;/*!< pointer to node control registers area */
+	int blk_count;/*!< counter for pin downed block*/
+};
+
+/**
+ * @brief Infomation of DMA request waiting pin down
+ */
+struct ve_dma_waiting_req_struct {
+	ve_dma_addrtype_t type;
+	pid_t pid;
+	uint64_t addr;
 };
 
 /**
@@ -83,8 +98,20 @@ struct ve_dma_req_hdl_struct {
 	struct list_head ptrans_src;/*!< list of blocks with physical translation info for src addresses*/
 	struct list_head ptrans_dst;/*!< list of blocks with physical translation info for dst addresses*/
 	int cancel;/*!< flag of cancel to DMA requset posting*/
+	struct list_head pin_waiting_list; /*!< list for pin waiting request*/
+	struct ve_dma_waiting_req_struct waiting_src; /*!< Infomation of DMA request source waiting pin down */
+	struct ve_dma_waiting_req_struct waiting_dst; /*!< Infomation of DMA request destination waiting pin down */
+	ve_dma__block *src_blk;
+	ve_dma__block *dst_blk; 
+	uint64_t length; /*!< Infomation of DMA request waiting pin down */
+	uint64_t opt; /*!< Infomation of DMA request waiting pin down */
+	int vh_sock_fd; /*!< Infomation of DMA request waiting pin down */
+	int comp;
+	int posting;
 };
 
+
+#define DMSIZE (512*1024)
 /* in dma_intr.c */
 void ve_dma__drain_waiting_list(ve_dma_hdl *);
 void ve_dma__stop_engine(ve_dma_hdl *);

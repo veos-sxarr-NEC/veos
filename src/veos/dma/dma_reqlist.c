@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/mman.h>
+#include <poll.h>
 #include "dma.h"
 #include "dma_private.h"
 #include "dma_hw.h"
@@ -33,11 +34,11 @@
 #include "vedma_hw.h"
 #include "vesync.h"
 #include "ve_mem.h"
+#include "ve_atomic.h"
 
 #define MIN(a, b) ((a) <= (b) ? (a) : (b))
 #define DMABLK 64
 #define MAXBLK_PAGES 100
-
 
 static void unpin_ve(vedl_handle *h, uint64_t paddr);
 static int ve_dma_post_start(ve_dma_req_hdl *req); 
@@ -211,11 +212,13 @@ static void unpin_ve_block(vedl_handle *h, ve_dma__block *blk)
  * @param h VEDL handle (ignored)
  * @param blk block pointer
  */
-static void ve_dma__block_free(vedl_handle *vh, ve_dma__block *blk)
+void ve_dma__block_free(vedl_handle *vh, ve_dma__block *blk)
 {
 	VE_DMA_TRACE("freeing block va=%p len=%lu", (void *)blk->vaddr, blk->length);
-	if (blk->unpin)
+	if (blk->unpin){
 		blk->unpin(vh, blk);
+		blk->unpin = NULL;
+	}
 	free(blk->paddr);
 	free(blk);
 }
@@ -267,6 +270,7 @@ trans_addr_pin_blk(vedl_handle *vh, pid_t pid, ve_dma_addrtype_t t,
 		     (int)pid, t, (void *)vaddr, length);
 	if (!blk) {
 		VE_DMA_ERROR("no memory for dma block!?");
+		*error = -ENOMEM;
 		return NULL;
 	}
 	blk->vaddr = vaddr;
@@ -274,6 +278,8 @@ trans_addr_pin_blk(vedl_handle *vh, pid_t pid, ve_dma_addrtype_t t,
 	blk->npages = 0;
 	blk->paddr = NULL;
 	blk->unpin = NULL;
+	blk->type = t;
+	INIT_LIST_HEAD(&blk->list);
 	switch (t) {
 	case VE_DMA_VHVA: /* obsolete, done above */
 		VE_DMA_TRACE("addr type is VHVA (pid=%d, vaddr=%p)",
@@ -288,8 +294,10 @@ trans_addr_pin_blk(vedl_handle *vh, pid_t pid, ve_dma_addrtype_t t,
 		err = vedl_get_addr_pin_blk(vh, pid, vaddr, &blk->length,
 					    blk->paddr, maxpages,
 					    &blk->npages, &blk->pgsz, 1, wr);
-		VE_DMA_DEBUG("VHVA translation received: vaddr=%p len=%lu npages=%d pgsize=%d",
-			     (void *)blk->vaddr, blk->length, blk->npages, blk->pgsz);
+		VE_DMA_DEBUG("VHVA translation received: vaddr=%p len=%lu npages=%d pgsize=%d errno(%s)",
+			     (void *)blk->vaddr, blk->length, blk->npages, blk->pgsz, strerror(errno));
+		if (err != 0 && errno != 0)
+			err = -errno;
 		break;
 	case VE_DMA_VEMAA:
 	case VE_DMA_VERAA:
@@ -351,7 +359,7 @@ trans_addr_pin_blk(vedl_handle *vh, pid_t pid, ve_dma_addrtype_t t,
 		err = -EINVAL;
 	}
 	if (err) {
-		VE_DMA_ERROR("translate error: %d", err);
+		VE_DMA_ERROR("translate error: vaddr =%p errno(%s)", (void *)blk->vaddr, strerror(-err));
 		ve_dma__block_free(vh, blk);
 		blk = NULL;
 	}
@@ -372,6 +380,69 @@ static uint64_t trans_addr_to_dma(uint64_t vaddr, ve_dma__block *blk)
 	}
 	return blk->paddr[indx] + (vaddr % blk->pgsz);
 }
+/**
+ * @brief add ve_dma_req_hdl for list of pin waiting request in ve_dma_hdl.
+ */
+static void add_pin_waiting_list(ve_dma_req_hdl *req_hdl, 
+			ve_dma_addrtype_t srctype, pid_t srcpid, uint64_t srcaddr, ve_dma__block *src_blk,
+			ve_dma_addrtype_t dsttype, pid_t dstpid, uint64_t dstaddr, ve_dma__block *dst_blk,
+			uint64_t length, uint64_t opt, int vh_sock_fd)
+{
+	ve_dma_hdl *hdl = req_hdl->engine; 
+
+	req_hdl->waiting_src.type = srctype;
+	req_hdl->waiting_src.pid = srcpid;
+	req_hdl->waiting_src.addr = srcaddr;
+	req_hdl->waiting_dst.type = dsttype;
+	req_hdl->waiting_dst.pid = dstpid;
+	req_hdl->waiting_dst.addr = dstaddr;
+	req_hdl->src_blk = src_blk;
+	req_hdl->dst_blk = dst_blk;
+	req_hdl->length = length;
+	req_hdl->opt = opt;
+	req_hdl->vh_sock_fd = vh_sock_fd;
+
+	pthread_mutex_lock(&hdl->pin_wait_list_mutex);
+	list_add_tail(&req_hdl->pin_waiting_list, &hdl->pin_waiting_request);
+	pthread_cond_signal(&hdl->pin_wait_list_cond);
+	pthread_mutex_unlock(&hdl->pin_wait_list_mutex);
+}
+
+/**
+ * @brief Check a connection to the target OS 
+ */
+static int check_socket(int vh_sock_fd)
+{
+	int test_socket = 0, pollval;
+	struct pollfd pollfd;
+
+	pollfd.fd = vh_sock_fd;
+	pollfd.events  = POLLRDHUP;
+	pollfd.revents = 0;
+
+	pollval = poll(&pollfd, 1, 0);
+
+	if (pollval == 0){
+		/* timeout and no events */
+		test_socket = 0;
+	} else if (pollval < 0){
+		VE_DMA_ERROR("socket test failed %s", strerror(errno));
+		test_socket = -1;
+	} else if (pollval > 0){
+		if (pollfd.revents & POLLNVAL){
+			VE_DMA_DEBUG("socket test: Socket not open");
+			test_socket = -1;
+		}
+		if (pollfd.revents & POLLERR){
+			VE_DMA_ERROR("socket test: Error condition");
+			test_socket = -1;
+		}
+		if (pollfd.revents & (POLLRDHUP | POLLHUP)){
+			test_socket = -1;
+		}
+	}
+	return test_socket;
+}
 
 /**
  * @brief Divide a DMA request into one or more physical requests
@@ -391,58 +462,96 @@ static uint64_t trans_addr_to_dma(uint64_t vaddr, ve_dma__block *blk)
  * @param dstaddr destination address
  * @param length transfer length in byte
  *
- * @return the number of DMA request entries on success.
- *         Zero or a negative value on failure.
+ * @return 1: All of DMA request entries are posted. success.
+ *         0: BLOCK_LIMIT. a lot of VHVA block is used. dma request is postporned. success.
+ *         -1: error.
  */
-int64_t ve_dma_reqlist_make(ve_dma_req_hdl *hdl, ve_dma_addrtype_t srctype,
-			      pid_t srcpid, uint64_t srcaddr,
+int64_t ve_dma_reqlist_make(ve_dma_req_hdl *hdl,
+			      ve_dma_addrtype_t srctype, pid_t srcpid,
+			      uint64_t srcaddr, ve_dma__block *src_block,
 			      ve_dma_addrtype_t dsttype, pid_t dstpid,
-			      uint64_t dstaddr, uint64_t length)
+			      uint64_t dstaddr, ve_dma__block *dst_block,
+			      uint64_t length, uint64_t opt, int vh_sock_fd)
 {
 	VE_DMA_TRACE("called (src: type = %d, pid = %d, addr = 0x%016lx; "
 		     "dst: type = %d, pid = %d, addr = 0x%016lx; "
 		     "length = 0x%lx)",
 		     srctype, srcpid, srcaddr, dsttype, dstpid, dstaddr,
 		     length);
-	VE_DMA_ASSERT(list_empty(&hdl->reqlist));
+
+	VE_DMA_ASSERT(((opt & VE_DMA_OPT_SYNC_API) == 0)
+		      || list_empty(&hdl->reqlist));
+
 	ve_dma_hdl *dma_hdl = hdl->engine; 
 	vedl_handle *vh = dma_hdl->vedl_handle;
 	struct ve_dma_vemtlb vemtlb_src = { .vaddr = (uint64_t)NULL };
 	struct ve_dma_vemtlb vemtlb_dst = { .vaddr = (uint64_t)NULL };
 	uint64_t offset = 0;
 	int64_t count = 0;
-	int err;
+	int err = 0, ret = 0;
 	int src_type_hw, dst_type_hw;
 	int32_t pgsz_src, pgsz_dst;
 	uint64_t next_vsrc = srcaddr, next_vdst = dstaddr;
-	ve_dma__block *src_blk, *dst_blk;
+	ve_dma__block *src_blk = src_block, *dst_blk = dst_block;
 	struct list_head local_reqlist; 
 	struct list_head *lh, *tmp;
 	struct ve_dma_reqlist_entry *lh_e, *tmp_e; 
+	int vhblk_count = 0;
+
+	if (length == 0) {
+		VE_DMA_ERROR("Invalid value, length = 0");
+		return -1;
+	}
 
 	INIT_LIST_HEAD(&local_reqlist);
 
-	src_blk =
-		trans_addr_pin_blk(vh, srcpid, srctype, srcaddr, length, &err,
-				   0, &vemtlb_src);
-	if (!src_blk)
-		return err;
+	if ((opt & VE_DMA_OPT_SYNC_API) == 0) {
+		if ((srctype == VE_DMA_VHVA) && (src_blk == NULL))
+			vhblk_count++;
+		if ((dsttype == VE_DMA_VHVA) && (dst_blk == NULL))
+			vhblk_count++;
+
+		/*check the number of used block*/
+		if (VE_ATOMIC_FETCH_ADD(int, &dma_hdl->blk_count, vhblk_count) + vhblk_count > BLOCK_LIMIT) {
+			VE_ATOMIC_FETCH_SUB(int, &dma_hdl->blk_count, vhblk_count);
+			add_pin_waiting_list(hdl,
+					srctype, srcpid, srcaddr, src_blk,
+					dsttype, dstpid, dstaddr, dst_blk,
+					length,	opt, vh_sock_fd);
+			VE_DMA_DEBUG("blk limit. blk_count %d", dma_hdl->blk_count);
+			return 0;
+		}
+		/*count the pin downed VHVA block*/
+		VE_DMA_DEBUG("blk_count %d", dma_hdl->blk_count);
+	}
+	if (!src_blk) {
+		src_blk = trans_addr_pin_blk(vh, srcpid, srctype, srcaddr,
+					length, &err, 0, &vemtlb_src);
+		if (!src_blk) {
+			VE_ATOMIC_FETCH_SUB(int, &dma_hdl->blk_count, vhblk_count);
+			VE_DMA_ERROR("pin failed, blk_count %d", dma_hdl->blk_count);
+			goto err_with_nolock;
+		}
+		if (((opt & VE_DMA_OPT_SYNC_API) != 0) || (srctype != VE_DMA_VHVA))
+			list_add_tail(&src_blk->list, &hdl->ptrans_src);
+	}
 	pgsz_src = src_blk->pgsz;
 	next_vsrc = src_blk->vaddr + src_blk->length;
-
-	dst_blk =
-		trans_addr_pin_blk(vh, dstpid, dsttype, dstaddr, length, &err,
-				   1, &vemtlb_dst);
 	if (!dst_blk) {
-		ve_dma__block_free(vh, src_blk);
-		return err;
-	}
+		dst_blk = trans_addr_pin_blk(vh, dstpid, dsttype, dstaddr,
+					length,	&err, 1, &vemtlb_dst);
+		if (!dst_blk) {
+			if (((opt & VE_DMA_OPT_SYNC_API) == 0) && (dsttype == VE_DMA_VHVA))
+				ve_atomic_dec(&dma_hdl->blk_count);
+			VE_DMA_ERROR("pin failed, blk_count %d", dma_hdl->blk_count);
+			goto err_with_nolock;
+		}
+		if (((opt & VE_DMA_OPT_SYNC_API) != 0) || (dsttype != VE_DMA_VHVA))
+			list_add_tail(&dst_blk->list, &hdl->ptrans_dst);
+	}	
 	pgsz_dst = dst_blk->pgsz;
 	next_vdst = dst_blk->vaddr + dst_blk->length;
 
-	list_add_tail(&src_blk->list, &hdl->ptrans_src);
-	list_add_tail(&dst_blk->list, &hdl->ptrans_dst);
-	
 	VE_DMA_TRACE("src page size = 0x%x, dst page size = 0x%x",
 		 (unsigned int)pgsz_src, (unsigned int)pgsz_dst);
 
@@ -456,30 +565,73 @@ int64_t ve_dma_reqlist_make(ve_dma_req_hdl *hdl, ve_dma_addrtype_t srctype,
 
 	while (offset < length) {
 		ve_dma_reqlist_entry *e = NULL;
+		
+		if ((opt & VE_DMA_OPT_SYNC_API) == 0) {
+			vhblk_count = 0;
+			if ((srctype == VE_DMA_VHVA) && (srcaddr + offset >= next_vsrc))
+				vhblk_count++;
+			if ((dsttype == VE_DMA_VHVA) && (dstaddr + offset >= next_vdst))
+				vhblk_count++;
+
+			/*check the number of used block*/
+			if (VE_ATOMIC_FETCH_ADD(int, &dma_hdl->blk_count, vhblk_count) + vhblk_count > BLOCK_LIMIT) {
+				VE_ATOMIC_FETCH_SUB(int, &dma_hdl->blk_count, vhblk_count);
+				if (srcaddr + offset >= next_vsrc)
+					src_blk = NULL;
+				if (dstaddr + offset >= next_vdst)
+					dst_blk = NULL;
+				add_pin_waiting_list(hdl,
+					srctype, srcpid, srcaddr + offset, src_blk,
+					dsttype, dstpid, dstaddr + offset, dst_blk,
+					length - offset, opt, vh_sock_fd);
+				VE_DMA_DEBUG("blk limit. blk_count %d", dma_hdl->blk_count);
+				return 0;
+			}
+			/*count the pin downed VHVA block*/
+			VE_DMA_DEBUG("blk_count %d", dma_hdl->blk_count);
+		}
 
 		if (srcaddr + offset >= next_vsrc) {
 			src_blk =
 				trans_addr_pin_blk(vh, srcpid, srctype, next_vsrc,
-						   length - next_vsrc + srcaddr,
-						   &err, 0, &vemtlb_src);
-			if (!src_blk)
+						length - next_vsrc + srcaddr,
+						&err, 0, &vemtlb_src);
+			if (!src_blk) {
+				VE_ATOMIC_FETCH_SUB(int, &dma_hdl->blk_count, vhblk_count);
+				VE_DMA_ERROR("pin failed, blk_count %d", dma_hdl->blk_count);
 				goto err_with_nolock;
+			}
 			pgsz_src = src_blk->pgsz;
 			next_vsrc = src_blk->vaddr + src_blk->length;
-			list_add_tail(&src_blk->list, &hdl->ptrans_src);
+			/*count the pin downed VHVA block*/
+			if (((opt & VE_DMA_OPT_SYNC_API) != 0) || (srctype != VE_DMA_VHVA))
+				list_add_tail(&src_blk->list, &hdl->ptrans_src);
 		}
 
 		if (dstaddr + offset >= next_vdst) {
 			dst_blk =
 				trans_addr_pin_blk(vh, dstpid, dsttype, next_vdst,
-						   length - next_vdst + dstaddr,
-						   &err, 1, &vemtlb_dst);
-			if (!dst_blk)
+						length - next_vdst + dstaddr,
+						&err, 1, &vemtlb_dst);
+			if (!dst_blk) {
+				if (((opt & VE_DMA_OPT_SYNC_API) == 0) && (dsttype == VE_DMA_VHVA))
+					ve_atomic_dec(&dma_hdl->blk_count);
+				VE_DMA_ERROR("pin failed, blk_count %d", dma_hdl->blk_count);
 				goto err_with_nolock;
+			}
 			pgsz_dst = dst_blk->pgsz;
 			next_vdst = dst_blk->vaddr + dst_blk->length;
-			list_add_tail(&dst_blk->list, &hdl->ptrans_dst);
+			/*count the pin downed VHVA block*/
+			if (((opt & VE_DMA_OPT_SYNC_API) != 0) || (dsttype != VE_DMA_VHVA))
+				list_add_tail(&dst_blk->list, &hdl->ptrans_dst);
 		}
+
+		if (vh_sock_fd != -1) {
+			ret = check_socket(vh_sock_fd);
+			if (ret == -1)
+				goto err_with_nolock;
+		}
+
 		int naddr = 0;
 		while (naddr < DMABLK && offset < length &&
 		       srcaddr + offset < next_vsrc &&
@@ -533,21 +685,82 @@ int64_t ve_dma_reqlist_make(ve_dma_req_hdl *hdl, ve_dma_addrtype_t srctype,
 				e->status_hw = 0;
 				e->status = VE_DMA_ENTRY_NOT_POSTED;
 				e->req_head = hdl;
+				e->opt = opt;
+				e->last = 0;
+				e->src_block = NULL;
+				e->dst_block = NULL;
 				INIT_LIST_HEAD(&e->list);
 				INIT_LIST_HEAD(&e->waiting_list);
 				VE_DMA_TRACE("request %p is created", e);
 				VE_DMA_DEBUG("req created: vasrc=%p vadst=%p pasrc=%p padst=%p",
-					     (void *)(srcaddr + offset),
-					     (void *)(dstaddr + offset),
-					     (void *)src_phys, (void *)dst_phys);
+						(void *)(srcaddr + offset),
+						(void *)(dstaddr + offset),
+						(void *)src_phys, (void *)dst_phys);
 				list_add_tail(&e->list, &local_reqlist);
 				++count;
 			}
 			offset += e_length;
+			if (offset >= length)
+				e->last = 1;
 			naddr++;
 
 		}
+
+		if ((opt & VE_DMA_OPT_SYNC_API) == 0) {
+			if ((srctype == VE_DMA_VHVA) && (srcaddr + offset >= next_vsrc)) {
+				e->src_block = src_blk;
+				src_blk = NULL;
+			}
+			if ((dsttype == VE_DMA_VHVA) && (dstaddr + offset >= next_vdst)) {
+				e->dst_block = dst_blk;
+				dst_blk = NULL;
+			}
+		}
+
 		pthread_mutex_lock(&dma_hdl->mutex);
+		/*
+		 * Accessing hdl->cancel is safe.
+		 * * When an upper layer calls ve_dma_reqlist_make(),
+		 *   the caller can not call ve_dma_req_free().
+		 * * When the interrupt helper calls
+		 *   ve_dma_reqlist_make(), an upper layer does not
+		 *   call ve_dma_req_free() until ve_dma_reqlist_make()
+		 *   set posting to 0.
+		 */
+		if (hdl->cancel) {
+			/*
+			 * The interrupt helper cancels the request
+			 * when an exception occurs.
+			 * In this case, the entries already posted
+			 * have been canceled. All blockes referenced
+			 * by entries have been freed.
+			 * So, we free entries we allocated. We free
+			 * blockes we allocated.
+			 */
+			list_for_each_entry_safe(lh_e, tmp_e, &local_reqlist, list){
+				if (lh_e->src_block) {
+					if (lh_e->src_block->type == VE_DMA_VHVA) {
+						ve_atomic_dec(&dma_hdl->blk_count);
+						VE_DMA_DEBUG("blk_count %d", dma_hdl->blk_count);
+					}
+					ve_dma__block_free(vh, lh_e->src_block);
+					lh_e->src_block = NULL;
+				}
+				if (lh_e->dst_block) {
+					if (lh_e->dst_block->type == VE_DMA_VHVA) {
+						ve_atomic_dec(&dma_hdl->blk_count);
+						VE_DMA_DEBUG("blk_count %d", dma_hdl->blk_count);
+					}
+					ve_dma__block_free(vh, lh_e->dst_block);
+					lh_e->dst_block = NULL;
+				}
+				list_del(&lh_e->list);
+				free(lh_e);
+			}
+			hdl->posting = 0;
+			pthread_cond_broadcast(&hdl->cond);
+			goto cancel;
+		}
 		list_for_each_safe(lh, tmp, &local_reqlist){
 			list_del(lh);
 			list_add_tail(lh, &hdl->reqlist);
@@ -555,11 +768,13 @@ int64_t ve_dma_reqlist_make(ve_dma_req_hdl *hdl, ve_dma_addrtype_t srctype,
 		err = ve_dma_post_start(hdl);
 		if (err)
 			goto err_with_lock;
+		if (offset >= length)
+			hdl->posting = 0;
 		pthread_mutex_unlock(&dma_hdl->mutex);
 	}
 
 	VE_DMA_TRACE("returns %ld", count);
-	return count;
+	return 1;
 
 err_malloc:
 	list_for_each_entry_safe(lh_e, tmp_e, &local_reqlist, list){
@@ -569,10 +784,27 @@ err_malloc:
 err_with_nolock:
 	pthread_mutex_lock(&dma_hdl->mutex);
 err_with_lock:
+	hdl->posting = 0;
 	ve_dma__terminate_nolock(hdl);
 	veos_commit_rdawr_order();
+cancel:
 	pthread_mutex_unlock(&dma_hdl->mutex);
-	ve_dma_reqlist_free(hdl);
+	if ((opt & VE_DMA_OPT_SYNC_API) == 0) {
+		vhblk_count = 0;
+		if (src_blk && (srctype == VE_DMA_VHVA)){ 
+			ve_dma__block_free(vh, src_blk);
+			vhblk_count++;
+		}
+		if (dst_blk && (dsttype == VE_DMA_VHVA)){ 
+			ve_dma__block_free(vh, dst_blk);
+			vhblk_count++;
+		}
+		VE_ATOMIC_FETCH_SUB(int, &dma_hdl->blk_count, vhblk_count);
+		pthread_mutex_lock(&dma_hdl->pin_wait_list_mutex);
+		pthread_cond_signal(&dma_hdl->pin_wait_list_cond);
+		pthread_mutex_unlock(&dma_hdl->pin_wait_list_mutex);
+	}
+	
 	return -1;
 }
 
@@ -622,6 +854,9 @@ ve_dma_status_t ve_dma_reqlist_test(ve_dma_req_hdl *hdl)
 	int found_canceled = 0;
 	int found_ongoing = 0;
 
+	if (hdl->comp == 0 || hdl->posting != 0)
+		return VE_DMA_STATUS_NOT_FINISHED;
+
 	struct list_head *p;
 	list_for_each(p, &hdl->reqlist) {
 		ve_dma_reqlist_entry *e;
@@ -650,6 +885,9 @@ ve_dma_status_t ve_dma_reqlist_test(ve_dma_req_hdl *hdl)
 			continue;
 		}
 	}
+	if (hdl->comp && found_ongoing)
+		veos_abort("DMA request is invalid.");
+
 	if (found_error) {
 		ret = VE_DMA_STATUS_ERROR;
 	} else if (found_canceled) {
@@ -677,6 +915,7 @@ int ve_dma_reqlist__entry_post(ve_dma_reqlist_entry *e)
 	int entry;
 	int ret;
 	int is_last;
+	int is_sync, is_ro, is_ido;
 	VE_DMA_TRACE("called (%p)", e);
 
 	hdl = e->req_head->engine;
@@ -696,10 +935,14 @@ int ve_dma_reqlist__entry_post(ve_dma_reqlist_entry *e)
 	e->entry = entry;
 
 	is_last = (e->req_head->reqlist.prev == &e->list);
+	is_sync = (e->opt & VE_DMA_OPT_SYNC);
+	is_ro	= (e->opt & VE_DMA_OPT_RO);
+	is_ido	= (e->opt & VE_DMA_OPT_IDO);
 
 	ret = ve_dma_hw_post_dma(hdl->vedl_handle, hdl->control_regs, entry,
 				 e->src.type_hw, e->src.addr, e->dst.type_hw,
-				 e->dst.addr, e->length, is_last);
+				 e->dst.addr, e->length, is_last && is_sync,
+				 is_ro, is_ido);
 
 	if (ret != 0) {
 		VE_DMA_ERROR("DMA post error (entry = %d, request = %p)",
@@ -741,7 +984,7 @@ int ve_dma_reqlist_post(ve_dma_req_hdl *req)
 		return rv;
 	}
 
-	/*If hdl->waiting_list is not empty, do not post.*/
+ 	/*If hdl->waiting_list is not empty, do not post.*/
 	if(list_empty(&hdl->waiting_list)){
 		list_for_each(p, &req->reqlist) {
 			e = list_entry(p, ve_dma_reqlist_entry, list);
@@ -820,9 +1063,11 @@ int ve_dma_reqlist_drain_waiting_list(ve_dma_hdl *hdl)
 {
 	int posted = 0;
 	struct list_head *p, *tmp;
+	int ret;
+
 	VE_DMA_TRACE("called");
+
 	list_for_each_safe(p, tmp, &hdl->waiting_list) {
-		int ret;
 		ve_dma_reqlist_entry *e;
 		e = list_entry(p, ve_dma_reqlist_entry, waiting_list);
 		VE_DMA_TRACE("Post DMA request %p from the wait queue", e);
@@ -918,10 +1163,11 @@ void ve_dma_reqlist__cancel(ve_dma_req_hdl *req)
 	 */
 	struct list_head *p, *tmp;
 	ve_dma_hdl *hdl = req->engine;
+	vedl_handle *vh = hdl->vedl_handle;
 
 	VE_DMA_TRACE("called");
 	int readptr;
-	readptr = ve_dma_hw_get_readptr(hdl->vedl_handle, hdl->control_regs);
+	readptr = ve_dma_hw_get_readptr(vh, hdl->control_regs);
 
 	/* similar to ve_dma_reqlist_test with a little difference */
 	list_for_each_safe(p, tmp, &req->reqlist) {
@@ -942,7 +1188,7 @@ void ve_dma_reqlist__cancel(ve_dma_req_hdl *req)
 				return;
 			}
 			uint64_t status_hw;
-			status_hw = ve_dma_hw_desc_status(hdl->vedl_handle,
+			status_hw = ve_dma_hw_desc_status(vh,
 							  hdl->control_regs,
 							  e->entry);
 			if (status_hw & VE_DMA_DESC_STATUS_PREPARED) {
@@ -954,7 +1200,28 @@ void ve_dma_reqlist__cancel(ve_dma_req_hdl *req)
 			VE_DMA_TRACE("request %p has been already finished "
 				     "(status = %d).", e, e->status);
 		}
+		if (e->src_block) {
+			if (e->src_block->type == VE_DMA_VHVA) {
+			/* If there is a block structure, unpin is always done.
+		 	 * so decriment the count.*/
+				ve_atomic_dec(&hdl->blk_count);
+				VE_DMA_DEBUG("blk_count %d", hdl->blk_count);
+			}
+			ve_dma__block_free(vh, e->src_block);
+			e->src_block = NULL;
+		}
+		if (e->dst_block) {
+			if (e->dst_block->type == VE_DMA_VHVA) {
+			/* If there is a block structure, unpin is always done.
+		 	 * so decriment the count.*/
+				ve_atomic_dec(&hdl->blk_count);
+				VE_DMA_DEBUG("blk_count %d", hdl->blk_count);
+			}
+			ve_dma__block_free(vh, e->dst_block);
+			e->dst_block = NULL;
+		}
 	}
+	req->comp = 1;
 	req->cancel = 1;
 }
 

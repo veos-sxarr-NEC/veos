@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -27,11 +27,13 @@
 struct ve_dma_reqlist_entry;
 typedef struct ve_dma_reqlist_entry ve_dma_reqlist_entry;
 
-int64_t ve_dma_reqlist_make(ve_dma_req_hdl *, ve_dma_addrtype_t, pid_t,
-			    uint64_t, ve_dma_addrtype_t, pid_t, uint64_t,
-			    uint64_t);
+int64_t ve_dma_reqlist_make(ve_dma_req_hdl *,
+			ve_dma_addrtype_t, pid_t, uint64_t, ve_dma__block *,
+			ve_dma_addrtype_t, pid_t, uint64_t, ve_dma__block *,
+			uint64_t, uint64_t, int);
 void ve_dma_reqlist_free(ve_dma_req_hdl *);
 ve_dma_status_t ve_dma_reqlist_test(ve_dma_req_hdl *);
+void ve_dma__block_free(vedl_handle *, ve_dma__block *);
 int ve_dma_reqlist__entry_post(ve_dma_reqlist_entry *);
 int ve_dma_reqlist_post(ve_dma_req_hdl *);
 int ve_dma_reqlist_drain_waiting_list(ve_dma_hdl *);

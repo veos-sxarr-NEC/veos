@@ -80,7 +80,7 @@ veos_pps_log4c_init(void)
  *
  * @return node number on which this ve process will run
  */
-static int get_ve_node_num_from_sock_file(char *s)
+int get_ve_node_num_from_sock_file(char *s)
 {
 	int n = 0;
 

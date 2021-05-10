@@ -30,6 +30,16 @@ extern "C" {
 #include <sys/types.h>
 #include <stdint.h>
 
+/**
+ * \defgroup libvepseudo VE pseudo process library
+ *
+ * VE pseudo process library provides APIs for programs called through
+ * VH call.
+ *
+ * Please include "libvepseudo.h".
+ */
+/*@{*/
+
 struct veos_handle_struct;
 typedef struct veos_handle_struct veos_handle;
 
@@ -39,6 +49,9 @@ int ve_send_data_tid(veos_handle *, uint64_t, size_t, void *, pid_t);
 int ve_recv_data_tid(veos_handle *, uint64_t, size_t, void *, pid_t);
 veos_handle *veos_handle_copy(veos_handle *);
 void veos_handle_free(veos_handle *);
+
+/*@}*/
+
 int64_t ve_vhva_to_vehva(veos_handle *, const void *);
 
 #endif /* __LIBVEPSEUDO_H */

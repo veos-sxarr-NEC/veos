@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -60,6 +60,9 @@
 #define VE_DMA_DESC_CTL_INTR_ERR (4UL << 32)
 #define VE_DMA_DESC_CTL_INTR_EARLY (2UL << 32)
 #define VE_DMA_DESC_CTL_INTR_COMPLETION (1UL << 32)
+
+#define VE_DMA_DESC_CTL_PCI_RO (4UL << 44)
+#define VE_DMA_DESC_CTL_PCI_IDO (2UL << 44)
 
 #define VE_DMA_NUM_DESC (128)
 

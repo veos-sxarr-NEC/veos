@@ -126,7 +126,7 @@ int veos_pidstat_info(pid_t pid, struct velib_pidstat *pidstat)
 	}
 	/* Find the VE task for given pid */
 	tsk = find_ve_task_struct(pid);
-	if (NULL == tsk) {
+	if (NULL == tsk && !(tsk = checkpid_in_zombie_list(pid))) {
 		ret = -ESRCH;
 		VEOS_DEBUG("Error (%s) while getting task for pid %d",
 			strerror(-ret), pid);
@@ -223,7 +223,7 @@ int veos_pidstatm_info(int pid, struct velib_pidstatm *pidstatm)
 
 	/* Find the VE task for given pid */
 	tsk = find_ve_task_struct(pid);
-	if (NULL == tsk) {
+	if (NULL == tsk && !(tsk = checkpid_in_zombie_list(pid))) {
 		ret = -ESRCH;
 		VEOS_DEBUG("Error (%s) while getting task for pid %d",
 			strerror(-ret), pid);
@@ -647,10 +647,16 @@ void parse_vmflags(char *parsed, char *toparse)
 		strcpy(parsed, tmp_parse);
 		strloc = strstr(parsed, unsupported_vmflgas[idx]);
 		if (strloc != NULL) {
-			strcpy(strloc, (strloc +
+			if(strlen(strloc) <= strlen(unsupported_vmflgas[idx]) + 1){
+				memset(strloc, '\0', strlen(strloc));
+			}
+			else{
+				memmove(strloc, strloc +
+					strlen(unsupported_vmflgas[idx]) + 1, strlen(strloc +
 					strlen(unsupported_vmflgas[idx]) + 1));
-			VEOS_DEBUG("Vmflags(%s) removed",
+				VEOS_DEBUG("Vmflags(%s) removed",
 						unsupported_vmflgas[idx]);
+			}
 		}
 		strcpy(tmp_parse, parsed);
 		idx++;

@@ -897,7 +897,12 @@ int veos_allocate_cr_page(uint64_t mode_flag, pid_t pid)
 		if (!crdisvalid(&crd_tmp[crd_num]) && (mm->crd_type[crd_num] == NONE))
 			break;
 	}
-
+	if(crd_num == MAX_CRD_PER_CORE){
+		VEOS_ERROR("Error:can't find free crd to be allocated");
+		pthread_mutex_lock_unlock(&vnode->cr_node_lock, UNLOCK,
+				"Failed to release node cr lock");
+		goto err_return;
+	}
 	VEOS_DEBUG("tsk(%d) crd %d is free", pid, crd_num);
 
 	/* Decide whether to allocate cr page or not.
@@ -1053,7 +1058,7 @@ int64_t veos_attach_cr_page(uint64_t crd,
 	pthread_mutex_lock_unlock(&own_mm->thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
 	/*check whether requested CRD is valid or not*/
-	if (!crdisvalid(&own_mm->crd[crd]) || (crd > MAX_CRD_PER_CORE)) {
+	if (!crdisvalid(&own_mm->crd[crd]) || (crd >= MAX_CRD_PER_CORE)) {
 		ret = -EINVAL;
 		VEOS_ERROR("Error (%s) crd(%ld) is not valid for tsk:pid(%d)",
 				strerror(-ret), crd, owner);
@@ -1140,6 +1145,11 @@ int64_t veos_attach_cr_page(uint64_t crd,
 		if (!crdisvalid(&crd_tmp[crd_num]) && (req_mm->crd_type[crd_num] == NONE))
 			break;
 	}
+
+	if(crd_num == MAX_CRD_PER_CORE){
+                VEOS_ERROR("Error:can't find free crd to be allocated");
+                goto err_req;
+        }
 
 	VEOS_DEBUG("crd(%d) free to attach CR page(%ld) to tsk:pid(%d)",
 			crd_num, cr_pg, req_tsk->pid);
@@ -1476,7 +1486,7 @@ int veos_free_cr_page(uint64_t cr_page)
 
 	memset(&cr_data, 0, sizeof(cr_cluster_t));
 
-	if (cr_page > MAX_CR_PAGE_PER_NODE) {
+	if (cr_page >= MAX_CR_PAGE_PER_NODE) {
 		ret  = -EINVAL;
 		VEOS_DEBUG("Error (%s) cr page %ld is not valid",
 				strerror(-ret), cr_page);

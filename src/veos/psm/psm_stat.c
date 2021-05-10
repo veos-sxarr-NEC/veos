@@ -217,7 +217,7 @@ int psm_rpm_handle_pidstat_req(int pid, struct velib_pidstat *pidstat)
 
 	/* Find the VE task for given pid */
 	tsk = find_ve_task_struct(pid);
-	if (NULL == tsk) {
+	if (NULL == tsk && !(tsk = checkpid_in_zombie_list(pid))) {
 		VEOS_ERROR("PID: %d not found.", pid);
 		retval = -ESRCH;
 		goto hndl_return;
@@ -365,9 +365,8 @@ int psm_rpm_handle_get_rusage_req(int pid, struct velib_get_rusage_info *ve_ru)
 		goto hndl_return1;
 
 	/* Find the pointer of VE task struct from given pid */
-	tsk = find_ve_task_struct(pid);
-	if (NULL == tsk) {
-		VEOS_ERROR("PID: %d not found", pid);
+	if (!(tsk = checkpid_in_zombie_list(pid))) {
+		VEOS_ERROR("PID: %d not found.", pid);
 		retval = -ESRCH;
 		goto hndl_return1;
 	}
@@ -411,9 +410,15 @@ int psm_rpm_handle_get_rusage_req(int pid, struct velib_get_rusage_info *ve_ru)
 	if ((group_leader->pid == tsk->pid) &&
 			(group_leader->ve_task_state == ZOMBIE) &&
 			(list_empty(&group_leader->thread_group))) {
-
 		group_leader->ve_task_state = EXIT_DEAD;
-		delete_entries(group_leader);
+		psm_delete_zombie_task(group_leader);
+		pthread_mutex_lock_unlock(&VE_NODE(0)->ve_node_lock, LOCK,
+				"failed to acquire ve node lock");
+
+		ve_atomic_dec(&VE_NODE(0)->num_zombie_proc);
+		pthread_mutex_lock_unlock(&VE_NODE(0)->ve_node_lock, UNLOCK,
+				"failed to release ve node lock");
+
 		retval = 0;
 		goto hndl_return1;
 	}
@@ -554,7 +559,24 @@ hndl_return:
 	return retval;
 }
 
-
+struct ve_task_struct*  checkpid_in_zombie_list(int pid)
+{
+	struct ve_task_struct *tsk = NULL;
+	pthread_rwlock_lock_unlock(&init_task_lock, RDLOCK,
+			"failed to acquire init task lock");
+	struct list_head *p, *n;
+	list_for_each_safe(p, n, &ve_init_task.tasks) {
+		struct ve_task_struct *tmp =
+			list_entry(p, struct ve_task_struct, tasks);
+		if (tmp->pid == pid && !get_ve_task_struct(tmp)) {
+			tsk = tmp;
+			break;
+		}
+	}
+	pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
+			"failed to release init task lock");
+	return tsk;
+}
 /**
  * @brief Check that the VE pid exists or not
  *
@@ -573,7 +595,7 @@ int psm_rpm_handle_check_pid(int pid)
 	/* Find the VE task struct from pid */
 	tsk = find_ve_task_struct(pid);
 	if (NULL == tsk) {
-		VEOS_DEBUG("PID: %d not found.", pid);
+		VEOS_TRACE("PID: %d not found in core's list", pid);
 		retval = find_veo_proc(pid);
 		if (!retval) {
 			VEOS_DEBUG("PID: %d found.", pid);
@@ -584,12 +606,18 @@ int psm_rpm_handle_check_pid(int pid)
 			retval = VEO_PROCESS_EXIST;
 			goto hndl_return;
 		} else {
-			VEOS_DEBUG("PID: %d not found.", pid);
-			retval = -ESRCH;
-			goto hndl_return;
+			if (!(tsk = checkpid_in_zombie_list(pid))) {
+				VEOS_TRACE("PID: %d not found.", pid);
+				retval = -ESRCH;
+				goto hndl_return;
+			} else {
+				VEOS_DEBUG("PID: %d found in zombie task list.", pid);
+				put_ve_task_struct(tsk);
+			}
+			retval = 0;
 		}
 	} else {
-		VEOS_DEBUG("PID: %d found.", pid);
+		VEOS_TRACE("PID: %d found.", pid);
 		retval = 0;
 		put_ve_task_struct(tsk);
 	}
@@ -632,7 +660,7 @@ int psm_rpm_handle_pidstatus(int pid, struct velib_pidstatus *pidstatus)
 		goto hndl_return;
 
 	tsk = find_ve_task_struct(pid);
-	if (NULL == tsk) {
+	if (NULL == tsk && !(tsk = checkpid_in_zombie_list(pid))) {
 		VEOS_ERROR("PID: %d not found.", pid);
 		retval = -ESRCH;
 		goto hndl_return;
@@ -732,7 +760,7 @@ int psm_rpm_handle_sched_get_param(int pid,
 		goto hndl_return;
 
 	tsk = find_ve_task_struct(pid);
-	if (NULL == tsk) {
+	if (tsk == NULL) {
 		VEOS_ERROR("PID: %d not found.", pid);
 		retval = -ESRCH;
 		goto hndl_return;
@@ -770,7 +798,7 @@ int psm_rpm_handle_prlimit(int caller_pid, int pid,
 
 	/* Find the VE task struct from pid */
 	tsk = find_ve_task_struct(pid);
-	if (NULL == tsk) {
+	if (NULL == tsk && !(tsk = checkpid_in_zombie_list(pid))) {
 		VEOS_ERROR("PID: %d not found", pid);
 		retval = -ESRCH;
 		goto hndl_return;
