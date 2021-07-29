@@ -23,6 +23,10 @@
 * @internal
 * @author VHVE
 */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef __VHVE_H
 #define __VHVE_H
 
@@ -52,4 +56,8 @@ uint64_t vhve_dma_awrite_vemem(uint64_t, int, uint64_t, void *, size_t, uint64_t
 int vhve_dma_wait(uint64_t, uint64_t);
 int vhve_dma_query(uint64_t, uint64_t);
 
+#endif
+
+#ifdef __cplusplus
+}
 #endif

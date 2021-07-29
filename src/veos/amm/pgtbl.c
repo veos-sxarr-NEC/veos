@@ -303,7 +303,18 @@ int amm_do_vemva_init_atb(vemva_t vaddr, int pgmod,
 	for (index = 0; index < vnode->numa_count; index++)
 		memcpy(&(mm->atb[index]), &temp_atb[index], sizeof(atb_reg_t));
 
-	psm_sync_hw_regs(tsk, _ATB, true, dir_num, 1);
+	if( 0 == psm_sync_hw_regs(tsk, _ATB, true, -1, 1))
+        {
+                VEOS_DEBUG("Syncing ATB");
+                ret = veos_update_atb(tsk->core_set, &dir_num, 1, tsk);
+                if(-1 == ret)
+                {
+                        VEOS_ERROR("Updating ATB failed");
+                        veos_abort("Syncing ATB registers failed");
+                }
+        }
+	/* Reset the core_set as all the cores are restarted*/
+	tsk->core_set = 0;
 
 	pthread_mutex_lock_unlock(&mm->thread_group_mm_lock, UNLOCK,
 			"Failed to release thread-group-mm-lock");
@@ -1525,7 +1536,17 @@ int64_t replace_page(vemva_t vemva, struct ve_task_struct *tsk)
 		}
 
 	}
-	psm_sync_hw_regs(tsk, _ATB, true, dir_num, 1);
+	if(0 == psm_sync_hw_regs(tsk, _ATB, true, -1, 1))
+        {
+                VEOS_DEBUG("Syncing ATB");
+                if(-1 == veos_update_atb(tsk->core_set, &dir_num, 1, tsk))
+                {
+                        VEOS_ERROR("Updating ATB failed");
+                        veos_abort("Syncing ATB registers failed");
+                }
+        }
+	/* Reset the core_set as all the cores are restarted*/
+        tsk->core_set = 0;
 
 	return ret;
 }

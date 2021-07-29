@@ -116,7 +116,7 @@ int amm_alloc_mm_struct(struct ve_mm_struct **mm)
 	if (*mm == NULL) {
 		ret = -errno;
 		VEOS_CRIT("failed to allocate mm struct");
-		return ret;
+		goto handle_return;
 	}
 
 	VEOS_DEBUG("mm struct(%p) allocated", *mm);
@@ -134,13 +134,19 @@ int amm_alloc_mm_struct(struct ve_mm_struct **mm)
 		ret = -ret;
 		VEOS_DEBUG("Error (%s) while initializing mm lock",
 				strerror(-ret));
-		goto amm_alloc_mm_error;
+		goto free_mm_struct_data;
 	}
 
-	return ret;
-
+	goto handle_return;
+free_mm_struct_data:
+	free((*mm)->dma_dump_file);
+	free((*mm)->vehva_header.bmap_64m);
+	free((*mm)->vehva_header.bmap_2m);
+	free((*mm)->vehva_header.bmap_4k);
+	amm_free_cr_data(*mm);
 amm_alloc_mm_error:
 	free(*mm);
+handle_return:
 	return ret;
 }
 
@@ -1290,11 +1296,18 @@ map_sigbus:
 	for (index = 0; index < vnode->numa_count; index++)
 		memcpy(&(mm->atb[index]), &tmp_atb[index], sizeof(atb_reg_t));
 
-	i = 0;
-	while (0 <= dirs[i]) {
-		psm_sync_hw_regs(tsk, _ATB,
-				true, dirs[i++], 1);
+	if( 0 == psm_sync_hw_regs(tsk, _ATB, true, -1, 1))
+	{
+		VEOS_DEBUG("Syncing ATB");
+		ret = veos_update_atb(tsk->core_set, dirs, i, tsk);
+		if(-1 == ret)
+		{
+			VEOS_ERROR("Updating ATB failed");
+			veos_abort("Syncing ATB registers failed");
+		}
 	}
+	/* Reset the core_set as all the cores are restarted*/
+        tsk->core_set = 0;
 
 	if (flags & MAP_ADDR_SPACE) {
 		if (flags & MAP_STACK)
@@ -1530,8 +1543,21 @@ int amm_do_munmap(vemva_t vaddr, size_t size,
 			VEOS_TRACE("syncing tsk(%p):pid(%d) atb[%d](%p):pgd[%d]",
 				tsk, tsk->pid, index, &mm->atb[index], dirs[i]);
 		}
-		psm_sync_hw_regs(tsk, _ATB, true, dirs[i++], 1);
+		i++;
 	}
+
+	if( 0 == psm_sync_hw_regs(tsk, _ATB, true, -1, 1))
+        {
+                VEOS_DEBUG("Syncing ATB");
+                ret = veos_update_atb(tsk->core_set, dirs, k, tsk);
+                if(-1 == ret)
+                {
+                        VEOS_ERROR("Updating ATB failed");
+                        veos_abort("Syncing ATB registers failed");
+                }
+        }
+	/* Reset the core_set as all the cores are restarted*/
+        tsk->core_set = 0;
 
 unmap_ret:
 	free(pb);
@@ -1893,10 +1919,18 @@ done:
 	for (index = 0; index < vnode->numa_count; index++)
 		memcpy(&(mm->atb[index]), &atb[index], sizeof(atb_reg_t));
 
-	int i = 0;
-
-	while (0 <= dirs[i])
-		psm_sync_hw_regs(tsk, _ATB, true, dirs[i++], 1);
+        if( 0 == psm_sync_hw_regs(tsk, _ATB, true, -1, 1))
+        {
+                VEOS_DEBUG("Syncing ATB");
+                ret = veos_update_atb(tsk->core_set, dirs, dir_cnt, tsk);
+                if(-1 == ret)
+                {
+                        VEOS_ERROR("Updating ATB failed");
+                        veos_abort("Syncing ATB registers failed");
+                }
+        }
+	/* Reset the core_set as all the cores are restarted*/
+        tsk->core_set = 0;
 
 mprot_error:
 	/*Release mm_struct_lock here*/
@@ -3796,12 +3830,19 @@ int veos_share_vemva_region(pid_t owner, vemva_t own_vemva,
 		memcpy(&(req_mm->atb[index]),
 		       &req_atb[index], sizeof(atb_reg_t));
 	}
-	i = 0;
 
-	while (0 <= dirs[i]) {
-		psm_sync_hw_regs(req_tsk, _ATB,
-				true, dirs[i++], 1);
-	}
+	if( 0 == psm_sync_hw_regs(req_tsk, _ATB, true, -1, 1))
+        {
+                VEOS_DEBUG("Syncing ATB");
+                ret = veos_update_atb(req_tsk->core_set, dirs, i, req_tsk);
+                if(-1 == ret)
+                {
+                        VEOS_ERROR("Updating ATB failed");
+                        veos_abort("Syncing ATB registers failed");
+                }
+        }
+	/* Reset the core_set as all the cores are restarted*/
+        req_tsk->core_set = 0;
 
 	req_tsk->p_ve_mm->vm_size += size;
 	pthread_mutex_lock_unlock(&req_mm->thread_group_mm_lock,
@@ -6161,7 +6202,7 @@ int __amm_alloc_mm_struct(struct ve_mm_struct **mm)
 	if (0 > ret) {
 		VEOS_DEBUG("Error (%s) while allocating CR data for tsk",
 				strerror(-ret));
-		return ret;
+		goto handle_return;
 	}
 
 	for (index = 0; index < vnode->numa_count; index++)
@@ -6172,7 +6213,7 @@ int __amm_alloc_mm_struct(struct ve_mm_struct **mm)
 	if (0 > ret) {
 		VEOS_DEBUG("Error (%s) while initializing tsk vehva",
 				strerror(-ret));
-		goto __amm_alloc_mm_error;
+		goto free_cr_data;
 	}
 
 	invalidate_dmaatb(&((*mm)->dmaatb));
@@ -6184,7 +6225,7 @@ int __amm_alloc_mm_struct(struct ve_mm_struct **mm)
 	if (NULL == (*mm)->dma_dump_file) {
 		ret = -errno;
 		VEOS_DEBUG("failed to allocate dma dump file info");
-		goto __amm_alloc_mm_error;
+		goto free_vehva_bitmaps;
 	}
 	/*MEMSET*/
 	memset((*mm)->dma_dump_file, '\0', 50);
@@ -6195,7 +6236,14 @@ int __amm_alloc_mm_struct(struct ve_mm_struct **mm)
 	INIT_LIST_HEAD(&((*mm)->mmap_page_priv));
 	INIT_LIST_HEAD(&((*mm)->swapped_pages));
 	(*mm)->dmaatb_progress = NOT_SWAPPED;
-__amm_alloc_mm_error:
+	goto handle_return;
+free_vehva_bitmaps:
+	free((*mm)->vehva_header.bmap_64m);
+	free((*mm)->vehva_header.bmap_2m);
+	free((*mm)->vehva_header.bmap_4k);
+free_cr_data:
+	amm_free_cr_data(*mm);
+handle_return:
 	return ret;
 }
 

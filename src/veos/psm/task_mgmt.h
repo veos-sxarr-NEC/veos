@@ -551,6 +551,7 @@ struct ve_task_struct {
 	uint64_t initial_pmc_pmmr[16];	/* initial PMC/PMMR counter register values */
 	uint64_t pmc_pmmr[16];		/* updated PMC/PMMR counter register */
 	int zombie_partial_cleanup;	/* Zombie VE process cleanup state */
+	uint64_t core_set;		/* Set of core where ATB update is needed */
 };
 
 

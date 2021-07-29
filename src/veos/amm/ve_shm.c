@@ -372,11 +372,19 @@ int amm_do_shmat(key_t key, int shmid, vemva_t shmaddr, size_t size,
 		goto shmat_err;
 	}
 
-	i = 0;
-	while (0 <= dirs[i]) {
-		psm_sync_hw_regs(tsk, ATB,
-				true, dirs[i++], 1);
-	}
+	if( 0 == psm_sync_hw_regs(tsk, _ATB, true, -1, 1))
+        {
+                VEOS_DEBUG("Syncing ATB");
+                ret = veos_update_atb(tsk->core_set, dirs, i, tsk);
+                if(-1 == ret)
+                {
+                        VEOS_ERROR("Updating ATB failed");
+                        veos_abort("Syncing ATB registers failed");
+                }
+        }
+	/* Reset the core_set as all the cores are restarted*/
+        tsk->core_set = 0;
+
 	VEOS_DEBUG("Shared memory key(%d):id(%d) and nattach:%ld",
 			shm_ent->key, shm_ent->shmid,
 			shm_ent->nattch);
@@ -647,9 +655,18 @@ detach_directly:
 	for (index = 0; index < vnode->numa_count; index++)
 		memcpy(&(mm->atb[index]), &tmp_atb[index], sizeof(atb_reg_t));
 
-	i = 0;
-	while (0 <= dirs[i])
-		psm_sync_hw_regs(tsk, ATB, true, dirs[i++], 1);
+	if( 0 == psm_sync_hw_regs(tsk, _ATB, true, -1, 1))
+        {
+                VEOS_DEBUG("Syncing ATB");
+                ret = veos_update_atb(tsk->core_set, dirs, i, tsk);
+                if(-1 == ret)
+                {
+                        VEOS_ERROR("Updating ATB failed");
+                        veos_abort("Syncing ATB registers failed");
+                }
+        }
+	/* Reset the core_set as all the cores are restarted*/
+        tsk->core_set = 0;
 
 	VEOS_DEBUG("Shared memory segment with id %d and current attach value %ld",
 			shm_segment->shmid, shm_segment->nattch);

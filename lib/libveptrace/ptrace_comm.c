@@ -1261,7 +1261,7 @@ int ve_ptrace_setregset(pid_t pid, void *addr, void *data)
 
 		/* Fetch the register set content from the iovec
 		 * provided by tracer */
-		memcpy(rs_iov->iov_base, &ve_u_vregs, min_size);
+		memcpy(&ve_u_vregs, rs_iov->iov_base, min_size);
 
 		retval = ve_ptrace_setvregs(pid, &ve_u_vregs);
 		if (0 > retval) {

@@ -1024,10 +1024,7 @@ struct sighand_struct *alloc_ve_sighand_struct_node()
 	memset(p, '\0', sizeof(struct sighand_struct));
 	if (pthread_mutex_init(&(p->siglock), NULL) != 0) {
 		VEOS_ERROR("Failed to initialize siglock");
-		errno = ENOMEM;
-		free(p);
-		p = NULL;
-		goto hndl_return;
+		goto free_sighand;
 	}
 
 	if (pthread_mutex_init(&(p->del_lock), NULL) != 0) {
@@ -1037,14 +1034,15 @@ struct sighand_struct *alloc_ve_sighand_struct_node()
 			VEOS_ERROR("Failed to destroy siglock,"
 					" return value %d", retval);
 		}
-		errno = ENOMEM;
-		free(p);
-		p = NULL;
-		goto hndl_return;
+		goto free_sighand;
 	}
 
 	p->ref_count = 1;
-
+	goto hndl_return;
+free_sighand:
+	free(p);
+	p = NULL;
+	errno = ENOMEM;
 hndl_return:
 	VEOS_TRACE("Exiting");
 	return p;
@@ -1230,7 +1228,10 @@ int psm_get_active_proc_num(struct ve_core_struct *p_ve_core)
 		pthread_mutex_lock_unlock(&ve_task_curr->ve_task_lock, LOCK,
 					"Failed to acquire ve_task_lock");
 		if ((ve_task_curr->ve_task_state == WAIT) ||
-				(ve_task_curr->ve_task_state == RUNNING))
+				(ve_task_curr->ve_task_state == RUNNING)
+				|| ((ve_task_curr->ve_task_state == STOP)
+				&& (ve_task_curr->ptraced) 
+				&& (ve_task_curr->group_leader->ptraced)))
 			active_proc_num++;
 		pthread_mutex_lock_unlock(&ve_task_curr->ve_task_lock, UNLOCK,
 					"Failed to release ve_task_lock");
@@ -2836,7 +2837,7 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
                 VEOS_ERROR("sid request error");
                 VEOS_DEBUG("Failed to get sid of the process,"
                                 "return value: %s", strerror(errno));
-		goto free_cr_data;
+		goto free_sighand;
         } else
 		tsk->sid = sid;
 
@@ -2846,7 +2847,7 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 		VEOS_ERROR("stat failed, return value: %s", strerror(errno));
 		tsk->tty = -1;
 		retval = -errno;
-		goto free_cr_data;
+		goto free_sighand;
 	} else {
 		dev_major = major(statbuf.st_rdev);
 		dev_minor = minor(statbuf.st_rdev);
@@ -2905,7 +2906,7 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	if (0 != pthread_mutex_init(&(tsk->ve_task_lock), NULL)) {
 		VEOS_ERROR("Intialising task lock failed");
 		retval = -ENOMEM;
-		goto free_cr_data;
+		goto free_sighand;
 	}
 
 	if (0 != pthread_mutex_init(&(tsk->ref_lock), NULL)) {
@@ -3104,10 +3105,14 @@ destroy_mutex_1:
 		VEOS_DEBUG("Failed to destroy task lock, return value "
 				"%d", -ret);
 	}
-free_cr_data:
-	amm_free_cr_data(tsk->p_ve_mm);
+free_sighand:
 	free(tsk->sighand);
 free_mm:
+	amm_free_cr_data(tsk->p_ve_mm);
+	free(tsk->p_ve_mm->dma_dump_file);
+	free(tsk->p_ve_mm->vehva_header.bmap_64m);
+	free(tsk->p_ve_mm->vehva_header.bmap_2m);
+	free(tsk->p_ve_mm->vehva_header.bmap_4k);
 	free(tsk->p_ve_mm);
 free_thread:
 	free(tsk->p_ve_thread);

@@ -667,7 +667,7 @@ int amm_alloc_cr_data(struct ve_mm_struct *mm)
 	if (NULL !=  mm->crd) {
 		VEOS_DEBUG("Error crd's are already allocated to task");
 		ret = -EINVAL;
-		return ret;
+		goto handle_return;
 	}
 
 	mm->crd = (crd_t *)calloc(MAX_CRD_PER_CORE, sizeof(crd_t));
@@ -675,7 +675,7 @@ int amm_alloc_cr_data(struct ve_mm_struct *mm)
 		ret = -errno;
 		VEOS_CRIT("Error (%s) while allocating crd entries",
 				strerror(-ret));
-		return ret;
+		goto handle_return;
 	}
 
 	/*Invalidate All CRD*/
@@ -694,8 +694,7 @@ int amm_alloc_cr_data(struct ve_mm_struct *mm)
 		ret = -errno;
 		VEOS_CRIT("Error (%s) while allocating memory for tsk cr page object",
 				strerror(-ret));
-		free(mm->crd);
-		return ret;
+		goto free_crd;
 	}
 
 	mm->p_cr_rlim = (struct ve_cr_rlim *)calloc(1, sizeof(struct ve_cr_rlim));
@@ -703,9 +702,7 @@ int amm_alloc_cr_data(struct ve_mm_struct *mm)
 		ret = -errno;
 		VEOS_CRIT("Error (%s) while allocating memory for cr rlimit obj",
 				strerror(-ret));
-		free(mm->crd);
-		free(mm->tsk_cr_pg_acc);
-		return ret;
+		goto free_cr_pg_acc;
 	}
 	/*Set Process cr rlimits*/
 	memcpy(mm->p_cr_rlim, vnode->node_cr_rlim, sizeof(struct ve_cr_rlim));
@@ -720,6 +717,13 @@ int amm_alloc_cr_data(struct ve_mm_struct *mm)
 
 	mm->is_sched = true;
 
+	VEOS_TRACE("returned with %d", ret);
+	goto handle_return;
+free_cr_pg_acc:
+	free(mm->tsk_cr_pg_acc);
+free_crd:
+	free(mm->crd);
+handle_return:
 	VEOS_TRACE("returned with %d", ret);
 	return ret;
 }

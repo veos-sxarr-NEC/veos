@@ -2762,11 +2762,13 @@ bool is_pseudo_stop(pid_t pid)
 			freeproc(task_info);
 			/* Read the task info for the other thread of the thread group */
 			task_info = readtask(proc, proc_info, NULL);
-			if(task_info != NULL && 'T' == task_info->state)
-			{
+			if(task_info != NULL) {
+				if ('T' == task_info->state)
+					retval = true;
 				freeproc(task_info);
-				retval = true;
-			}
+			} else
+				VEOS_DEBUG("Fail to read task information of "
+					"other threads for pid: %d", pid);
 		}
 		else
 		{

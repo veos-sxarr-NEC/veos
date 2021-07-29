@@ -114,7 +114,7 @@ int psm_restore_context_for_new_thread(struct ve_task_struct *);
 int schedule_task_on_ve_node_ve_core(struct ve_task_struct *,
 		struct ve_task_struct *,
 		bool, bool);
-int veos_update_atb(uint64_t, int, int, struct ve_task_struct *);
+int veos_update_atb(uint64_t, int16_t*, int, struct ve_task_struct *);
 int veos_update_dmaatb(uint64_t, void *, int, int, struct ve_task_struct *, reg_t *);
 int psm_sync_hw_regs(struct ve_task_struct *, regs_t, bool, int, int);
 void psm_find_sched_new_task_on_core(struct ve_core_struct *, bool, bool);

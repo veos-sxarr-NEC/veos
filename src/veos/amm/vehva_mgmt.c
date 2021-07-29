@@ -52,7 +52,7 @@ int veos_vehva_init(struct ve_mm_struct *vm)
 	if (vm->vehva_header.bmap_4k == NULL) {
 		ret = -errno;
 		VEOS_CRIT("Error (%s) whiel allocating bmap_4k", strerror(-ret));
-		return ret;
+		goto hndl_return;
 	}
 	memset(vm->vehva_header.bmap_4k, 0xff, DMA_BITMAP);
 
@@ -60,7 +60,7 @@ int veos_vehva_init(struct ve_mm_struct *vm)
 	if (vm->vehva_header.bmap_2m == NULL) {
 		ret = -errno;
 		VEOS_CRIT("Error (%s) whiel allocating bmap_2M", strerror(-ret));
-		goto hndl_malloc;
+		goto free_bmap_4k;
 	}
 
 	memset(vm->vehva_header.bmap_2m, 0xff, DMA_BITMAP);
@@ -69,7 +69,7 @@ int veos_vehva_init(struct ve_mm_struct *vm)
 	if (vm->vehva_header.bmap_64m == NULL) {
 		ret = -errno;
 		VEOS_CRIT("Error (%s) whiel allocating bmap_64M", strerror(-ret));
-		goto hndl_malloc;
+		goto free_bmap_2m;
 	}
 
 	memset(vm->vehva_header.bmap_64m, 0xff, DMA_BITMAP);
@@ -89,10 +89,11 @@ int veos_vehva_init(struct ve_mm_struct *vm)
 	VEOS_DEBUG("returned with %d", ret);
 	VEOS_TRACE("returned");
 	return 0;
-hndl_malloc:
-	free(vm->vehva_header.bmap_4k);
+free_bmap_2m:
 	free(vm->vehva_header.bmap_2m);
-	free(vm->vehva_header.bmap_64m);
+free_bmap_4k:
+	free(vm->vehva_header.bmap_4k);
+hndl_return:
 	VEOS_DEBUG("returned with %d", ret);
 	VEOS_TRACE("returned");
 	return ret;

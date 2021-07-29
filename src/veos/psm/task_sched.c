@@ -528,7 +528,7 @@ bool psm_check_sched_jid_core(uint64_t *core_set,
 
 			if (!(*(arr_exs + core_loop) & VE_EXCEPTION) || reg_type == _DMAATB) {
 				if (psm_unassign_assign_task(p_ve_core->curr_ve_task,
-							false)) {
+							true)) {
 					*core_set |= 1 << core_loop;
 					/* Set core state to HALT so that it cannot be
 					 * started until syncing finish */
@@ -2056,7 +2056,7 @@ veos_update_crd_fail:
 *
 * @return -1 on success and 0 on failure.
 */
-int veos_update_atb(uint64_t core_set, int dir_num,
+int veos_update_atb(uint64_t core_set, int16_t *dir_num,
 		int count, struct ve_task_struct *tsk)
 {
 	int loop_cnt = 0;
@@ -2065,19 +2065,18 @@ int veos_update_atb(uint64_t core_set, int dir_num,
 	struct ve_task_struct *curr_ve_tsk = NULL;
 
 	VEOS_TRACE("Entering");
-	VEOS_DEBUG("Directory num: %d Count: %d",
-			dir_num, count);
 
 	/* Update ATB on all the cores */
 	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores; core_loop++) {
 		if (CHECK_BIT(core_set, core_loop)) {
 			VEOS_DEBUG("Update ATB for Core %d",
 					core_loop);
-			for (loop_cnt = dir_num; loop_cnt < dir_num + count; loop_cnt++) {
+			for (loop_cnt = 0; loop_cnt < count; loop_cnt++) {
+				VEOS_DEBUG("Directory num: %d", dir_num[loop_cnt]);
 				if (amm_update_atb_dir(VE_HANDLE(0),
 								core_loop,
 								tsk,
-								dir_num)) {
+								dir_num[loop_cnt])) {
 					VEOS_ERROR("Updating ATB directory failed in driver");
 					retval = -1;
 					goto veos_update_atb_fail;
@@ -2254,20 +2253,15 @@ int psm_sync_hw_regs(struct ve_task_struct *ve_task,
 			VEOS_DEBUG("ATB update for whole thread group");
 			VEOS_DEBUG("Mark ATB DIRTY for thread group");
 			update_atb_crd_dirty(ve_task, reg_type);
-
-			if (psm_check_sched_jid_core(&core_set,
+			
+			/* Reset the core_set before getting the list of the core to be halted*/
+			ve_task->core_set = 0;
+			if (psm_check_sched_jid_core(&(ve_task->core_set),
 						ve_task, reg_type, exception_arr)) {
 				VEOS_DEBUG("Core set %ld", core_set);
-				VEOS_DEBUG("Syncing ATB");
-				/* Update ATB on all core in core set */
-				retval = veos_update_atb(core_set,
-						dir_num, count,
-						ve_task);
-				if (-1 == retval) {
-					VEOS_ERROR("Updating ATB failed");
-					goto hndl_failure;
-				}
 			}
+			else
+				retval = -1;
 		} else {
 			for (loop_cnt = dir_num; loop_cnt < dir_num + count
 					; loop_cnt++) {

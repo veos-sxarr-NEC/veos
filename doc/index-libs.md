@@ -17,5 +17,5 @@ To build VE programs using libraris, veos-devel package needs to be installed.
 @par 
      Rev.1,
      May 2021,
-@n	This revision covers veos-2.8.0 or later.
+@n	This revision covers veos-2.8.1 or later.
 @n	The first revision.
