@@ -613,6 +613,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 
 	/* new_task is not created on driver yet, hence set flag to false*/
 	new_task->is_crt_drv = false;
+	new_task->is_dlt_drv = false;
 
 	/*copy parent's PMMR,PMC data to child process*/
 	for(i = 0; i < PMC_REG; i++)
@@ -852,27 +853,6 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 		new_task->ptraced = false;
 		new_task->p_ve_ptrace = NULL;
 	}
-
-	if (clone_flags & CLONE_THREAD) {
-
-		VEOS_DEBUG("Acquiring tasklist_lock");
-		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
-				"Failed to acquire tasklist_lock lock");
-
-		VEOS_DEBUG("Acquiring thread group lock");
-		pthread_mutex_lock_unlock(&new_task->p_ve_mm->thread_group_mm_lock,
-				LOCK, "Failed to acquire thread-group-mm-lock");
-
-		list_add_tail(&new_task->thread_group,
-				&new_task->group_leader->thread_group);
-
-		pthread_mutex_lock_unlock(&new_task->p_ve_mm->thread_group_mm_lock,
-				UNLOCK, "Failed to release thread-group-mm-lock");
-
-		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
-				"Failed to release tasklist_lock lock");
-
-	}
 	goto hndl_return;
 
 destroy_mutex2:
@@ -939,7 +919,7 @@ int do_ve_fork(unsigned long clone_flags,
 		int *child_tidptr,
 		struct ve_fork_info *fork_info)
 {
-	int retval = -1, ret = -1;
+	int retval = -1;
 	struct ve_task_struct *new_task = NULL;
 	struct ve_task_struct *current = NULL;
 	struct ve_ipc_sync *ipc_sync = NULL;
@@ -964,38 +944,32 @@ int do_ve_fork(unsigned long clone_flags,
 	new_task = find_ve_task_struct(fork_info->child_pid);
 	if (NULL != new_task) {
 		VEOS_ERROR("Duplicate process with PID %d is : %p"
-				" Core : %d"
-				" binary : %s already exists",
-				fork_info->child_pid,
-				new_task,
-				new_task->core_id,
-				new_task->ve_comm);
-		VEOS_ERROR("Failed to create new task due to PID conflict");
+				" Core : %d binary : %s already exists. "
+				"Failed to create new task due to PID conflict",
+				fork_info->child_pid, new_task,
+				new_task->core_id, new_task->ve_comm);
 		put_ve_task_struct(new_task);
 		/* PID conflict occurs at VEOS. This is a race scenario wherein VEOS
 		 * contains entry for VE task but correponding pseudo was earlier freed
 		 * */
+		new_task = NULL;
 		retval = -EAGAIN;
 		goto hndl_return;
 	}
 
 	/* To find Parent process current CORE and Node */
 	current = find_ve_task_struct(fork_info->parent_pid);
-	if (NULL != current) {
-		VEOS_DEBUG("PARENT with PID %d is : %p"
-				"Parent Node : %d"
-				"Parent Core : %d",
-				fork_info->parent_pid,
-				current,
-				current->node_id,
-				current->core_id);
-	} else {
+	if (NULL == current) {
 		VEOS_ERROR("Failed to find task structure");
 		VEOS_ERROR("Failed to fetch task structure for PID: %d",
 				fork_info->parent_pid);
 		retval = -ENOMEM;
 		goto hndl_return;
 	}
+	VEOS_DEBUG("PARENT with PID %d is : %p "
+			"Parent Node : %d Parent Core : %d",
+			fork_info->parent_pid, current,
+			current->node_id, current->core_id);
 
 	ipc_sync = ve_get_ipc_sync(current);
 	if (ipc_sync != NULL) {
@@ -1016,53 +990,15 @@ int do_ve_fork(unsigned long clone_flags,
 	}
 
 	/* Duplicate task structure for new child process */
-	new_task = copy_ve_process(clone_flags,
-				stack_start,
-				stack_size,
-				child_tidptr,
-				fork_info,
-				current);
-	if (new_task) {
-
-		new_task->assign_task_flag = TSK_UNASSIGN;
-		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_node_lock), LOCK,
-			"Failed to acquire VE node mutex lock");
-		retval = get_ve_core_n_node_new_ve_proc(new_task,
-				&child_node_id,
-				&child_core_id,
-				&new_task->numa_node);
-		if (retval < 0) {
-			/* Temporarily insert task to node "0" core "0"
-			 * and invoke psm_handle_delete_ve_process()
-			 */
-			child_node_id = 0;
-			child_core_id = 0;
-			new_task->p_ve_core =
-				VE_CORE(child_node_id, child_core_id);
-
-			insert_ve_task(child_node_id, child_core_id, new_task);
-			VEOS_ERROR("Failed to get the core and node for "
-					"new process");
-			pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_node_lock), UNLOCK,
-					"Failed to release VE node mutex lock");
-			retval = -EAGAIN;
-			goto hndl_return1;
-		}
-		fork_info->core_id = new_task->core_id = child_core_id;
-		new_task->p_ve_core = VE_CORE(child_node_id, child_core_id);
-
-		/* Inserting VE task into VE Node and Core */
-		insert_ve_task(child_node_id, child_core_id, new_task);
-		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_node_lock), UNLOCK,
-			"Failed to release VE node mutex lock");
-	} else {
+	new_task = copy_ve_process(clone_flags,	stack_start, stack_size,
+					child_tidptr, fork_info, current);
+	if (new_task == NULL) {
 		retval = -errno;
 		VEOS_ERROR("Failed to create new task structure");
 		VEOS_DEBUG("Creation of task structure failed for PID: %d",
 				fork_info->child_pid);
 		goto hndl_return;
 	}
-
 	if (clone_flags & CLONE_PARENT_SETTID) {
 		/* store child PID in parent memory */
 		retval = amm_send_data(fork_info->parent_pid,
@@ -1072,27 +1008,9 @@ int do_ve_fork(unsigned long clone_flags,
 			VEOS_ERROR("Failed to store child PID in "
 					"parent memory");
 			retval = -ENOMEM;
-			goto hndl_return1;
+			goto hndl_return2;
 		}
 	}
-	/* Create VE process structure on driver server */
-	retval = vedl_create_ve_task(VE_NODE(child_node_id)->handle,
-					fork_info->child_pid);
-	if (0 > retval) {
-		VEOS_ERROR("Failed to create task structure in driver");
-		VEOS_DEBUG("Failed to create task structure in driver, return "
-				"value %d, mapped value %d", -errno, -EAGAIN);
-		/* Here the failure can be encountered for either process
-		 * or thread; passing "0" in psm_handle_delete_ve_process
-		 * means cleaning up that particular task and passing "1"
-		 * means cleaning up all the tasks.
-		 */
-		retval = -EAGAIN;
-		goto hndl_return1;
-	}
-
-	/* task created on driver, set flag to true */
-	new_task->is_crt_drv = true;
 
 	if (!(clone_flags & CLONE_THREAD) && !(clone_flags & CLONE_VFORK)) {
 		/* map the LHM/SHM area of pseudo process in veos */
@@ -1104,10 +1022,9 @@ int do_ve_fork(unsigned long clone_flags,
 					"%d, mapped value %d",
 					retval, -ENOMEM);
 			retval = -ENOMEM;
-			goto hndl_return1;
+			goto hndl_return2;
 		}
 	}
-
 	if (clone_flags & CLONE_VFORK) {
 		new_task->p_ve_mm->shm_lhm_addr =
 			new_task->parent->p_ve_mm->shm_lhm_addr;
@@ -1116,6 +1033,65 @@ int do_ve_fork(unsigned long clone_flags,
 		new_task->sighand->lshm_addr =
 			new_task->parent->sighand->lshm_addr;
 	}
+	/* #2274
+	 * Acquire task reference to avoid its parallel deletion from polling
+	 * thread if its pseudo process is killed before the clone/fork request
+	 * is completed.
+	 */
+	VEOS_DEBUG("Getting the task reference lock of the new task");
+	get_ve_task_struct(new_task);
+
+	new_task->assign_task_flag = TSK_UNASSIGN;
+	VEOS_DEBUG("Acquiring tasklist_lock");
+	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
+				"Failed to acquire tasklist_lock lock");
+	if (clone_flags & CLONE_THREAD) {
+		VEOS_DEBUG("Acquiring thread group lock");
+		pthread_mutex_lock_unlock(&new_task->p_ve_mm->thread_group_mm_lock,
+				LOCK, "Failed to acquire thread-group-mm-lock");
+		list_add_tail(&new_task->thread_group,
+				&new_task->group_leader->thread_group);
+		pthread_mutex_lock_unlock(&new_task->p_ve_mm->thread_group_mm_lock,
+				UNLOCK, "Failed to release thread-group-mm-lock");
+	} else {
+		/* Add an entry of this process in its parent's children list */
+		list_add_tail(&new_task->siblings, &new_task->parent->children);
+	}
+	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
+				"Failed to release tasklist_lock lock");
+
+	if (!(clone_flags & CLONE_THREAD)) {
+		/* Add an entry of this process in INIT task list */
+		pthread_rwlock_lock_unlock(&init_task_lock, WRLOCK,
+					"Failed to acquire init_task write lock");
+		list_add_tail(&new_task->tasks, &ve_init_task.tasks);
+		pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
+					"Failed to release init_task lock");
+	}
+	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_node_lock), LOCK,
+				"Failed to acquire VE node mutex lock");
+	retval = get_ve_core_n_node_new_ve_proc(new_task,
+			&child_node_id, &child_core_id,	&new_task->numa_node);
+	if (retval < 0) {
+		child_node_id = 0;
+		child_core_id = 0;
+		new_task->p_ve_core = VE_CORE(child_node_id, child_core_id);
+
+		insert_ve_task(child_node_id, child_core_id, new_task);
+
+		VEOS_ERROR("Failed to get the core and node for new process");
+		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_node_lock), UNLOCK,
+				"Failed to release VE node mutex lock");
+		retval = -EAGAIN;
+		goto hndl_return1;
+	}
+	fork_info->core_id = new_task->core_id = child_core_id;
+	new_task->p_ve_core = VE_CORE(child_node_id, child_core_id);
+
+	/* Inserting VE task into VE Node and Core */
+	insert_ve_task(child_node_id, child_core_id, new_task);
+	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_node_lock), UNLOCK,
+		"Failed to release VE node mutex lock");
 
 	/*Update the thread offset in the libc thread descriptor area (TP + 0x18)*/
 	retval = amm_dma_xfer(VE_DMA_VHVA, (uint64_t)(&(new_task->offset)),
@@ -1133,24 +1109,26 @@ int do_ve_fork(unsigned long clone_flags,
 					sizeof(uint64_t) / (double)1024);
 	}
 
-	if(!(clone_flags & CLONE_THREAD)) {
-		/* Add an entry of this process in its parent's children list */
-		VEOS_DEBUG("Acquiring tasklist_lock");
-		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
-				"Failed to acquire tasklist_lock lock");
+	/* Create VE process structure on driver
+	 * #2274
+	 * The reason behind creating the driver entry at the end is that,
+	 * even if the corresponding pseudo process is killed by this time,
+	 * the driver won't write its pid into task_id_dead file. This in
+	 * turn prevents a scenario of parallel cleanup of the task initiated
+	 * from polling thread while it's creation is still not complete.
+	 * */
 
-		list_add_tail(&new_task->siblings,
-				&new_task->parent->children);
-
-		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
-				"Failed to release tasklist_lock lock");
-		/* Add an entry of this process in INIT task list */
-		pthread_rwlock_lock_unlock(&init_task_lock, WRLOCK,
-				"Failed to acquire init_task write lock");
-		list_add_tail(&new_task->tasks, &ve_init_task.tasks);
-		pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
-				"Failed to release init_task lock");
+	retval = vedl_create_ve_task(VE_NODE(child_node_id)->handle,
+					fork_info->child_pid);
+	if (0 > retval) {
+		VEOS_ERROR("Failed to create task structure in driver");
+		VEOS_DEBUG("Failed to create task structure in driver, return "
+				"value %d, mapped value %d", -errno, -EAGAIN);
+		retval = -EAGAIN;
+		goto hndl_return1;
 	}
+	/* task created on driver, set flag to true */
+	new_task->is_crt_drv = true;
 	/* If all successful, return the core ID assigned
 	 * to newly created VE process/VE thread */
 	retval = child_core_id;
@@ -1160,14 +1138,24 @@ int do_ve_fork(unsigned long clone_flags,
 	list_ve_proc();
 #endif
 	goto hndl_return;
-
-hndl_return1:
-	if((clone_flags & CLONE_VFORK) &&
+hndl_return2:
+	VEOS_ERROR("Failed to create new ve task. "
+			"Cleanup the partially created task");
+	if((clone_flags & CLONE_VFORK) && new_task->real_parent &&
 			(new_task->real_parent->vfork_state == VFORK_ONGOING))
 		new_task->real_parent->vfork_state = VFORK_C_INVAL;
-	ret = psm_handle_delete_ve_process(new_task);
-	if (ret < 0)
-		VEOS_ERROR("Failed to delete new task");
+	amm_del_mm_struct(new_task);
+	psm_del_sighand_struct(new_task);
+	free(new_task->p_ve_thread);
+	free(new_task);
+	new_task = NULL;
+	goto hndl_return;
+hndl_return1:
+	VEOS_ERROR("Failed to create new ve task. "
+			"Cleanup the partially created task");
+	if((clone_flags & CLONE_VFORK) && new_task->real_parent &&
+			(new_task->real_parent->vfork_state == VFORK_ONGOING))
+		new_task->real_parent->vfork_state = VFORK_C_INVAL;
 hndl_return:
 	if (is_need_sync_pps) {
 		pthread_mutex_lock_unlock(&(ipc_sync->swap_exclusion_lock),
@@ -1183,6 +1171,8 @@ hndl_return:
 	}
 	if (current)
 		put_ve_task_struct(current);
+	if (new_task)
+		put_ve_task_struct(new_task);
 	VEOS_TRACE("Exiting");
 	return retval;
 }
