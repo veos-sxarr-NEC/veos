@@ -44,7 +44,6 @@
 #define PG_VE		(0x4000000000|MAP_ANON)	/*!< Flag represent VE Anonymous page*/
 #define PG_PTRACE	((uint64_t)1<<37)	/*!< Flag represent VE Anonymous page*/
 
-#define SHM_DEL		(0x1)		/*!< SHM Segemnt Destroy Flag*/
 /* SHM Segment Available Flag */
 #define	SHM_AVL				(0x0)	/*!< SHM Segment Available
 						 * Flag*/

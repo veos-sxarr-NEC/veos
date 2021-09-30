@@ -1743,7 +1743,7 @@ void update_proc_shm_struct(vemva_t shmaddr, pgno_t pgno,
 				}
 				if (found) {
 					if ((0 == shm->shm_segment->nattch) &&
-							(shm->shm_segment->flag & SHM_DEL)) {
+							(shm->shm_segment->ipc_stat.shm_perm.mode & SHM_DEST)) {
 						amm_release_shm_segment(shm->shm_segment);
 					}
 				}
@@ -6090,7 +6090,7 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 						break;
 					}
 					if (found) {
-						if ((seg->flag & SHM_DEL) &&
+						if ((seg->ipc_stat.shm_perm.mode & SHM_DEST) &&
 								(seg->nattch == 0)) {
 							VEOS_DEBUG("Shared memory segment with id %d"
 									"delete flag is set",
@@ -6126,7 +6126,9 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 	veos_free_dmaatb(&mm->dmaatb, tsk->p_ve_mm->dmaatb_progress);
 	ret = 0;
 
-
+/* don't reset rss_max and pgsz as these might be required by resource usage
+ * request for zombie tasks which have been partially cleaned up.
+ * */
 	mm->start_code = 0;
 	mm->end_code = 0;
 	mm->start_data = 0;
@@ -6138,11 +6140,11 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 	mm->arg_end = 0;
 	mm->env_start = 0;
 	mm->env_end = 0;
-	mm->rss_max = 0;
+//	mm->rss_max = 0;
 	mm->crss_max = 0;
 	mm->rsslim = 0;
 	mm->shared_rss = 0;
-	mm->pgsz = 0;
+//	mm->pgsz = 0;
 	mm->rss_data = 0;
 	mm->rss_stack = 0;
 	mm->vm_size = 0;

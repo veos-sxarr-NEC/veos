@@ -43,6 +43,7 @@
 #include "pseudo_vhshm.h"
 #include "pseudo_veshm.h"
 #include "sys_accelerated_io.h"
+#include "sys_offload.h"
 #include "veshm_defs.h"
 
 int tid_counter = -1;
@@ -4538,6 +4539,8 @@ ret_t ve_exit_group(int syscall_num, char *syscall_name, veos_handle *handle)
 	uint64_t args = 0;
 	int retval = -1;
 	int trace = (SIGTRAP | (PTRACE_EVENT_EXIT<<8));
+	char *env_val_acc_io_verbose = NULL;
+	char *ptr_env = NULL;
 
 	PSEUDO_TRACE("Entering");
 	PSEUDO_DEBUG("%s is called", syscall_name);
@@ -4549,6 +4552,15 @@ ret_t ve_exit_group(int syscall_num, char *syscall_name, veos_handle *handle)
 				"arguments");
 		PSEUDO_DEBUG("Failed to fetch arguments, return value %d",
 				(int)retval);
+	}
+
+	env_val_acc_io_verbose = getenv("VE_ACC_IO_VERBOSE");
+	if ((env_val_acc_io_verbose != NULL) &&
+		((int)strtol(env_val_acc_io_verbose, &ptr_env, 0) == 1)) {
+			if (sys_is_acc_io_enabled(handle))
+				fprintf(stderr, "Accelerated IO is enabled\n");
+			else
+				fprintf(stderr, "Accelerated IO is disabled\n");
 	}
 
 	/* Check whether PTRACE_O_TRACEEXIT is enabled */

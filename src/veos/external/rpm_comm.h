@@ -82,6 +82,8 @@ enum veos_rpm_subcmd {
 	VE_SWAP_OUT,
 	VE_SWAP_IN,
 	VE_SWAP_GET_CNS,
+	VE_VEOSCTL_GET_PARAM,
+	VE_VEOSCTL_SET_PARAM,
 	VE_RPM_INVALID = -1,
 };
 
@@ -445,6 +447,14 @@ struct ve_numa_stat {
 };
 
 /**
+ * @brief Structure to get veos scheduler parameters info
+ */
+struct ve_veosctl_stat {
+	int64_t timer_interval; /*!< for VEOS scheduler timer-interval */
+	int64_t time_slice;	/*!< for VE task's time-slice */
+};
+
+/**
  * @brief Structure to get swap status informations of one VE process
  */
 struct ve_swap_status_struct {
@@ -552,4 +562,6 @@ int rpm_handle_ve_swapstatusinfo_req(struct veos_thread_arg *pti);
 int rpm_handle_ve_swapnodeinfo_req(struct veos_thread_arg *pti);
 int rpm_handle_ve_swapinfo_req(struct veos_thread_arg *pti); 
 int rpm_handle_ve_get_cns_req(struct veos_thread_arg *);
+int rpm_handle_veosctl_get_req(struct veos_thread_arg *pti);
+int rpm_handle_veosctl_set_req(struct veos_thread_arg *pti);
 #endif

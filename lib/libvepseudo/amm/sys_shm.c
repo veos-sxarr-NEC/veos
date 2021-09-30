@@ -297,7 +297,23 @@ struct shm_seginfo *ve_get_shm_seg_pgmode(veos_handle *handle, int64_t shmid)
 
 	/* get the stat of shared memory */
 	ret = shmctl(shmid, IPC_STAT, &req.shm_stat);
-	if (-1 == ret) {
+	if ((-1 == ret) && (errno == EACCES)) {
+		PSEUDO_DEBUG("fail to get stat of id: %lx using shmclt", shmid);
+		PSEUDO_DEBUG("Lets try by reading /proc/sysvipc/shm");
+		ret = get_shmid_stat_proc(shmid, &req.shm_stat);
+		if (-1 == ret) {
+			errno = EACCES;
+			ret = -errno;
+			PSEUDO_DEBUG("fail to get stat of id: %lx from proc", shmid);
+			goto handle_err;
+		}
+		PSEUDO_DEBUG("SHMID[%ld] STAT shmkey:(0x%x) shm size:%lx shm mode%hu",
+				shmid,
+				req.shm_stat.shm_perm.__key,
+				req.shm_stat.shm_segsz,
+				req.shm_stat.shm_perm.mode);
+	}
+	else if (-1 == ret) {
 		PSEUDO_DEBUG("fail to get stat of shmid: %lx", shmid);
 		return NULL;
 	}
@@ -816,8 +832,10 @@ int64_t __ve_shmctl(veos_handle *handle, int64_t shmid,
 
 		/* Update the SHM stat at veos */
 		shm_seg_info = ve_get_shm_seg_pgmode(handle, shmid);
-		if (!shm_seg_info)
+		if (!shm_seg_info) {
+			ret = -errno;
 			PSEUDO_DEBUG("Failed to update shm stat at veos");
+		}
 		free(shm_seg_info);
 		break;
 	case SHM_LOCK:
@@ -830,6 +848,67 @@ shmctl_err:
 	free(buf);
 	PSEUDO_TRACE("returned");
 	return ret;
+}
+
+/**
+ * @brief This function read the shm stat from file /proc/sysvipc/shm based on shmid.
+ *
+ * @param[in] shmid SHM unique id.
+ * @param[out] buf reference to 'struct shmid_ds' to store shm stat.
+ *
+ * @return On success return 0, returns -1 on failures.
+ */
+int get_shmid_stat_proc(int shmid, struct shmid_ds *buf)
+{
+        char t_buf[BUF_SIZ];
+        int proc_shmid = 0;
+
+        FILE *f = NULL;
+
+        PSEUDO_TRACE("invoked");
+
+        f = fopen(SYSVIPC_FILE, "r");
+        if (!f) {
+                PSEUDO_DEBUG("Error(%s) opening file[%s]", strerror(errno), SYSVIPC_FILE);
+                return -1;
+        }
+        /*skiping header from file SYSVIPC_FILE*/
+        while (fgetc(f) != '\n');
+
+        /*Reading information related shm segment*/
+        while (fgets(t_buf, sizeof(t_buf), f) != NULL) {
+                if (sscanf(t_buf,
+                "%d %d  %ho %"SCNu64 " %u %u  "
+                "%"SCNu64 " %u %u %u %u %"SCNi64 " %"SCNi64 " %"SCNi64" \n",
+                &buf->shm_perm.__key,
+                &proc_shmid,
+                &buf->shm_perm.mode,
+                &buf->shm_segsz,
+                &buf->shm_cpid,
+                &buf->shm_lpid,
+                &buf->shm_nattch,
+                &buf->shm_perm.uid,
+                &buf->shm_perm.gid,
+                &buf->shm_perm.cuid,
+                &buf->shm_perm.cgid,
+                &buf->shm_atime,
+                &buf->shm_dtime,
+                &buf->shm_ctime) < 14)
+                        continue; /* invalid line, skipped*/
+
+                /* ID specified */
+                if (shmid == proc_shmid) {
+                        PSEUDO_DEBUG("shmid %d stat found in file[%s]", shmid, SYSVIPC_FILE);
+                        fclose(f);
+                        return 0;
+                } else
+                        continue;
+        }
+
+        PSEUDO_DEBUG("shmid %d stat not found in file[%s]", shmid, SYSVIPC_FILE);
+        fclose(f);
+        PSEUDO_TRACE("returned");
+        return -1;
 }
 
 /**
@@ -851,7 +930,23 @@ int64_t amm_request_shmctl_rmid(veos_handle *handle, int64_t shmid)
 
 	/* get the stat of shared memory */
 	ret = shmctl(shmid, IPC_STAT, &req.shm_stat);
-	if (-1 == ret) {
+	if ((-1 == ret) && (errno == EACCES)) {
+		PSEUDO_DEBUG("fail to get stat of id: %lx using shmclt", shmid);
+		PSEUDO_DEBUG("Lets try by reading /proc/sysvipc/shm");
+		ret = get_shmid_stat_proc(shmid, &req.shm_stat);
+		if (-1 == ret) {
+			errno = EACCES;
+			ret = -errno;
+			PSEUDO_DEBUG("fail to get stat of id: %lx from proc", shmid);
+			goto hndl_error;
+		}
+		PSEUDO_DEBUG("SHMID[%ld] STAT shmkey:(0x%x) shm size:%lx shm mode%hu",
+				shmid,
+				req.shm_stat.shm_perm.__key,
+				req.shm_stat.shm_segsz,
+				req.shm_stat.shm_perm.mode);
+	}
+	else if (-1 == ret) {
 		ret = -errno;
 		PSEUDO_DEBUG("fail to get stat of id: %lx", shmid);
 		goto hndl_error;

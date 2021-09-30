@@ -416,6 +416,9 @@ int get_ve_limit_opt(char *limit_opt, struct rlimit *ve_rlim)
 			if (!repeat_lim[SOFTS]) {
 				ve_rlim[RLIMIT_STACK].rlim_cur = lim_val;
 				repeat_lim[SOFTS] = 1;
+				if( -1 == setenv("VE_STACK_LIMIT", optarg, 1))
+					PSEUDO_DEBUG("setting env VE_STACK_LIMIT failed: %s", strerror(errno));
+					
 			}
 			if (!repeat_lim[HARDS]) {
 				ve_rlim[RLIMIT_STACK].rlim_max = lim_val;

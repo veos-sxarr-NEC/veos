@@ -63,7 +63,7 @@
 #include "task_mgmt.h"
 
 extern pthread_mutex_t readproc_mutex;
-#define ZOMBIE_TASK_CLEANUP_INTERVAL 2
+#define ZOMBIE_TASK_CLEANUP_INTERVAL 5
 
 /**
 * @brief Set the status of VE task to Exiting and perform cleanup

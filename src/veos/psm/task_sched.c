@@ -1947,14 +1947,16 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *curr_ve_task,
 	if (!schedule_current) {
 		/* Reset VE task time slice */
 		VEOS_DEBUG("Reset VE task time slice");
-		task_to_schedule->time_slice = veos_time_slice;
+		task_to_schedule->time_slice = VE_ATOMIC_GET(uint64_t,
+							&veos_time_slice);
 	} else if (task_to_schedule->time_slice <= 0) {
 		/* When scheduling is invoked from non-blocking
 		 * syscall then VE task time slice is reset only when
 		 * it is exhausted
 		 * */
 		VEOS_DEBUG("Reset VE task time slice");
-		task_to_schedule->time_slice = veos_time_slice;
+		task_to_schedule->time_slice = VE_ATOMIC_GET(uint64_t,
+							&veos_time_slice);
 	}
 	VEOS_DEBUG("Remaining time slice %ld",
 			task_to_schedule->time_slice);
@@ -2509,56 +2511,59 @@ void psm_sched_interval_handler(union sigval psm_sigval)
 		goto hndl_return;
 	}
 
+	/* acquire the handling_request_lock used for IPC communication
+	 * in order to make sure veos termination is not initialized while
+	 * scheduling is in progress
+	 **/
+	ret = pthread_rwlock_tryrdlock(&handling_request_lock);
+	if (ret) {
+		VEOS_ERROR("Scheduler failed in acquiring "
+				"try read lock");
+		if (ret == EBUSY)
+			goto terminate;
+		else
+			goto abort;
+	}
+	if (terminate_flag) {
+		pthread_rwlock_lock_unlock(&handling_request_lock, UNLOCK,
+				"Failed to release handling request lock");
+		goto terminate;
+	}
 	/* acquiring semaphore for node */
 	if (-1 == sem_trywait(&p_ve_node->node_sem)) {
 		VEOS_DEBUG("Node %d semaphore try lock failed with errno: %d",
 				p_ve_node->node_num, errno);
-		goto hndl_return;
+		goto release_handling_request_lock;
 	}
 
 	if (ONGOING == p_ve_node->scheduling_status) {
 		VEOS_DEBUG("Scheduling ongoing for Node %d",
 				VE_NODE_ID(node_loop));
 		sem_post(&p_ve_node->node_sem);
-		goto hndl_return;
+		goto release_handling_request_lock;
 	}
 
-	VEOS_TRACE("Setting ongoing for Node %d",
-			VE_NODE_ID(node_loop));
+	VEOS_TRACE("Setting ongoing for Node %d", VE_NODE_ID(node_loop));
 	SET_SCHED_STATE(p_ve_node->scheduling_status, ONGOING);
 
+	pthread_rwlock_lock_unlock(&(veos_scheduler_lock),RDLOCK,
+			"Failed to acquire scheduler read lock");
 	/* core loop */
-	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores; core_loop++) {
+	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores;
+							 core_loop++) {
 		p_ve_core = VE_CORE(VE_NODE_ID(node_loop), core_loop);
 		if (NULL == p_ve_core) {
 			VEOS_ERROR("BUG Core ID: %d struct is NULL",
-					core_loop);
+							core_loop);
 			continue;
 		}
-
-		if (!terminate_flag) {
-			ret = pthread_rwlock_tryrdlock
-				(&handling_request_lock);
-			if (ret) {
-				VEOS_ERROR("Scheduler failed in acquiring "
-						"try read lock");
-				if (ret == EBUSY)
-					goto terminate;
-				else
-					goto abort;
-			}
-			/* Rebalance task */
-			psm_rebalance_task_to_core(p_ve_core);
-			psm_find_sched_new_task_on_core(p_ve_core,
-					true, false);
-			pthread_rwlock_lock_unlock(&handling_request_lock,
-					UNLOCK,
-					"Failed to release handling request lock");
-		} else {
-			goto terminate;
-		}
+		/* Rebalance task */
+		psm_rebalance_task_to_core(p_ve_core);
+		psm_find_sched_new_task_on_core(p_ve_core,
+						true, false);
 	}
-
+	pthread_rwlock_lock_unlock(&(veos_scheduler_lock),UNLOCK,
+			"Failed to release scheduler read lock");
 	/* Caluculate the system load on every scheduler timer
 	 * expiry.
 	 */
@@ -2568,6 +2573,9 @@ void psm_sched_interval_handler(union sigval psm_sigval)
 			VE_NODE_ID(node_loop));
 	SET_SCHED_STATE(p_ve_node->scheduling_status, COMPLETED);
 	sem_post(&p_ve_node->node_sem);
+release_handling_request_lock:
+	pthread_rwlock_lock_unlock(&handling_request_lock,UNLOCK,
+		"Failed to release handling request lock");
 hndl_return:
 	VEOS_TRACE("Exiting");
 	return;
@@ -2944,7 +2952,7 @@ void psm_rebalance_task_to_core(struct ve_core_struct *p_ve_core)
 				"Failed to release ve_relocate_lock writelock");
 	} else {
 		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
-				"Failed to acquire Core %d read lock",
+				"Failed to release Core %d read lock",
 				p_ve_core->core_num);
 	}
 
@@ -3061,7 +3069,8 @@ void psm_find_sched_new_task_on_core(struct ve_core_struct *p_ve_core,
 		if (curr_ve_task->time_slice <= 0) {
 			VEOS_DEBUG("Reset time slice for PID %d on Core %d",
 					curr_ve_task->pid, curr_ve_task->core_id);
-			curr_ve_task->time_slice = veos_time_slice;
+			curr_ve_task->time_slice =
+				VE_ATOMIC_GET(uint64_t, &veos_time_slice);
 		}
 		curr_ve_task->stime = now_time;
 		goto hndl_return;

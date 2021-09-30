@@ -51,6 +51,9 @@ static uint64_t align_sz = 512;
 */
 bool ve_atomic_io = 0;
 
+/* Global variable records accelerated IO is enabled or disabled */
+static bool ve_acc_io = 0;
+
 /**
  * @brief Generic handler for read() and pread64() system call for VE.
  *
@@ -1508,6 +1511,7 @@ ret_t ve_hndl_write_pwrite64(int syscall_num, char *syscall_name,
 		PSEUDO_DEBUG("VE_ACCELERATED_IO_FLAG is not set");
 	} else {
 		dma_flag = 1;
+		ve_acc_io = 1;
 		PSEUDO_DEBUG("VE_ACCELERATED_IO_FLAG is set");
 		PSEUDO_DEBUG("vhva is %p", (void *)args[1]);
 		args[1] = args[1] & VE_ACCELERATED_IO_ADDR_MASK;
@@ -2207,6 +2211,7 @@ ret_t ve_hndl_read_pread64(int syscall_num, char *syscall_name,
 		PSEUDO_DEBUG("VE_ACCELERATED_IO_FLAG is not set");
 	} else {
 		dma_flag = 1;
+		ve_acc_io = 1;
 		PSEUDO_DEBUG("VE_ACCELERATED_IO_FLAG is set");
 		PSEUDO_DEBUG("vhva is %p", (void *)args[1]);
 		if ((vhva_and_flag & VE_SECOND_SYS_CALL_FLAG) == 0) {
@@ -2343,6 +2348,20 @@ ret_t ve_read(int syscall_num, char *syscall_name, veos_handle *handle)
 		return ve_hndl_read_pread64_nonatomic(syscall_num, syscall_name, handle);
 	else
 		return ve_hndl_read_pread64(syscall_num, syscall_name, handle);
+}
+
+/**
+ * @brief Handler of ve_is_acc_io_enabled().
+ *
+ *      This function returns whether accelerated IO is enabled or disabled.
+ *
+ * @param[in] handle VEOS handle.
+ *
+ * @return value of global variable (bool ve_acc_io).
+ */
+int sys_is_acc_io_enabled(veos_handle *handle)
+{
+	return ve_acc_io;
 }
 
 /**

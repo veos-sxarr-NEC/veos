@@ -44,4 +44,6 @@ int psm_rpm_handle_sched_get_scheduler(int, struct velib_setscheduler *);
 int psm_rpm_handle_pidstatus(int, struct velib_pidstatus *);
 int psm_rpm_handle_check_pid(int);
 int psm_rpm_handle_acct(int, char *);
+int64_t psm_rpm_handle_veosctl_get_req(struct ve_veosctl_stat *sched_param);
+int64_t psm_rpm_handle_veosctl_set_req(struct ve_veosctl_stat sched_param);
 #endif

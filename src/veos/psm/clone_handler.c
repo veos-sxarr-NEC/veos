@@ -609,8 +609,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	/* Allocate time slice to VE task, however when scheduled
 	 * this value will be initialised again. We are initializing it
 	 * so that it does not contain any junk value. */
-	new_task->time_slice = veos_time_slice;
-
+	new_task->time_slice = VE_ATOMIC_GET(int64_t, &veos_time_slice);
 	/* new_task is not created on driver yet, hence set flag to false*/
 	new_task->is_crt_drv = false;
 	new_task->is_dlt_drv = false;

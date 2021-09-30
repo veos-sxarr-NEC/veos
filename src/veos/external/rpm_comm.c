@@ -150,6 +150,88 @@ hndl_return:
 }
 
 /**
+ * @brief Handles the VE_VEOSCTL_SET_PARAM request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_veosctl_set_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	struct ve_veosctl_stat sched_param = {0};
+	ProtobufCBinaryData rpm_pseudo_msg = {0};
+
+	VEOS_TRACE("Entering");
+
+	if (!pti)
+		goto hndl_return1;
+
+	/* Fetch the struct ve_veosctl_stat from pti */
+	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
+								pseudo_msg;
+	if (sizeof(sched_param) != rpm_pseudo_msg.len) {
+		VEOS_ERROR("Expected request message len: [%lu] Got: [%lu]",
+			sizeof sched_param, rpm_pseudo_msg.len);
+		goto hndl_return1;
+	}
+	memcpy(&sched_param, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
+
+	retval = psm_rpm_handle_veosctl_set_req(sched_param);
+	if (0 > retval) {
+		VEOS_ERROR("Failed to set scheduler parameters using "
+						"veosctl command");
+		VEOS_DEBUG("veosctl command failed to set scheduler "
+				"parameters returned %d", retval);
+		goto hndl_return;
+	}
+	retval = 0;
+hndl_return:
+	/* Send the response back to RPM command */
+	retval = veos_rpm_send_cmd_ack(pti->socket_descriptor, NULL,
+								0, retval);
+hndl_return1:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Handles the VE_VEOSCTL_GET_PARAM request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_veosctl_get_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	struct ve_veosctl_stat sched_param = {0};
+
+	VEOS_TRACE("Entering");
+
+	if (!pti)
+		goto hndl_return1;
+
+	retval = psm_rpm_handle_veosctl_get_req(&(sched_param));
+	if (0 > retval) {
+		VEOS_ERROR("Failed to get scheduler parameters using "
+							"veosctl command");
+		VEOS_DEBUG("veosctl command failed to get scheduler "
+					"parameters returned %d", retval);
+		goto hndl_return;
+	}
+	retval = 0;
+hndl_return:
+	/* Send the response back to RPM command */
+	retval = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+			(uint8_t *)&sched_param,
+			sizeof(struct ve_veosctl_stat),retval);
+hndl_return1:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
  * @brief Handles the VE process getpriority request from RPM command.
  *
  * @param[in] pti Contains the request message received from RPM command
@@ -3140,6 +3222,22 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 	case VE_SWAP_GET_CNS:
 		VEOS_DEBUG("RPM request : VE_SWAP_GET_CNS");
 		retval = rpm_handle_ve_get_cns_req(pti);
+		if (0 > retval) {
+			VEOS_ERROR("Query request failed");
+			goto hndl_return;
+		}
+		break;
+	case VE_VEOSCTL_GET_PARAM:
+		VEOS_DEBUG("RPM request: VE_VEOSCTL_GET_PARAM");
+		retval = rpm_handle_veosctl_get_req(pti);
+		if (0 > retval) {
+			VEOS_ERROR("Query request failed");
+			goto hndl_return;
+		}
+		break;
+	case VE_VEOSCTL_SET_PARAM:
+		VEOS_DEBUG("RPM request: VE_VEOSCTL_SET_PARAM");
+		retval = rpm_handle_veosctl_set_req(pti);
 		if (0 > retval) {
 			VEOS_ERROR("Query request failed");
 			goto hndl_return;

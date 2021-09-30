@@ -322,6 +322,8 @@ int veos_send_sigkil(char *);
 int64_t veos_convert_sched_options(char *, int64_t, int64_t);
 extern volatile sig_atomic_t terminate_flag;
 extern pthread_rwlock_t handling_request_lock;
+extern pthread_rwlock_t veos_scheduler_lock;  /*protects time-slice and timer-interval*/
+
 extern int opt_ived; /* -i specified. */
 extern unsigned int opt_pcisync; /* -p specified. */
 extern pthread_t terminate_dma_th; /* a thread executing veos_terminate_dma() */

@@ -3063,8 +3063,10 @@ int psm_handle_get_interval_req(struct veos_thread_arg *pti)
 	ve_task_curr = find_ve_task_struct(ve_pid);
 	if (NULL != ve_task_curr) {
 		retval = 0;
-		tp.tv_sec = veos_time_slice / (1000 * 1000);
-		tp.tv_nsec = (veos_time_slice % (1000 * 1000)) * 1000;
+
+		tp.tv_sec = VE_ATOMIC_GET(int64_t, &veos_time_slice) / (1000 * 1000);
+		tp.tv_nsec = (VE_ATOMIC_GET(int64_t, &veos_time_slice) % (1000 * 1000)) * 1000;
+
 		put_ve_task_struct(ve_task_curr);
 		retval = psm_pseudo_send_get_interval_ack(pti,
 				retval, &tp);
@@ -3519,12 +3521,6 @@ int psm_handle_setaffinity_req(struct veos_thread_arg *pti)
 		goto hndl_return;
 	}
 	ve_req.pid = pid;
-
-	/* Releasing ipc read lock and acquiring write lock */
-	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock), UNLOCK,
-			"Failed to release ve_relocate_lock release lock");
-	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock), WRLOCK,
-			"Failed to acquire ve_relocate_lock write lock");
 
 	retval = psm_handle_setaffinity_request(caller_pid,
 			ve_req.pid, ve_req.mask);

@@ -370,7 +370,8 @@ int psm_rpm_handle_get_rusage_req(int pid, struct velib_get_rusage_info *ve_ru)
 		retval = -ESRCH;
 		goto hndl_return1;
 	}
-
+	pthread_mutex_lock_unlock(&(tsk->sighand->del_lock), LOCK,
+				"Failed to acquire thread group delete lock");
 	retval = psm_handle_get_rusage_request(tsk, RUSAGE_CHILDREN, &ve_r_child);
 	if (-1 == retval) {
 		VEOS_ERROR("Getting rusage request failed "
@@ -857,6 +858,112 @@ int psm_rpm_handle_acct(int pid, char *acct_file)
 		goto hndl_return;
 	}
 	retval = 0;
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Updates the veos scheduler’s time-slice and (or) timer-interval
+ *        on behalf of VE_VEOSCTL_SET_PARAM IPC from ‘veosctl’ user command.
+ *
+ * @param[in] sched_param Structure containing the values of time-slice
+ *                        and (or) timer-interval sent from ‘veosctl’ command
+ *
+ * @return 0 on success, -errno on failure.
+ *
+ * @internal
+ * @author PSM / Process management
+ */
+int64_t psm_rpm_handle_veosctl_set_req(struct ve_veosctl_stat sched_param)
+{
+	int64_t retval = -1;
+	struct itimerspec new_timer_value = { {0} };
+	struct itimerspec old_timer_value = { {0} };
+	struct ve_node_struct *p_ve_node = VE_NODE(0);
+
+	VEOS_TRACE("Entering");
+	VEOS_DEBUG("Handling VE_VEOSCTL_SET_PARAM veosctl's cmd request");
+
+	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock), UNLOCK,
+			"Failed to release ve_relocate_lock read lock");
+	pthread_rwlock_lock_unlock(&(veos_scheduler_lock),WRLOCK,
+			"Failed to acquire scheduler write lock");
+	if(sched_param.timer_interval){
+		VE_ATOMIC_SET(int64_t, &veos_timer_interval,
+						sched_param.timer_interval);
+		new_timer_value.it_interval.tv_sec =
+				veos_timer_interval / (1000 * 1000 * 1000);
+		new_timer_value.it_interval.tv_nsec =
+				veos_timer_interval % (1000 * 1000 * 1000);
+		/* setting timer initial expiration values */
+		new_timer_value.it_value.tv_sec =
+				veos_timer_interval / (1000 * 1000 * 1000);
+		new_timer_value.it_value.tv_nsec =
+				veos_timer_interval % (1000 * 1000 * 1000);
+
+		retval = timer_settime(p_ve_node->psm_sched_timer_id,
+				0, &new_timer_value,&old_timer_value);
+		if (-1 == retval){
+			VEOS_ERROR("veosctl command failed to set "
+					"timer_settime: %s",strerror(errno));
+			goto hndl_return;
+		}
+		else{
+			VEOS_DEBUG("SET_SCHED_PARAM:timer-interval from veosctl"
+				" SECS: %d N_SECS: %d",
+				(int)new_timer_value.it_interval.tv_sec,
+				(int)new_timer_value.it_interval.tv_nsec);
+		}
+	}
+
+	if(sched_param.time_slice){
+		VE_ATOMIC_SET(int64_t, &veos_time_slice,
+						sched_param.time_slice);
+		VEOS_DEBUG("SET_SCHED_PARAM: time-slice from veosctl "
+					"MICRO_SECS: %ld",veos_time_slice);
+	}
+	retval = 0;
+hndl_return:
+	pthread_rwlock_lock_unlock(&(veos_scheduler_lock), UNLOCK,
+				"Failed to release scheduler write lock");
+	pthread_rwlock_lock_unlock(
+				&(VE_NODE(0)->ve_relocate_lock), RDLOCK,
+			"Failed to acquire ve_relocate_lock read lock");
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Fetchs the veos scheduler’s time-slice and timer-interval invoked on
+ *        behalf of VE_VEOSCTL_GET_PARAM IPC from ‘veosctl’ user command.
+ *
+ * @param[out] sched_param Structure to be populated with time-slice and
+ *                         timer-interval and send back to user command.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int64_t psm_rpm_handle_veosctl_get_req(struct ve_veosctl_stat *sched_param)
+{
+	int64_t retval = -1;
+
+	if(!sched_param)
+		goto hndl_return;
+
+	VEOS_TRACE("Entering");
+	VEOS_DEBUG("Handling veosctl VE_VEOSCTL_GET_PARAM request ");
+	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock),UNLOCK,
+			"Failed to release ve_relocate_lock read lock");
+	pthread_rwlock_lock_unlock(&(veos_scheduler_lock),RDLOCK,
+			"Failed to acquire scheduler read lock");
+	sched_param->timer_interval = VE_ATOMIC_GET(uint64_t, &veos_timer_interval);
+	sched_param->time_slice = VE_ATOMIC_GET(uint64_t, &veos_time_slice);
+	pthread_rwlock_lock_unlock(&(veos_scheduler_lock),UNLOCK,
+			"Failed to release scheduler read lock");
+	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock),RDLOCK,
+			"Failed to acquire ve_relocate_lock read lock");
+	return 0;
 hndl_return:
 	VEOS_TRACE("Exiting");
 	return retval;

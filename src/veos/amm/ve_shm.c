@@ -500,7 +500,6 @@ int amm_do_shmctl(int shmid, long ipc_namespace)
 				shm_ent->ipc_namespace == ipc_namespace) {
 			VEOS_DEBUG("shm segment(%p) for shmid(%d) found",
 					shm_ent, shmid);
-			shm_ent->flag |= SHM_DEL;
 			shm_ent->ipc_stat.shm_perm.mode |= SHM_DEST;
 
 			/* If nattch of this segment is zero the remove the segment
@@ -689,7 +688,7 @@ detach_directly:
 		}
 
 		if (found) {
-			if ((shm_segment->flag & SHM_DEL) &&
+			if ((shm_segment->ipc_stat.shm_perm.mode & SHM_DEST) &&
 					(shm_segment->nattch == 0))
 				amm_release_shm_segment(shm_segment);
 		}
@@ -1037,7 +1036,6 @@ int rm_or_ls_segment(proc_t *proc_info, bool is_ipcs, struct ve_mapheader *heade
 			((sinfo_t *)shm_data + shm_cnt)->shmid = shm_trav->shmid;
 			((sinfo_t *)shm_data + shm_cnt)->shm_errno = 0;
 
-			shm_trav->flag |= SHM_DEL;
 			shm_trav->ipc_stat.shm_perm.mode |= SHM_DEST;
 
 			/* If none of the process attach to segment, destroying it

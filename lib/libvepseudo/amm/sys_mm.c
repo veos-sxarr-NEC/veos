@@ -52,6 +52,7 @@ char * const ve_grow_err_str[VE_GROW_NO_ERR] =
        "Requested Stack grow in alternate stack\n" /* VE_GROW_IN_ALT_STACK */,
        "Stack Limit Reached\n" /* VE_GROW_STACK_LIMIT */,
        "Requested Stack grow in guard area\n" /* VE_GROW_IN_GUARD_AREA */,
+       "Memory allocation for requested stack failed\n" /* VE_GROW_MEM_ALLOC */,
 };
 
 /**
@@ -1461,8 +1462,15 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 		else
 		{
 			PSEUDO_DEBUG("Error while mapping new stack");
+			grow_err = VE_GROW_MEM_ALLOC;
+			goto out;
 		}
 	}
+	else if(MAP_FAILED == ret_addr)
+	{
+		grow_err = VE_GROW_MEM_ALLOC;
+		goto out;
+	} 
 out:
 	if(VE_GROW_NO_ERR != grow_err)
 	{

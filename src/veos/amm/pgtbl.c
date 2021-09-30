@@ -1831,7 +1831,7 @@ pgno_t __replace_page(atb_entry_t *pte, struct ve_mm_struct *mm, int numa_node)
 				}
 			}
 			if (found) {
-				if ((seg->flag & SHM_DEL) && (seg->nattch == 0))
+				if ((seg->ipc_stat.shm_perm.mode & SHM_DEST) && (seg->nattch == 0))
 					amm_release_shm_segment(seg);
 			}
 			pthread_mutex_lock_unlock(&vnode->shm_node_lock, UNLOCK,

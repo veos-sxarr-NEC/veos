@@ -42,6 +42,7 @@
 #include "pseudo_vhshm.h"
 #include "sys_veaio.h"
 #include "sys_accelerated_io.h"
+#include "sys_offload.h"
 #include "exception.h"
 
 /**
@@ -1507,6 +1508,9 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 		break;
 	case VE_SYSVE_GET_MNS:
 		retval = ve_sys_get_mns(handle, args[1]);
+		break;
+	case VE_SYSVE_IS_ACC_IO_ENABLED:
+		retval = sys_is_acc_io_enabled(handle);
 		break;
 	default:
 		/* write return value */

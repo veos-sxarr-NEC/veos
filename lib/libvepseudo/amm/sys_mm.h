@@ -69,6 +69,7 @@ typedef enum ve_grow_err_t
        VE_GROW_IN_ALT_STACK,
        VE_GROW_STACK_LIMIT,
        VE_GROW_IN_GUARD_AREA,
+       VE_GROW_MEM_ALLOC,	
        VE_GROW_NO_ERR
 }ve_grow_err;
 

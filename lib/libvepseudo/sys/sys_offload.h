@@ -32,4 +32,5 @@ ret_t ve_hndl_write_pwrite64(int, char *, veos_handle *);
 ret_t ve_setuid(int, char *, veos_handle *);
 ret_t ve_setgid(int , char *, veos_handle *);
 ret_t ve_hndl_sethostname_setdomainname(int, char *, veos_handle *);
+int sys_is_acc_io_enabled(veos_handle *);
 #endif

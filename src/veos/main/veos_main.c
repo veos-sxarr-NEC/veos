@@ -75,6 +75,7 @@ int64_t veos_timer_interval = PSM_TIMER_INTERVAL_SECS * 1000000000 +
 						PSM_TIMER_INTERVAL_NSECS;
 int64_t veos_time_slice = PSM_TIME_SLICE_SECS * 1000000 +
 						(PSM_TIME_SLICE_NSECS / 1000);
+pthread_rwlock_t veos_scheduler_lock; /*protects time-slice and timer-interval*/
 int no_update_os_state = 0;
 struct ve_node_struct ve_node; /* the VE node */
 struct ve_node_struct *p_ve_node_global = &ve_node; /* the pointer to VE node */
@@ -897,6 +898,14 @@ int main(int argc, char *argv[])
 	if (retval != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
 				"Failed to initialize rwlock handling_request_lock: %s",
+				strerror(retval));
+		retval = 1;
+		goto hndl_sem;
+	}
+	retval = pthread_rwlock_init(&veos_scheduler_lock, &rw_attr);
+	if (retval != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
+				"Failed to initialize rwlock veos_scheduler_lock: %s",
 				strerror(retval));
 		retval = 1;
 		goto hndl_sem;

@@ -1097,8 +1097,7 @@ int psm_relocate_ve_task(int old_node_id, int old_core_id,
 		VEOS_DEBUG("Scheduling out the "
 				"current task from Core %d",
 				p_ve_core->core_num);
-		psm_find_sched_new_task_on_core(p_ve_core, false,
-				false);
+		psm_find_sched_new_task_on_core(p_ve_core, false, false);
 	}
 
 	/* If still the relocating task is the current task of the
@@ -2173,7 +2172,7 @@ void veos_prepare_acct_info(struct ve_task_struct *tsk)
 	pacct->acct_info.ac_numanode = tsk->numa_node;
 
 	/*Timeslice of the process (us)*/
-	pacct->acct_info.ac_timeslice = veos_time_slice;
+	pacct->acct_info.ac_timeslice = VE_ATOMIC_GET(uint64_t, &veos_time_slice);
 
 	/*session_id*/
 	pacct->acct_info.ac_sid = tsk->sid;
@@ -2858,7 +2857,8 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	/* Allocate time slice to VE task, however when scheduled
 	 * this value will be initialised again. We are initializing it
 	 * so that it does not contain any junk value. */
-	tsk->time_slice = veos_time_slice;
+	tsk->time_slice = VE_ATOMIC_GET(uint64_t, &veos_time_slice);
+
 	tsk->sstatus = INVALID;
 
 	if (!rpm_task_create)
@@ -3745,9 +3745,13 @@ int psm_handle_un_block_request(struct ve_task_struct *tsk,
 		/* current task on core is in running state so invoke scheduler
 		 * with scheduler_expiry true
 		 * */
-		else if (p_ve_core->nr_active > 1)
+		else if (p_ve_core->nr_active > 1){
+			/* In order to maintain the locking sequence,
+			 * release and reqacquire ve_relocate_lock
+			 * */
 			psm_find_sched_new_task_on_core(p_ve_core, true, false);
-	}
+		}
+         }
 hndl_return:
 	VEOS_TRACE("Exiting");
 	return retval;
@@ -4185,6 +4189,11 @@ int64_t psm_handle_setaffinity_request(pid_t caller, pid_t pid, cpu_set_t mask)
 	VEOS_TRACE("Entering");
 	VEOS_DEBUG("Handling set affinity request for PID %d", pid);
 
+	/* Releasing ve_relocate_lock read lock and acquiring write lock */
+	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock), UNLOCK,
+			"Failed to release ve_relocate_lock release lock");
+	pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock), WRLOCK,
+			"Failed to acquire ve_relocate_lock write lock");
 	tsk = find_ve_task_struct(pid);
 	if (tsk == NULL && !(tsk = checkpid_in_zombie_list(pid))) {
 		VEOS_DEBUG("PID: %d not found.", pid);

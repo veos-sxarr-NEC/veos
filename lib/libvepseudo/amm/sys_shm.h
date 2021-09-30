@@ -54,6 +54,7 @@
 #define SYSVIPC_FILE "/proc/sysvipc/shm"
 
 int get_shm_stat_proc(int shmid, key_t key, struct shmid_ds *buf);
+int get_shmid_stat_proc(int shmid, struct shmid_ds *buf);
 ret_t ve_shmat(int syscall_num, char *syscall_name, veos_handle *handle);
 ret_t ve_shmctl(int syscall_num, char *syscall_name,
 			veos_handle *handle);
