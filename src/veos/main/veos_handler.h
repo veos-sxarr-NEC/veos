@@ -108,6 +108,7 @@ int psm_handle_giduid_req(struct veos_thread_arg *pti);
 int psm_handle_send_pseudo_giduid_ack(struct veos_thread_arg *pti,
 		int ack_ret);
 int psm_handle_get_mempolicy_req(struct veos_thread_arg *);
+int psm_handle_set_next_thread_worker_req(struct veos_thread_arg *);
 
 /* IVED <--------------> PSEUDO*/
 extern int veos_veshm_veshmctl(struct veos_thread_arg *);

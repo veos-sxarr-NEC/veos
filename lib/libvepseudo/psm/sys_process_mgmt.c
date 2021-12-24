@@ -1559,10 +1559,11 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 	int ve_env_given[6] = {0};
 	/* To fetch VE pointers */
 	char *execve_arg[EXECVE_MAX_ARGS] = {NULL};
-	char *execve_envp[EXECVE_MAX_ENVP] = {NULL};
+	char **execve_envp = NULL;
+	char **tmp_execve_envp = NULL;
 	/* To store VH pointers */
 	char *execve_vh_arg[EXECVE_MAX_ARGS] = {NULL};
-	char *execve_vh_envp[EXECVE_MAX_ENVP] = {NULL};
+	char **execve_vh_envp = NULL;
 	int cntr = 0;
 	int fd = -1;
 
@@ -1579,6 +1580,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 	int loop_cntr = 0;
 	int vefd = 0;
 	int index = 0;
+	uint32_t capacity = 0;
 
 	PSEUDO_TRACE("Entering");
 	PSEUDO_DEBUG("%s is called", syscall_name);
@@ -1785,8 +1787,21 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 		goto hndl_fail2;
 	}
 
+	if(NULL != (uint64_t *)args[2])
+		capacity = EXECVE_THRESHOLD_ENVP;
+	else
+		capacity = VE_EXECVE_ARGS;
+
+	/* Allocate initial buffer for env pointers upto 513 threshold */
+	execve_envp = (void *)malloc(capacity * sizeof(char *));
+	if (NULL == execve_envp) {
+		PSEUDO_DEBUG("Allocation Failed for envp pointers");
+		retval = -errno;
+		goto hndl_fail2;
+	}
+	memset(execve_envp, '\0', capacity * sizeof(char *));
+	loop_cntr = 0;
 	if (NULL != (uint64_t *)args[2]) {
-		loop_cntr = 0;
 		for (;;) {
 			PSEUDO_DEBUG("ENV[%d] %p", loop_cntr, (void *)execve_envp + loop_cntr);
 			if (0 > ve_recv_data(handle, (uint64_t)args[2]
@@ -1795,16 +1810,46 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 						(void *)(execve_envp + loop_cntr))) {
 				break;
 			}
-			loop_cntr++;
-			if (loop_cntr >= EXECVE_MAX_ENVP)
+			if (0 == execve_envp[loop_cntr])
+			{
+				loop_cntr++;
 				break;
+			}
+			loop_cntr++;
+			if (loop_cntr >= capacity)
+			{
+				/* Seems a contender for bigger memory utilization */
+				PSEUDO_DEBUG("Environment Variables exceeding threshold [%lu] .. Going for re-allocation ",(unsigned long)capacity);
+				capacity <<= 1; /* Double the size */
+				tmp_execve_envp = execve_envp;
+				execve_envp = (void *) realloc(execve_envp, capacity * sizeof(char *));
+				if (NULL == execve_envp) {
+					retval = -errno;
+					PSEUDO_DEBUG("Re-allocation Failed for execve_envp");
+					if(NULL != tmp_execve_envp)
+					{
+						free(tmp_execve_envp);
+						tmp_execve_envp = NULL;
+					}
+					goto hndl_fail2;
+				}
+
+			}
 		}
 	} else {
 		PSEUDO_DEBUG("No Environment variables given");
 		execve_envp[0] = (char *)args[2];
 	}
 
-	for (cntr = 0; cntr < EXECVE_MAX_ENVP; cntr++) {
+	execve_vh_envp = (void *)malloc((loop_cntr + VE_EXECVE_ARGS) * sizeof(char *));
+	if (NULL == execve_vh_envp) {
+		PSEUDO_DEBUG("Allocation Failed for envp pointers");
+		retval = -errno;
+		goto hndl_fail2;
+	}
+	memset(execve_vh_envp, '\0', (loop_cntr + VE_EXECVE_ARGS) * sizeof(char *));
+
+	for (cntr = 0; cntr < loop_cntr; cntr++) {
 		if (0 == execve_envp[cntr])
 			break;
 		execve_vh_envp[cntr] = (char *)malloc(PATH_MAX * sizeof(char));
@@ -1840,12 +1885,6 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 		}
 	}
 
-	if (cntr >= EXECVE_MAX_ENVP) {
-		PSEUDO_ERROR("Environment variable count exceeded");
-		retval = -E2BIG;
-		goto hndl_fail2;
-	}
-
 	/* Pass ve specific environment variables inherited
 	 * from current process to execve'ed process if not already passed
 	 * in environment variable array received as argument to execve().
@@ -1855,11 +1894,6 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 			if (ve_env_given[indx])
 				continue;
 
-			if (cntr >= EXECVE_MAX_ENVP) {
-				PSEUDO_ERROR("Environment variable count exceeded");
-				retval = -E2BIG;
-				goto hndl_fail2;
-			}
 			execve_vh_envp[cntr] = (char *)malloc(PATH_MAX
 					* sizeof(char));
 			if (NULL == execve_vh_envp[cntr]) {
@@ -1904,7 +1938,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 		}
 	}
 
-	for (cntr = 0; cntr < EXECVE_MAX_ARGS; cntr++) {
+	for (cntr = 0; cntr < loop_cntr + VE_EXECVE_ARGS; cntr++) {
 		if (0 == execve_vh_envp[cntr])
 			break;
 
@@ -1975,7 +2009,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 			close(global_tid_info[index].vefd);
 	}
 
-	for (cntr = 0; cntr < EXECVE_MAX_ENVP; cntr++) {
+	for (cntr = 0; cntr < EXECVE_MAX_ARGS; cntr++) {
 		if (0 == execve_vh_arg[cntr])
 			break;
 
@@ -2018,9 +2052,20 @@ hndl_fail2:
 	}
 
 	cntr = 0;
-	while (NULL != execve_vh_envp[cntr] && cntr < EXECVE_MAX_ENVP - 1) {
-		PSEUDO_DEBUG("Freeing environment variable %d", cntr);
-		free(execve_vh_envp[cntr++]);
+	if(NULL != execve_vh_envp)
+	{
+		PSEUDO_DEBUG("Freeing buffer for env variable pointers");
+		while (NULL != execve_vh_envp[cntr] && cntr < loop_cntr + VE_EXECVE_ARGS) {
+			PSEUDO_DEBUG("Freeing environment variable %d", cntr);
+			free(execve_vh_envp[cntr++]);
+		}
+		free(execve_vh_envp);
+		execve_vh_envp = NULL;
+	}
+	if(NULL != execve_envp)
+	{
+		free(execve_envp);
+		execve_envp = NULL;
 	}
 hndl_fail1:
 	if (real_exe_name != NULL)

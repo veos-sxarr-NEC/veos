@@ -73,4 +73,5 @@ int psm_setnew_sas_ack(struct veos_thread_arg *, struct ve_sigalt_info *);
 int psm_pseudo_send_sigprocmask_ack(struct ve_signal_mask *,
 		struct veos_thread_arg *, int);
 int psm_pseudo_send_sigpending_ack(sigset_t *, struct veos_thread_arg *, int);
+int psm_pseudo_send_set_worker_ack(struct veos_thread_arg *, int ack_ret);
 #endif

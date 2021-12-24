@@ -1226,11 +1226,13 @@ int psm_get_active_proc_num(struct ve_core_struct *p_ve_core)
 	do {
 		pthread_mutex_lock_unlock(&ve_task_curr->ve_task_lock, LOCK,
 					"Failed to acquire ve_task_lock");
-		if ((ve_task_curr->ve_task_state == WAIT) ||
+		if (((ve_task_curr->ve_task_state == WAIT) ||
 				(ve_task_curr->ve_task_state == RUNNING)
 				|| ((ve_task_curr->ve_task_state == STOP)
 				&& (ve_task_curr->ptraced) 
-				&& (ve_task_curr->group_leader->ptraced)))
+				&& (ve_task_curr->group_leader->ptraced))) &&
+				((ve_task_curr->ve_task_worker_belongs == NULL) &&
+				!(ve_task_curr->ve_task_worker_belongs_chg)))
 			active_proc_num++;
 		pthread_mutex_lock_unlock(&ve_task_curr->ve_task_lock, UNLOCK,
 					"Failed to release ve_task_lock");
@@ -2034,40 +2036,41 @@ unsigned long long veos_usec_to_AHZ(unsigned long long val)
  * @internal
  * @author PSMG / Process management
 */
-void print_accounting(pid_t pid, struct pacct_struct *pacct)
+void print_accounting(struct pacct_struct *pacct)
 {
-	VEOS_DEBUG("PID of the task : %d", pid);
-	VEOS_DEBUG("ac_sid: %d", pacct->acct_info.ac_sid);
-	VEOS_DEBUG("ac_total_mem: %f", pacct->acct_info.ac_total_mem);
-	VEOS_DEBUG("ac_maxmem: %lld",pacct->acct_info.ac_maxmem);
-	VEOS_DEBUG("ac_timeslice: %d", pacct->acct_info.ac_timeslice);
-	VEOS_DEBUG("ac_max_nthread: %d", pacct->acct_info.ac_max_nthread);
-	VEOS_DEBUG("ac_syscall: %lld", pacct->acct_info.ac_syscall);
-	VEOS_DEBUG("ac_transdata: %f", pacct->acct_info.ac_transdata);
-	VEOS_DEBUG("ac_numanode: %d", pacct->acct_info.ac_numanode);
-	VEOS_DEBUG("ac_ex: %llx", pacct->acct_info.ac_ex);
-	VEOS_DEBUG("ac_vx: %llx", pacct->acct_info.ac_vx);
-	VEOS_DEBUG("ac_fpec: %llx", pacct->acct_info.ac_fpec);
-	VEOS_DEBUG("ac_ve: %llx", pacct->acct_info.ac_ve);
-	VEOS_DEBUG("ac_l1lmc: %llx", pacct->acct_info.ac_l1lmc);
-	VEOS_DEBUG("ac_vecc: %llx", pacct->acct_info.ac_vecc);
-	VEOS_DEBUG("ac_l1mcc: %llx", pacct->acct_info.ac_l1mcc);
-	VEOS_DEBUG("ac_l2mcc: %llx", pacct->acct_info.ac_l2mcc);
-	VEOS_DEBUG("ac_ve2: %llx", pacct->acct_info.ac_ve2);
-	VEOS_DEBUG("ac_varec: %llx", pacct->acct_info.ac_varec);
-	VEOS_DEBUG("ac_l1lmcc: %llx", pacct->acct_info.ac_l1lmcc);
-	VEOS_DEBUG("ac_vldec: %llx", pacct->acct_info.ac_vldec);
-	VEOS_DEBUG("ac_l1omcc: %llx", pacct->acct_info.ac_l1omcc);
-	VEOS_DEBUG("ac_pccc: %llx", pacct->acct_info.ac_pccc);
-	VEOS_DEBUG("ac_ltrc: %llx", pacct->acct_info.ac_ltrc);
-	VEOS_DEBUG("ac_vldcc: %llx", pacct->acct_info.ac_vldcc);
-	VEOS_DEBUG("ac_strc: %llx", pacct->acct_info.ac_strc);
-	VEOS_DEBUG("ac_vlec: %llx", pacct->acct_info.ac_vlec);
-	VEOS_DEBUG("ac_vlcme: %llx", pacct->acct_info.ac_vlcme);
-	VEOS_DEBUG("ac_vlcme2: %llx", pacct->acct_info.ac_vlcme2);
-	VEOS_DEBUG("ac_fmaec: %llx", pacct->acct_info.ac_fmaec);
-	VEOS_DEBUG("ac_ptcc: %llx", pacct->acct_info.ac_ptcc);
-	VEOS_DEBUG("ac_ttcc: %llx", pacct->acct_info.ac_ttcc);
+	VEOS_DEBUG("Accounting information of PID : %d", pacct->acct_info.ac_pid);
+	VEOS_DEBUG("ac_comm: %s, ac_vesrion: %d, ac_exitcode: %d",
+			pacct->acct_info.ac_comm, pacct->acct_info.ac_version,
+			pacct->acct_info.ac_exitcode);
+	VEOS_DEBUG("ac_uid: %d, ac_gid: %d, ac_pid: %d, ac_ppid: %d",
+			pacct->acct_info.ac_uid, pacct->acct_info.ac_gid,
+			pacct->acct_info.ac_pid, pacct->acct_info.ac_ppid);
+	VEOS_DEBUG("ac_mem : %d, ac_sid: %d, ac_total_mem: %f, ac_maxmem: %lld",
+			pacct->acct_info.ac_mem, pacct->acct_info.ac_sid,
+			pacct->acct_info.ac_total_mem, pacct->acct_info.ac_maxmem);
+	VEOS_DEBUG("ac_timeslice: %d, ac_max_nthread: %d, ac_syscall: %lld, "
+			"ac_transdata: %f, ac_numanode: %d",
+			pacct->acct_info.ac_timeslice, pacct->acct_info.ac_max_nthread,
+			pacct->acct_info.ac_syscall, pacct->acct_info.ac_transdata,
+			pacct->acct_info.ac_numanode);
+	VEOS_DEBUG("ac_ex: %llx, ac_vx: %llx, ac_fpec: %llx, ac_ve: %llx",
+			pacct->acct_info.ac_ex, pacct->acct_info.ac_vx,
+			pacct->acct_info.ac_fpec, pacct->acct_info.ac_ve);
+	VEOS_DEBUG("ac_l1lmc: %llx, ac_vecc: %llx, ac_l1mcc: %llx, ac_l2mcc: %llx",
+			pacct->acct_info.ac_l1lmc, pacct->acct_info.ac_vecc,
+			pacct->acct_info.ac_l1mcc, pacct->acct_info.ac_l2mcc);
+	VEOS_DEBUG("ac_ve2: %llx, ac_varec: %llx, ac_l1lmcc: %llx, ac_vldec: %llx",
+			pacct->acct_info.ac_ve2, pacct->acct_info.ac_varec,
+			pacct->acct_info.ac_l1lmcc, pacct->acct_info.ac_vldec);
+	VEOS_DEBUG("ac_l1omcc: %llx, ac_pccc: %llx, ac_ltrc: %llx, ac_vldcc: %llx",
+			pacct->acct_info.ac_l1omcc, pacct->acct_info.ac_pccc,
+			pacct->acct_info.ac_ltrc, pacct->acct_info.ac_vldcc);
+	VEOS_DEBUG("ac_strc: %llx, ac_vlec: %llx, ac_vlcme: %llx, ac_vlcme2: %llx",
+			pacct->acct_info.ac_strc, pacct->acct_info.ac_vlec,
+			pacct->acct_info.ac_vlcme, pacct->acct_info.ac_vlcme2);
+	VEOS_DEBUG("ac_fmaec: %llx, ac_ptcc: %llx, ac_ttcc: %llx",
+			pacct->acct_info.ac_fmaec, pacct->acct_info.ac_ptcc,
+			pacct->acct_info.ac_ttcc);
 }
 
 /**
@@ -2094,7 +2097,7 @@ bool veos_acct_check_free_space()
 	if (fstatfs(veos_acct.fd, &sbuf) == -1) {
 		VEOS_DEBUG("Failed to get file system statistics: %s",
 							strerror(errno));
-		return false;
+		goto out;
 	}
 	veos_acct.check_space_time = now;
 	if (veos_acct.active) {
@@ -2182,15 +2185,18 @@ void veos_prepare_acct_info(struct ve_task_struct *tsk)
 
 	/* Command name of the program */
 	memcpy(pacct->acct_info.ac_comm, tsk->ve_comm, ACCT_COMM-1);
+
+	print_accounting(pacct);
 }
 
 void veos_dump_acct_info(struct ve_task_struct *tsk)
 {
 	int retval = 0;
 	struct pacct_struct *pacct = NULL;
+
+	veos_prepare_acct_info(tsk);
 	pacct = &(tsk->sighand->pacct);
 	/*printing accounting data before dumping to file*/
-	print_accounting(tsk->pid, pacct);
 
 	/* Write struct ve_acct to file */
 	retval = write(veos_acct.fd, (char *)&(pacct->acct_info),
@@ -2219,11 +2225,11 @@ void veos_acct_ve_proc(struct ve_task_struct *tsk)
 	VEOS_TRACE("Entering");
 	if (!tsk)
 		goto hndl_return;
+	if (tsk->ve_task_state == ZOMBIE)
+		goto hndl_return;
 	if (!veos_acct_check_free_space())
 		goto hndl_return;
-	veos_prepare_acct_info(tsk);
-	if (tsk->ve_task_state != ZOMBIE)
-		veos_dump_acct_info(tsk);
+	veos_dump_acct_info(tsk);
 
 hndl_return:
 	VEOS_TRACE("Exiting");
@@ -3720,9 +3726,6 @@ int psm_handle_un_block_request(struct ve_task_struct *tsk,
 	if (p_ve_core->nr_active == 1)
 		schedule_current = true;
 
-	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
-			"Failed to release ve core lock");
-
 	/* Scheduling a new VE process on VE core as current
 	 * VE process have generated MONC
 	 * */
@@ -3730,6 +3733,8 @@ int psm_handle_un_block_request(struct ve_task_struct *tsk,
 		VEOS_DEBUG("Scheduling Current Process"
 				" after unblock on Core %d",
 				p_ve_core->core_num);
+		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
+				"Failed to release ve core lock");
 		psm_find_sched_new_task_on_core(p_ve_core, false,
 				schedule_current);
 	} else {
@@ -3739,19 +3744,59 @@ int psm_handle_un_block_request(struct ve_task_struct *tsk,
 		/* current task on core is in wait state so invoke scheduler
 		 * with scheduler_expiry false
 		 * */
-		if (p_ve_core->nr_active == 1)
+		if (p_ve_core->nr_active == 1){
+			pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
+					"Failed to release ve core lock");
 			psm_find_sched_new_task_on_core(p_ve_core, false, false);
 
 		/* current task on core is in running state so invoke scheduler
 		 * with scheduler_expiry true
 		 * */
-		else if (p_ve_core->nr_active > 1){
+		}else if (p_ve_core->nr_active > 1){
 			/* In order to maintain the locking sequence,
 			 * release and reqacquire ve_relocate_lock
 			 * */
-			psm_find_sched_new_task_on_core(p_ve_core, true, false);
+			pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
+				"Failed to acquire task lock");
+			if (((tsk->ve_task_worker_belongs != NULL) ||
+				(tsk->ve_task_worker_belongs_chg)) &&
+					(p_ve_core->curr_ve_task != NULL)){
+				if(p_ve_core->curr_ve_task->tgid == tsk->tgid){
+					/* current task on core is same thread group
+					 * of worker thread, So invoke scheduler
+					 * with scheduler_expiry false
+					 * */
+					VEOS_DEBUG("Scheduling Worker Process"
+						" after unblock on Core %d",
+						p_ve_core->core_num);
+					pthread_mutex_lock_unlock(&(tsk->ve_task_lock),
+						UNLOCK, "Failed to release task lock");
+					pthread_rwlock_lock_unlock(
+						&(p_ve_core->ve_core_lock), UNLOCK,
+						"Failed to release ve core lock");
+					psm_find_sched_new_task_on_core(p_ve_core,
+						false, false);
+				}else{
+					pthread_mutex_lock_unlock(&(tsk->ve_task_lock),
+						UNLOCK, "Failed to release task lock");
+					pthread_rwlock_lock_unlock(
+						&(p_ve_core->ve_core_lock), UNLOCK,
+						"Failed to release ve core lock");
+					psm_find_sched_new_task_on_core(p_ve_core,
+						true, false);
+				}
+			}else{
+				pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
+					"Failed to release task lock");
+				pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
+					UNLOCK, "Failed to release ve core lock");
+				psm_find_sched_new_task_on_core(p_ve_core, true, false);
+			}
+		}else{
+			pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
+					"Failed to release ve core lock");
 		}
-         }
+	}
 hndl_return:
 	VEOS_TRACE("Exiting");
 	return retval;
@@ -4185,6 +4230,7 @@ int64_t psm_handle_setaffinity_request(pid_t caller, pid_t pid, cpu_set_t mask)
 	struct ve_core_struct *p_ve_core = NULL;
 	struct ve_node_struct *p_ve_node = NULL;
 	int core_loop = 0;
+	struct ve_task_struct *temp = NULL;
 
 	VEOS_TRACE("Entering");
 	VEOS_DEBUG("Handling set affinity request for PID %d", pid);
@@ -4201,6 +4247,20 @@ int64_t psm_handle_setaffinity_request(pid_t caller, pid_t pid, cpu_set_t mask)
 		goto hndl_return;
 	}
 
+	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
+					"Failed to acquire task lock");
+	if((tsk->ve_task_worker_belongs != NULL) ||
+		(tsk->ve_task_worker_belongs_chg)){
+		/* This task is worker. so unable to move.
+		 */
+		VEOS_DEBUG("PID: %d is worker thread.", pid);
+		retval = -EINVAL;
+		pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
+					"Failed to release task lock");
+		goto hndl_return1;
+	}
+	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
+					"Failed to release task lock");
 	p_ve_node = VE_NODE(tsk->node_id);
 	memset(&ve_proc_info, 0, sizeof(proc_t));
 	retval = psm_get_ve_proc_info(pid, &ve_proc_info);
@@ -4277,12 +4337,12 @@ set_affinity:
 			}
 		}
 	}
-        pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
-                        "Failed to acquire task lock");
+	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
+						"Failed to acquire task lock");
 	old_mask = tsk->cpus_allowed;
 	tsk->cpus_allowed = mask;
-        pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
-                        "Failed to release task lock");
+	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
+						"Failed to release task lock");
 
 	/* check that after updating the affinity VE process
 	 * need to relocate or not.
@@ -4302,8 +4362,41 @@ set_affinity:
 					"Failed to release task lock");
 			goto hndl_return1;
 		}
-		psm_relocate_ve_task(tsk->node_id, tsk->core_id, node_id,
-			core_id, tsk);
+		pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
+			"Failed to acquire task lock");
+		if(tsk->ve_task_have_worker == true){
+			/* This task have worker. so move worker thread too.
+			 */
+			temp = tsk->ve_worker_thread;
+			if (temp != NULL){
+				pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
+					"Failed to release task lock");
+				pthread_rwlock_lock_unlock(&(VE_CORE(0, temp->core_id)->ve_core_lock),
+					RDLOCK,
+					"Failed to acquire ve core read lock");
+				retval = get_ve_task_struct(temp);
+				pthread_rwlock_lock_unlock(&(VE_CORE(0, temp->core_id)->ve_core_lock),
+					UNLOCK,
+					"Failed to release ve core read lock");
+				if (0 > retval) {
+					VEOS_ERROR("failed to get task reference");
+					goto hndl_return1;
+				}
+				psm_relocate_ve_task(tsk->node_id, tsk->core_id, node_id,
+					core_id, tsk);
+				psm_relocate_ve_task(temp->node_id, temp->core_id,
+					node_id, core_id, temp);
+				put_ve_task_struct(temp);
+			}else{
+				pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
+					"Failed to release task lock");
+			}
+		}else{
+			pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
+					"Failed to release task lock");
+			psm_relocate_ve_task(tsk->node_id, tsk->core_id, node_id,
+				core_id, tsk);
+		}
 	}
 	retval = 0;
 
@@ -4821,4 +4914,80 @@ hndl_return:
 
 	VEOS_TRACE("Exiting");
 	return c_tsk;
+}
+
+
+/**
+ * @brief Set the flag to indicate that create the next thread as worker
+ *
+ * @param[in] pid pid of the thread
+ *
+ * @return task ID of calling task on success and
+ * 		negative errno on failure.
+ *
+ * @internal
+ */
+int64_t psm_handle_set_next_thread_worker_request(pid_t u_pid)
+{
+	int retval = 0;
+	struct ve_task_struct *u_tsk = NULL;
+	struct ve_task_struct *tmp = NULL;
+	struct list_head *p, *n;
+	int count = 0;
+
+	VEOS_TRACE("Entering");
+	VEOS_DEBUG("Handling set next thread worker request for PID %d", u_pid);
+
+	u_tsk = find_ve_task_struct(u_pid);
+	if (u_tsk == NULL) {
+		VEOS_DEBUG("PID: %d not found.", u_pid);
+		retval = -ESRCH;
+		goto hndl_return;
+	}
+
+	pthread_mutex_lock_unlock(
+		&u_tsk->group_leader->p_ve_mm->thread_group_mm_lock,
+				LOCK, "Failed to acquire thread-group-mm-lock");
+	if (!thread_group_empty(u_tsk)) {
+		list_for_each_safe(p, n, &u_tsk->thread_group) {
+			tmp = list_entry(p, struct ve_task_struct,thread_group);
+			pthread_mutex_lock_unlock(&tmp->ve_task_lock, LOCK,
+				"Failed to acquire ve_task_lock");
+			if(((tmp->ve_task_worker_belongs != NULL) ||
+				(tmp->ve_task_worker_belongs_chg)) ||
+				(tmp->ve_set_next_thread_worker == true)){
+				count++;
+				pthread_mutex_lock_unlock(&tmp->ve_task_lock,
+					UNLOCK, "Failed to acquire ve_task_lock");
+				break;
+			}
+			pthread_mutex_lock_unlock(&tmp->ve_task_lock, UNLOCK,
+				"Failed to acquire ve_task_lock");
+		}
+	}
+	if(count == 0){
+		pthread_mutex_lock_unlock(&u_tsk->ve_task_lock, LOCK,
+			"Failed to acquire ve_task_lock");
+		if(((u_tsk->ve_task_worker_belongs != NULL) ||
+			(u_tsk->ve_task_worker_belongs_chg)) ||
+			(u_tsk->ve_set_next_thread_worker == true)){
+			retval = -EBUSY;
+		}else{
+			u_tsk->ve_set_next_thread_worker=true;
+		}
+		pthread_mutex_lock_unlock(&u_tsk->ve_task_lock, UNLOCK,
+			"Failed to acquire ve_task_lock");
+	}else{
+		VEOS_DEBUG("There is already VE worker thread");
+		retval = -EBUSY;
+	}
+	pthread_mutex_lock_unlock(
+		&u_tsk->group_leader->p_ve_mm->thread_group_mm_lock,
+		UNLOCK, "Failed to release thread-group-mm-lock");
+
+	put_ve_task_struct(u_tsk);
+
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
 }

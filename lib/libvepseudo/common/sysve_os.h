@@ -35,5 +35,6 @@ int ve_sys_map_dmades(veos_handle *, uint64_t * ,uint64_t *);
 int ve_sys_unmap_dmades(veos_handle *, uint64_t );
 int ve_sys_get_veos_pid(veos_handle *);
 int64_t ve_sys_get_mns(veos_handle *, uint64_t);
+int ve_sys_set_next_thread_worker(veos_handle *);
 
 #endif

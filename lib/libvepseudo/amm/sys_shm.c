@@ -235,6 +235,7 @@ struct shm_seginfo *amm_request_shmget(veos_handle *handle, key_t key,
 		if (-1 == ret) {
 			errno = EACCES;
 			PSEUDO_DEBUG("fail to get stat of id: %lx from proc", shmid);
+			free(shm_info);
 			return NULL;
 		}
 		PSEUDO_DEBUG("SHMID[%ld] STAT shmkey %d shm size:%lx shm mode%hu",
@@ -315,6 +316,7 @@ struct shm_seginfo *ve_get_shm_seg_pgmode(veos_handle *handle, int64_t shmid)
 	}
 	else if (-1 == ret) {
 		PSEUDO_DEBUG("fail to get stat of shmid: %lx", shmid);
+		free(shm_info);
 		return NULL;
 	}
 
@@ -901,8 +903,7 @@ int get_shmid_stat_proc(int shmid, struct shmid_ds *buf)
                         PSEUDO_DEBUG("shmid %d stat found in file[%s]", shmid, SYSVIPC_FILE);
                         fclose(f);
                         return 0;
-                } else
-                        continue;
+                }
         }
 
         PSEUDO_DEBUG("shmid %d stat not found in file[%s]", shmid, SYSVIPC_FILE);

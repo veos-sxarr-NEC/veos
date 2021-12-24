@@ -564,36 +564,6 @@ void psm_set_state_and_notify_parent(struct ve_task_struct *del_task_curr)
 	pthread_mutex_lock_unlock(&del_task_curr->p_ve_mm->
 			thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
-#if 0
-	pthread_mutex_lock_unlock(&(del_task_curr->ve_task_lock), LOCK,
-			"Failed to acquire task lock");
-	if (thread_group_leader(del_task_curr) == false) {
-		VEOS_DEBUG("Marking task's state as EXIT_DEAD(%d)",
-							del_task_curr->pid);
-		psm_set_task_state(del_task_curr, EXIT_DEAD);
-	} else if (thread_group_empty(del_task_curr) == false) {
-		VEOS_DEBUG("Marking task's state as ZOMBIE(%d)"
-			" as child threads still exist", del_task_curr->pid);
-		psm_set_task_state(del_task_curr, ZOMBIE);
-	}
-	pthread_mutex_lock_unlock(&(del_task_curr->ve_task_lock), UNLOCK,
-			"Failed to release task lock");
-	if (thread_group_leader(del_task_curr)
-			&& thread_group_empty(del_task_curr)) {
-		/* child thread does not exist but check if exiting
-		 * task's parent will wait for exit status
-		 * */
-		psm_do_notify_parent(del_task_curr);
-	}
-	/* all threads other than thread group leader update utime/exec time in
-	 * sighand->utime */
-	if (!thread_group_leader(del_task_curr))
-		del_task_curr->sighand->utime += del_task_curr->exec_time;
-
-	pthread_mutex_lock_unlock(&del_task_curr->p_ve_mm->thread_group_mm_lock,
-			UNLOCK,
-			"Failed to release thread-group-mm-lock");
-#endif
 	if (thread_group_leader(del_task_curr) &&
 			!thread_group_empty(del_task_curr)) {
 		/* Mark state to zombie as child threads still exist */
@@ -899,6 +869,64 @@ hndl_return:
 }
 
 /**
+* @brief Manage task for VE worker thread
+*
+* @param del_task_curr Pointer to VE task struct
+*
+* @return -1 on failure and 0 on success
+* @internal
+*  Must acquire the following locks in advance
+*  group_leader->sighand->del_lock
+*/
+int psm_handle_manage_ve_worker_thread(struct ve_task_struct *del_task_curr)
+{
+	struct ve_task_struct *p_tsk = NULL;
+	int retval = -1;
+
+	if (del_task_curr == NULL){
+		VEOS_DEBUG("Pointer to task to be deleted is NULL");
+		return retval;
+	}
+
+	pthread_mutex_lock_unlock(&(del_task_curr->ve_task_lock), LOCK,
+		"Failed to acquire task lock");
+	if(del_task_curr->ve_task_have_worker == true){
+		p_tsk = del_task_curr->ve_worker_thread;
+                del_task_curr->ve_worker_thread=NULL;
+                del_task_curr->ve_task_have_worker = false;
+		pthread_mutex_lock_unlock(&(del_task_curr->ve_task_lock), UNLOCK,
+			"Failed to acquire task lock");
+
+		pthread_rwlock_lock_unlock(&(p_tsk->p_ve_core->ve_core_lock),
+			WRLOCK, "Failed to acquire core lock");
+		pthread_mutex_lock_unlock(&(p_tsk->ve_task_lock), LOCK,
+			"Failed to acquire task lock");
+                p_tsk->ve_task_worker_belongs=NULL;
+                p_tsk->ve_task_worker_belongs_chg=true;
+		pthread_mutex_lock_unlock(&(p_tsk->ve_task_lock), UNLOCK,
+			"Failed to acquire task lock");
+		pthread_rwlock_lock_unlock(&(p_tsk->p_ve_core->ve_core_lock),
+			UNLOCK, "Failed to acquire core lock");
+	}else if(del_task_curr->ve_task_worker_belongs != NULL){
+		p_tsk = del_task_curr->ve_task_worker_belongs;
+		pthread_mutex_lock_unlock(&(del_task_curr->ve_task_lock), UNLOCK,
+			"Failed to acquire task lock");
+		pthread_mutex_lock_unlock(&(p_tsk->ve_task_lock), LOCK,
+			"Failed to acquire task lock");
+		p_tsk->ve_task_have_worker = false;
+		p_tsk->ve_worker_thread = NULL;
+		pthread_mutex_lock_unlock(&(p_tsk->ve_task_lock), UNLOCK,
+			"Failed to acquire task lock");
+	}else{
+		pthread_mutex_lock_unlock(&(del_task_curr->ve_task_lock), UNLOCK,
+			"Failed to acquire task lock");
+	}
+
+	retval = 0;
+	return retval;
+}
+
+/**
 * @brief Delete's VE process
 *
 * @param del_task_curr Pointer to VE task struct
@@ -980,7 +1008,6 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 
 	if (del_task_curr->ve_task_state == ZOMBIE
 			&& !thread_group_empty(del_task_curr)) {
-//		veos_clean_ived_proc_property(del_task_curr);
 		retval = vedl_delete_ve_task(VE_HANDLE(0), del_task_curr->pid);
 		if (retval) {
 			VEOS_DEBUG("Failed (%s) to delete task with PID %d",
@@ -996,9 +1023,11 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 				UNLOCK, "Failed to release core write lock");
 		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
 					"Failed to release tasklist_lock lock");
+		psm_handle_manage_ve_worker_thread(del_task_curr);
 		/* Since only thread group leader can be ZOMBIE, further code
 		 * is redundant in this context. Hence we jump from here.
 		 * */
+
 		goto hndl_reparent;
 	}
 
@@ -1006,6 +1035,8 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 			UNLOCK, "Failed to release core write lock");
 	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
 	                        "Failed to release tasklist_lock lock");
+
+	psm_handle_manage_ve_worker_thread(del_task_curr);
 
 	/* Remove task from thread_group list */
 	if (!thread_group_empty(del_task_curr) &&
@@ -1182,9 +1213,8 @@ void psm_delete_zombie_task (struct ve_task_struct *tsk)
 	pthread_mutex_lock_unlock(&(veos_acct.ve_acct_lock), LOCK,
 			"Failed to acquire task accounting lock");
 	if (veos_acct.file
-			&& veos_acct_check_free_space()
 			&& !tsk->dummy_task){
-		veos_dump_acct_info(tsk);
+		veos_acct_ve_proc(tsk);
 	}
 	pthread_mutex_lock_unlock(&(veos_acct.ve_acct_lock), UNLOCK,
 			"Failed to release task accounting lock");
@@ -1336,7 +1366,6 @@ void veos_zombie_cleanup_thread()
 				tmp->ve_task_state = EXIT_DEAD;
 				pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
 						"failed to release init task lock");
-//				delete_entries(tmp);
 				psm_delete_zombie_task(tmp);
 				ve_atomic_dec(&VE_NODE(0)->num_zombie_proc);
 				pthread_rwlock_lock_unlock(&init_task_lock, WRLOCK,

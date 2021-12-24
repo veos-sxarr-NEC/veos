@@ -625,14 +625,20 @@ int psm_rpm_handle_check_pid(int pid)
 	if (!retval) {
 		/* To check that given PID is a process or thread.
 		 * It required for VEO process handling */
+		pthread_rwlock_lock_unlock(&init_task_lock, RDLOCK,
+			"failed to acquire init task lock");
 		list_for_each_safe(p, n, &ve_init_task.tasks) {
 			struct ve_task_struct *tmp =
 				list_entry(p, struct ve_task_struct, tasks);
 			if (tmp->pid == pid) {
 				retval = 0;
+				pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
+				"failed to release init task lock");
 				goto hndl_return;
 			}
 		}
+		pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,
+			"failed to release init task lock");
 	}
 	retval = VE_VALID_THREAD;
 hndl_return:

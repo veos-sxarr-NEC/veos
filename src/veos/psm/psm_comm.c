@@ -4653,3 +4653,103 @@ hndl_return1:
 	VEOS_TRACE("Exiting");
 	return retval;
 }
+
+
+/**
+ * @brief Sends an acknowledgment to the pseudo process that the system
+ * call return value has been updated in VE process thread struct.
+ *
+ * @param[in] pti Contains the request message received from pseudo process
+ * @param[in] ack_ret Command ack to send
+ *
+ * @return positive value on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_pseudo_send_set_next_thread_worker_ack(struct veos_thread_arg *pti,
+								int ack_ret)
+{
+	ssize_t retval = -1;
+	char buf[MAX_PROTO_MSG_SIZE] = {0};
+	ssize_t pseudo_msg_len = 0, msg_len = 0;
+	PseudoVeosMessage set_thread_worker_ack = PSEUDO_VEOS_MESSAGE__INIT;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument received");
+		goto hndl_return;
+	}
+
+	/* Popuate SET RETURN ACK process return value */
+	set_thread_worker_ack.has_syscall_retval = true;
+	set_thread_worker_ack.syscall_retval = ack_ret;
+
+	pseudo_msg_len = pseudo_veos_message__get_packed_size(
+		&set_thread_worker_ack);
+
+	msg_len = pseudo_veos_message__pack(&set_thread_worker_ack,
+		(uint8_t *)buf);
+	if (msg_len != pseudo_msg_len) {
+		VEOS_ERROR("Packing message protocol buffer error");
+		VEOS_DEBUG("Expected length: %ld, Returned length: %ld",
+				pseudo_msg_len, msg_len);
+		goto hndl_return;
+	}
+
+	VEOS_DEBUG("Sending SET NEXT THREAD WORKER ACK");
+	/* send SET NEXT THREAD WORKER ACK */
+	retval = psm_pseudo_send_cmd(pti->socket_descriptor,
+		buf, pseudo_msg_len);
+	if (retval < pseudo_msg_len) {
+		VEOS_ERROR("Failed to send response to pseudo process");
+		VEOS_DEBUG("Expected bytes: %ld, Transferred bytes: %ld",
+				pseudo_msg_len, retval);
+		retval = -1;
+		goto hndl_return;
+	}
+
+	retval = 0;
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Handles the request of set flag which create next thread as worker
+ *
+ * @param[in] pti Contains the request message received from Pseudo Process
+ *
+ * @return positive value on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_handle_set_next_thread_worker_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	int pid = -1;
+	PseudoVeosMessage *request = NULL;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument received");
+		goto hndl_return;
+	}
+
+	request = (PseudoVeosMessage *)pti->pseudo_proc_msg;
+	pid = request->pseudo_pid;
+
+	retval = psm_handle_set_next_thread_worker_request(pid);
+
+	retval = psm_pseudo_send_set_next_thread_worker_ack(pti, retval);
+	if (retval == -1)
+		VEOS_ERROR("Failed to send SET NEXT THREAD WORKER "
+				"acknowledgement to pseudo process");
+
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}

@@ -589,6 +589,13 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	new_task->wake_up_parent = false;
 	new_task->rpm_preserve_task = 0;
 
+	/* Initialize the data for VE worker thread */
+	new_task->ve_set_next_thread_worker = false;
+	new_task->ve_task_worker_belongs = NULL;
+	new_task->ve_task_worker_belongs_chg = false;
+	new_task->ve_task_have_worker = false;
+	new_task->ve_worker_thread = NULL;
+
 	/* Number of voluntary and involuntary context switches
 	 * are reset to zero for child process/thread.
 	 */
@@ -1069,20 +1076,62 @@ int do_ve_fork(unsigned long clone_flags,
 	}
 	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_node_lock), LOCK,
 				"Failed to acquire VE node mutex lock");
-	retval = get_ve_core_n_node_new_ve_proc(new_task,
-			&child_node_id, &child_core_id,	&new_task->numa_node);
-	if (retval < 0) {
-		child_node_id = 0;
-		child_core_id = 0;
-		new_task->p_ve_core = VE_CORE(child_node_id, child_core_id);
 
-		insert_ve_task(child_node_id, child_core_id, new_task);
+	if ((clone_flags & CLONE_THREAD) &&
+				(current->ve_set_next_thread_worker == true)) {
+		/* Set data for VE worker thread
+		 *
+		 */
+		pthread_mutex_lock_unlock(&(current->ve_task_lock), LOCK,
+			"Failed to acquire ve_task lock [PID: %d]",
+			current->pid);
+		if ((current->ve_task_worker_belongs != NULL) ||
+			(current->ve_task_worker_belongs_chg) ||
+				current->ve_task_have_worker == true){
+			pthread_mutex_lock_unlock(&(current->ve_task_lock),
+			UNLOCK, "Failed to release ve_task lock [PID: %d]",
+				current->pid);
+			/* Temporarily insert task to node "0" core "0"
+			 * and invoke psm_handle_delete_ve_process()
+			 */
+			child_node_id = 0;
+			child_core_id = 0;
+			new_task->p_ve_core =
+				VE_CORE(child_node_id, child_core_id);
 
-		VEOS_ERROR("Failed to get the core and node for new process");
-		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_node_lock), UNLOCK,
-				"Failed to release VE node mutex lock");
-		retval = -EAGAIN;
-		goto hndl_return1;
+			insert_ve_task(child_node_id, child_core_id, new_task);
+			VEOS_ERROR("Failed to get the core and node for "
+				"new process");
+			pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_node_lock),
+				UNLOCK, "Failed to release VE node mutex lock");
+			retval = -EAGAIN;
+			goto hndl_return1;
+		}
+		new_task->ve_task_worker_belongs = current;
+		child_node_id = current->node_id;
+		child_core_id = current->core_id;
+		current->ve_task_have_worker = true;
+		current->ve_worker_thread = new_task;
+		current->ve_set_next_thread_worker = false;
+		pthread_mutex_lock_unlock(&(current->ve_task_lock), UNLOCK,
+			"Failed to release ve_task lock [PID: %d]",
+				current->pid);
+	}else{
+		retval = get_ve_core_n_node_new_ve_proc(new_task,
+				&child_node_id, &child_core_id,	&new_task->numa_node);
+		if (retval < 0) {
+			child_node_id = 0;
+			child_core_id = 0;
+			new_task->p_ve_core = VE_CORE(child_node_id, child_core_id);
+
+			insert_ve_task(child_node_id, child_core_id, new_task);
+
+			VEOS_ERROR("Failed to get the core and node for new process");
+			pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_node_lock), UNLOCK,
+					"Failed to release VE node mutex lock");
+			retval = -EAGAIN;
+			goto hndl_return1;
+		}
 	}
 	fork_info->core_id = new_task->core_id = child_core_id;
 	new_task->p_ve_core = VE_CORE(child_node_id, child_core_id);
@@ -1155,6 +1204,9 @@ hndl_return1:
 	if((clone_flags & CLONE_VFORK) && new_task->real_parent &&
 			(new_task->real_parent->vfork_state == VFORK_ONGOING))
 		new_task->real_parent->vfork_state = VFORK_C_INVAL;
+	/* set exiting status of the partially created task to EXITING to
+	 * trigger its deletion put_ve_task_struct() */
+	set_state(new_task);
 hndl_return:
 	if (is_need_sync_pps) {
 		pthread_mutex_lock_unlock(&(ipc_sync->swap_exclusion_lock),

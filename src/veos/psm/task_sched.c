@@ -37,6 +37,8 @@
 #include "locking_handler.h"
 #include "vesync.h"
 #include "ve_shm.h"
+
+#include <sys/syscall.h>
 /**
 * @brief Function handles the failure of assigning task on core
 * while context switch decision is ongoing.
@@ -1232,10 +1234,12 @@ success:
 struct ve_task_struct* psm_find_next_task_to_schedule(
 		struct ve_core_struct *p_ve_core)
 {
-	struct ve_task_struct *loop_cntr = NULL;
-	struct ve_task_struct *task_to_schedule = NULL;
+	struct ve_task_struct *first_task = NULL;
 	struct ve_task_struct *task_to_return = NULL;
 	struct ve_task_struct *curr_ve_task = NULL;
+	struct ve_task_struct *temp = NULL;
+	struct ve_task_struct *temp_worker = NULL;
+	int worker_found = 0;
 
 	VEOS_TRACE("Entering");
 	curr_ve_task = p_ve_core->curr_ve_task;
@@ -1244,38 +1248,44 @@ struct ve_task_struct* psm_find_next_task_to_schedule(
 	 * scheduled on this VE core
 	 * */
 	if (NULL != curr_ve_task) {
-		loop_cntr = curr_ve_task;
-		task_to_schedule = curr_ve_task->next;
+		first_task = curr_ve_task->next;
 	} else {
-		loop_cntr = task_to_schedule = p_ve_core->ve_task_list;
+		first_task = p_ve_core->ve_task_list;
 	}
+
+	temp = first_task;
 	do {
+		worker_found = 0;
 		VEOS_DEBUG("Core: %d Check scheduling for PID: %d State: %d",
 				p_ve_core->core_num,
-				task_to_schedule->pid,
-				task_to_schedule->ve_task_state);
-
-		if ((RUNNING == task_to_schedule->ve_task_state)) {
-			VEOS_DEBUG("Ready task found with PID : %d",
-					task_to_schedule->pid);
-			task_to_return = task_to_schedule;
-			break;
-		} else {
-			VEOS_DEBUG("Skipping task with PID : %d",
-					task_to_schedule->pid);
-			task_to_schedule = task_to_schedule->next;
-		}
-
-		if (loop_cntr == task_to_schedule) {
-			if ((RUNNING == task_to_schedule->ve_task_state)) {
-				/* Finally, schedule VE process on VE core */
-				VEOS_DEBUG("Ready Task found with PID : %d",
-						task_to_schedule->pid);
-				task_to_return = task_to_schedule;
+				temp->pid,
+				temp->ve_task_state);
+		if((RUNNING == temp->ve_task_state)){
+			temp_worker = temp->next;
+			while(temp_worker != temp){
+				if((RUNNING == temp_worker->ve_task_state) &&
+					((temp_worker->ve_task_worker_belongs != NULL) ||
+					(temp_worker->ve_task_worker_belongs_chg)) &&
+					(temp_worker->tgid == temp->tgid)){
+					VEOS_DEBUG("Core: %d skip for PID: %d",
+							p_ve_core->core_num,temp->pid);
+					worker_found = 1;
+					break;
+				}
+				temp_worker = temp_worker->next;
 			}
-			break;
+			if(worker_found == 0){
+				VEOS_DEBUG("Ready task found with PID : %d",
+					temp->pid);
+				task_to_return = temp;
+				break;
+			}
 		}
-	} while (1);
+		VEOS_DEBUG("Skipping task with PID : %d",
+				temp->pid);
+		temp = temp->next;
+	} while(temp != first_task);
+
 	VEOS_TRACE("Exiting");
 	return task_to_return;
 }
@@ -1677,7 +1687,6 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *curr_ve_task,
 	struct ve_node_struct *p_ve_node = NULL;
 	struct ve_core_struct *p_ve_core = NULL;
 	ve_dma_status_t dmast = 0;
-	pid_t pid = getpid();
 
 	VEOS_TRACE("Entering");
 	if (!task_to_schedule)
@@ -1890,6 +1899,7 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *curr_ve_task,
 	} else {
 		VEOS_DEBUG("Setting all user registers");
 		/* Load the VE process context */
+		pid_t pid = getpid();
 		dmast = ve_dma_xfer_p_va(p_ve_node->dh,	VE_DMA_VHVA, pid,
 				(uint64_t)task_to_schedule->p_ve_thread,
 				VE_DMA_VERAA, pid,
@@ -2557,6 +2567,7 @@ void psm_sched_interval_handler(union sigval psm_sigval)
 							core_loop);
 			continue;
 		}
+		psm_find_change_parent_of_worker(p_ve_core);
 		/* Rebalance task */
 		psm_rebalance_task_to_core(p_ve_core);
 		psm_find_sched_new_task_on_core(p_ve_core,
@@ -2661,8 +2672,26 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 		}
 
 		if (p_another_core->curr_ve_task) {
+			pthread_mutex_lock_unlock(&p_another_core->curr_ve_task->ve_task_lock,
+					LOCK, "Failed to acquire ve_task_lock");
+			if((p_another_core->curr_ve_task->ve_task_worker_belongs
+					!= NULL) ||
+				(p_another_core->curr_ve_task->ve_task_worker_belongs_chg)){
+				pthread_mutex_lock_unlock(
+					&p_another_core->curr_ve_task->ve_task_lock, UNLOCK,
+					"Failed to release ve_task_lock");
+				VEOS_DEBUG("Current task on core is worker, "
+					"so skip [%d]", p_another_core->curr_ve_task->pid);
+				pthread_rwlock_lock_unlock(
+					&(p_another_core->ve_core_lock),
+					UNLOCK,
+					"Failed to release core's write lock");
+				continue;  // if current is worker,skip
+			}
 			task_to_rebalance = p_another_core->curr_ve_task->next;
 			loop_start = p_another_core->curr_ve_task;
+			pthread_mutex_lock_unlock(&p_another_core->curr_ve_task->ve_task_lock,
+					UNLOCK, "Failed to release ve_task_lock");
 		} else {
 			VEOS_DEBUG("Current task on core is [%p]",
 						p_another_core->curr_ve_task);
@@ -2675,8 +2704,10 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 		do {
 			pthread_mutex_lock_unlock(&temp->ve_task_lock, LOCK,
 					"Failed to acquire ve_task_lock");
-			if ((temp->ve_task_state == WAIT) ||
-					(temp->ve_task_state == RUNNING)) {
+			if (((temp->ve_task_state == WAIT) ||
+					(temp->ve_task_state == RUNNING)) &&
+						((temp->ve_task_worker_belongs == NULL) &&
+						!(temp->ve_task_worker_belongs_chg))) {
 				active_cnt++;
 			}
 			pthread_mutex_lock_unlock(&temp->ve_task_lock, UNLOCK,
@@ -2704,14 +2735,19 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 					&task_to_rebalance->ve_task_lock, LOCK,
 					"Failed to acquire ve_task_lock");
 				state = task_to_rebalance->ve_task_state;
-				pthread_mutex_lock_unlock(
-					&task_to_rebalance->ve_task_lock, UNLOCK,
-					"Failed to release ve_task_lock");
-				if ((state == WAIT) ||
-					(state == RUNNING)) {
+				if (((state == WAIT) ||
+					(state == RUNNING)) &&
+					((task_to_rebalance->ve_task_worker_belongs == NULL) &&
+					!(task_to_rebalance->ve_task_worker_belongs_chg))) {
 					rebalance_flag = 1;
+					pthread_mutex_lock_unlock(
+						&task_to_rebalance->ve_task_lock, UNLOCK,
+						"Failed to release ve_task_lock");
 					break;
 				} else {
+					pthread_mutex_lock_unlock(
+						&task_to_rebalance->ve_task_lock, UNLOCK,
+						"Failed to release ve_task_lock");
 					put_ve_task_struct(task_to_rebalance);
 				}
 			}
@@ -2946,6 +2982,43 @@ void psm_rebalance_task_to_core(struct ve_core_struct *p_ve_core)
 			insert_and_update_task_to_rebalance(
 					p_ve_core->node_num, p_ve_core->core_num,
 					task_to_rebalance);
+			pthread_mutex_lock_unlock(&task_to_rebalance->ve_task_lock,
+					LOCK, "Failed to acquire task lock");
+			if(task_to_rebalance->ve_task_have_worker == true){
+				struct ve_task_struct *temp = NULL;
+				temp = task_to_rebalance->ve_worker_thread;
+				pthread_mutex_lock_unlock(&task_to_rebalance->ve_task_lock,
+					UNLOCK, "Failed to release task lock");
+
+				if (temp){
+					if(p_ve_core->core_num != temp->core_id){
+						pthread_rwlock_lock_unlock(
+							&(VE_CORE(0, temp->core_id)->ve_core_lock),
+							RDLOCK,
+							"Failed to acquire Core %d read lock",
+							temp->core_id);
+						if(!get_ve_task_struct(temp)){
+							pthread_rwlock_lock_unlock(
+								&(VE_CORE(0, temp->core_id)->ve_core_lock),
+								UNLOCK,
+								"Failed to release Core %d read lock",
+								temp->core_id);
+							psm_relocate_ve_task(temp->node_id, temp->core_id,
+								p_ve_core->node_num, p_ve_core->core_num, temp);
+							put_ve_task_struct(temp);
+						}else{
+							pthread_rwlock_lock_unlock(
+								&(VE_CORE(0, temp->core_id)->ve_core_lock),
+								UNLOCK,
+								"Failed to release Core %d read lock",
+								temp->core_id);
+						}
+					}
+				}
+			}else{
+				pthread_mutex_lock_unlock(&task_to_rebalance->ve_task_lock,
+					UNLOCK, "Failed to release task lock");
+			}
 		}
 		pthread_rwlock_lock_unlock(
 				&(VE_NODE(0)->ve_relocate_lock), UNLOCK,
@@ -2955,6 +3028,166 @@ void psm_rebalance_task_to_core(struct ve_core_struct *p_ve_core)
 				"Failed to release Core %d read lock",
 				p_ve_core->core_num);
 	}
+
+	VEOS_TRACE("Exiting");
+	return;
+}
+
+/**
+* @brief Performs change parent of worker thread on VE core.
+*
+* @param src Pointer to task of worker thread
+* @param dest Pointer to task of parent of worker thread
+*/
+void psm_change_parent_ve_worker(struct ve_task_struct *src,
+	struct ve_task_struct *dest)
+{
+	VEOS_TRACE("Entering");
+
+	VEOS_DEBUG("Change parent of a worker:%d to %d",src->pid,dest->pid);
+	pthread_mutex_lock_unlock(&(dest->ve_task_lock),LOCK,
+		"Failed to release task lock");
+	dest->ve_task_have_worker = true;
+	dest->ve_worker_thread = src;
+	pthread_mutex_lock_unlock(&(dest->ve_task_lock),UNLOCK,
+		"Failed to release task lock");
+
+	pthread_mutex_lock_unlock(&(src->ve_task_lock),LOCK,
+		"Failed to acquire task lock");
+	src->ve_task_worker_belongs= dest;
+	src->ve_task_worker_belongs_chg= false;
+	pthread_mutex_lock_unlock(&(src->ve_task_lock), UNLOCK,
+		"Failed to release task lock");
+
+	if(src->core_id != dest->core_id){
+		pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock),WRLOCK,
+				"Failed to acquire ve_relocate_lock read lock");
+		psm_relocate_ve_task( src->node_id,
+			src->core_id, dest->node_id,
+			dest->core_id, src);
+		pthread_rwlock_lock_unlock(&(VE_NODE(0)->ve_relocate_lock),UNLOCK,
+				"Failed to release ve_relocate_lock writelock");
+	}
+	VEOS_TRACE("Exiting");
+}
+
+/**
+* @brief Performs change parent of worker thread on VE core.
+*
+* @param src Pointer to task of worker thread
+* @param dest Pointer to task of parent of worker thread
+*/
+void psm_find_parent_of_ve_worker(struct ve_task_struct *mv_task)
+{
+	struct ve_task_struct *mv_to = NULL;
+        struct list_head *p, *n;
+        struct ve_task_struct *group_leader = NULL;
+
+	VEOS_TRACE("Entering");
+	group_leader = mv_task->group_leader;
+	pthread_mutex_lock_unlock(
+		&group_leader->p_ve_mm->thread_group_mm_lock,
+		LOCK, "Failed to acquire thread-group-mm-lock");
+	if (!thread_group_empty(mv_task)) {
+		list_for_each_safe(p, n, &mv_task->thread_group) {
+			mv_to = list_entry(p, struct ve_task_struct, thread_group);
+			if (mv_to->pid == mv_task->pid) {
+				continue;
+			}
+			pthread_mutex_lock_unlock(
+				&(mv_to->ve_task_lock), LOCK,
+				"Failed to acquire task lock");
+			if(((mv_to->ve_task_worker_belongs == NULL) &&
+				!(mv_to->ve_task_worker_belongs_chg)) &&
+				(mv_to->ve_task_state != ZOMBIE)){
+				pthread_mutex_lock_unlock(
+					&(mv_to->ve_task_lock),UNLOCK,
+					"Failed to release task lock");
+				pthread_mutex_lock_unlock(
+					&group_leader->p_ve_mm->
+					thread_group_mm_lock,UNLOCK,
+					"Failed to release thread-group-mm-lock");
+				pthread_rwlock_lock_unlock(&(VE_CORE(0, mv_to->core_id)->ve_core_lock),
+					RDLOCK, "Failed to acquire Core %d read lock",
+					mv_to->core_id);
+				if(!(get_ve_task_struct(mv_to))){
+					pthread_rwlock_lock_unlock(&(VE_CORE(0,mv_to->core_id)->ve_core_lock),
+						UNLOCK,
+						"Failed to release Core %d read lock",
+						mv_to->core_id);
+					psm_change_parent_ve_worker(mv_task,mv_to);
+
+					put_ve_task_struct(mv_to);
+					goto hndl_return;
+				}
+				pthread_rwlock_lock_unlock(&(VE_CORE(0, mv_to->core_id)->ve_core_lock),
+					UNLOCK, "Failed to release Core %d read lock",
+					mv_to->core_id);
+					goto hndl_return;
+			}
+			pthread_mutex_lock_unlock(
+				&(mv_to->ve_task_lock),
+				UNLOCK, "Failed to release task lock");
+		}
+	}
+	/* There is no thread which assigne to parent of worker
+	 * thread. So Send SIGKILL to worker thread.
+	 */
+	pthread_mutex_lock_unlock(
+		&group_leader->p_ve_mm->thread_group_mm_lock,
+		UNLOCK, "Failed to release thread-group-mm-lock");
+	VEOS_DEBUG("No thread assigne to parent of worker");
+	syscall(SYS_tkill,mv_task->pid,SIGKILL);
+hndl_return:
+
+	VEOS_TRACE("Exiting");
+	return;
+}
+/**
+* @brief Performs change parent of worker thread on VE core.
+*
+* @param p_ve_core Pointer to core structure of core which is idle.
+*/
+void psm_find_change_parent_of_worker (struct ve_core_struct *p_ve_core)
+{
+	struct ve_task_struct *ve_task_list_head = NULL;
+	struct ve_task_struct *temp = NULL;
+
+	VEOS_TRACE("Entering");
+
+	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), RDLOCK,
+			"Failed to acquire Core %d read lock",
+			p_ve_core->core_num);
+
+	ve_task_list_head = VE_CORE(p_ve_core->node_num, p_ve_core->core_num)->ve_task_list;
+	if(ve_task_list_head != NULL){
+		temp = ve_task_list_head;
+		do {
+			pthread_mutex_lock_unlock( &(temp->ve_task_lock), LOCK,
+				"Failed to acquire task lock");
+			if((temp->ve_task_worker_belongs_chg == true)){
+				pthread_mutex_lock_unlock(&(temp->ve_task_lock),
+					UNLOCK, "Failed to release task lock");
+				if(!(get_ve_task_struct(temp))){
+					pthread_rwlock_lock_unlock(
+						&(p_ve_core->ve_core_lock), UNLOCK,
+						"Failed to release Core %d read lock",
+						p_ve_core->core_num);
+					psm_find_parent_of_ve_worker(temp);
+					put_ve_task_struct(temp);
+					goto hndl_return;
+				}
+			}else{
+				pthread_mutex_lock_unlock(&(temp->ve_task_lock),
+					UNLOCK, "Failed to release task lock");
+			}
+			temp = temp->next;
+		} while (temp != ve_task_list_head);
+	}
+	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
+			"Failed to acquire Core %d read lock",
+			p_ve_core->core_num);
+hndl_return:
 
 	VEOS_TRACE("Exiting");
 	return;

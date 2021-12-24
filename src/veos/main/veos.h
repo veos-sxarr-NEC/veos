@@ -387,6 +387,11 @@ extern const log4c_location_info_t locinfo;
 	.ve_task_lock		= PTHREAD_MUTEX_INITIALIZER,		\
 	.offset_lock		= PTHREAD_MUTEX_INITIALIZER,		\
 	.sstatus		= INVALID,				\
-	.ipc_sync		= NULL					\
+	.ipc_sync		= NULL,					\
+	.ve_set_next_thread_worker      = false,			\
+	.ve_task_worker_belongs = NULL,					\
+	.ve_task_worker_belongs_chg = false,				\
+	.ve_task_have_worker    = false,				\
+	.ve_worker_thread       = NULL					\
 }
 #endif

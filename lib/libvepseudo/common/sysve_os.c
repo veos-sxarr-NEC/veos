@@ -859,3 +859,29 @@ handle_return:
 	PSEUDO_TRACE("Exiting");
 	return retval;
 }
+
+/**
+ * @brief Handler of ve_set_next_thread_worker().
+ *        This function requests veos to set flag wthich create next
+ *        thread as worker.
+ *
+ * @param [in] handle VEOS handle of pseudo process.
+ * @return 0 on Success, -errno on failure.
+ */
+int ve_sys_set_next_thread_worker(veos_handle *handle)
+{
+	int ret = 0;
+
+	PSEUDO_TRACE("Entering");
+
+	if (handle == NULL) {
+		ret = -EFAULT;
+		PSEUDO_ERROR("%s",strerror(-ret));
+		goto hndl_return;
+	}
+
+	ret = ve_request_veos(handle, SET_NEXT_THREAD_WORKER, NULL, NULL);
+hndl_return:
+	PSEUDO_TRACE("Exiting");
+	return ret;
+}

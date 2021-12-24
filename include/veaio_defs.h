@@ -30,13 +30,33 @@
 #define VE_AIO_COMPLETE  1
 #define VE_AIO_INPROGRESS  2
 
-struct ve_aio_result {
-	ssize_t retval; /*!< return value of pread()/pwrite() on VH */
-	int errnoval; /*!< error number of pread()/pwrite() on VH */
+struct ve_aio2_result {
+	union {
+		struct {
+			ssize_t retval:55; /*!< return value of pread()/pwrite() on VH */
+			int errnoval:8; /*!< error number of pread()/pwrite() on VH */
+			int active:1;
+		} __attribute__((packed));
+		int64_t binary;
+	};
+
 };
 
-struct ve_aio_ctx {
-	struct ve_aio_result result;
+struct ve_aio2_ctx {
+	struct ve_aio2_result result;
 	int status; /*!< Status of pread()/pwrite() on VH  */
 	pthread_mutex_t ve_aio_status_lock; /*!< Protect ve_aio_ctx->status  */
 };
+
+#ifndef ve_aio_ctx
+struct ve_aio_result {
+        ssize_t retval; /*!< return value of pread()/pwrite() on VH */
+        int errnoval; /*!< error number of pread()/pwrite() on VH */
+};
+
+struct ve_aio_ctx {
+        struct ve_aio_result result;
+        int status; /*!< Status of pread()/pwrite() on VH  */
+        pthread_mutex_t ve_aio_status_lock; /*!< Protect ve_aio_ctx->status  */
+};
+#endif

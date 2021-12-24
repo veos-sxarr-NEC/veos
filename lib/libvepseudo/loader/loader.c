@@ -81,7 +81,6 @@ static struct auxv_info auxv;
 					      * and buffer */
 #define TRANS_SZ_SHFT   3	/*!< make a size of multiples of 8. */
 #define EXECVE_MAX_ARGS 513
-#define EXECVE_MAX_ENVP 513
 reg_t inst_intr; /*!< In pse_load_interp = ehdr->e_entry */
 reg_t inst_main; /*!< In pse_load_binary  ehdr->e_entry */
 unsigned long long dyn_seg_addr_main; /*!< PT_DYN(main) phdr->p_vaddr */
@@ -555,13 +554,6 @@ int init_stack(veos_handle *handle, int argc,
 		arg_p++;
 		cnt_env++;
 	}
-	if (cnt_env >= EXECVE_MAX_ENVP) {
-                PSEUDO_ERROR("Environment variable exceeded: %d", cnt_env);
-                fprintf(stderr, "Environment variable count exceeded"
-			" %d (max %d)\n", cnt_env,  EXECVE_MAX_ENVP-1);
-		ret = -E2BIG;
-                goto stack_err;
-        }
 	areap_8b++;		/* + NULL */
 
 	arg_p++;		/* auxv */

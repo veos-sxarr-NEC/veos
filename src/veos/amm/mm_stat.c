@@ -513,17 +513,6 @@ int veos_pmap(pid_t pid, uid_t gid, uid_t uid, struct ve_mapheader *header)
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, UNLOCK,
 			"Failed to release thread-group-mm-lock");
 
-	VEOS_DEBUG("VE maping List:");
-	/*Dumping As well as freeing the VE pmap list*/
-	while (vemap_l != NULL) {
-		VEOS_TRACE("%p - %p, %s, %s",
-				(void *)vemap_l->begin, (void *)vemap_l->end,
-				vemap_l->perm, vemap_l->mapname);
-		vemap_tmp = vemap_l;
-		vemap_l = vemap_l->next;
-		free(vemap_tmp);
-	}
-
 	file_base_name = basename(filename);
 	header->length = (unsigned int)pmapcount;
 	strncpy(header->filename, file_base_name, S_FILE_LEN);
@@ -542,6 +531,17 @@ int veos_pmap(pid_t pid, uid_t gid, uid_t uid, struct ve_mapheader *header)
 	}
 	close(fd);
 err:
+	VEOS_DEBUG("VE maping List:");
+	/*Dumping As well as freeing the VE pmap list*/
+	while (vemap_l != NULL) {
+		VEOS_TRACE("%p - %p, %s, %s",
+				(void *)vemap_l->begin, (void *)vemap_l->end,
+				vemap_l->perm, vemap_l->mapname);
+		vemap_tmp = vemap_l;
+		vemap_l = vemap_l->next;
+		free(vemap_tmp);
+	}
+
 	if (tsk)
 		put_ve_task_struct(tsk);
 	if (filename)

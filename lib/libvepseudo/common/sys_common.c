@@ -1476,15 +1476,29 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 		retval = ve_sys_unmap_dmades(handle,(uint64_t)args[1]);
 		break;
 	case VE_SYSVE_AIO_READ:
-		retval = sys_ve_aio_read(handle, (void *)args[1], (int)args[2],
+                retval = sys_ve_aio_read(handle, (void *)args[1], (int)args[2],
+                                (ssize_t)args[3], (void *)args[4], args[5]);
+                break;
+        case VE_SYSVE_AIO_WRITE:
+                retval = sys_ve_aio_write(handle, (void *)args[1], (int)args[2],
+                                (ssize_t)args[3], (void *)args[4], args[5]);
+                break;
+        case VE_SYSVE_AIO_WAIT:
+                retval = sys_ve_aio_wait(handle, (void *)args[1]);
+                break;
+	case VE_SYSVE_AIO2_INIT:
+		retval = sys_ve_aio2_init(handle);
+		break;
+	case VE_SYSVE_AIO2_READ:
+		retval = sys_ve_aio2_read(handle, (void *)args[1], (int)args[2],
 				(ssize_t)args[3], (void *)args[4], args[5]);
 		break;
-	case VE_SYSVE_AIO_WRITE:
-		retval = sys_ve_aio_write(handle, (void *)args[1], (int)args[2],
+	case VE_SYSVE_AIO2_WRITE:
+		retval = sys_ve_aio2_write(handle, (void *)args[1], (int)args[2],
 				(ssize_t)args[3], (void *)args[4], args[5]);
 		break;
-	case VE_SYSVE_AIO_WAIT:
-		retval = sys_ve_aio_wait(handle, (void *)args[1]);
+	case VE_SYSVE_AIO2_WAIT:
+		retval = sys_ve_aio2_wait(handle, (void *)args[1]);
 		break;
 	case VE_SYSVE_ACCELERATED_IO_INIT:
 		retval = sys_accelerated_io_init(handle,(void **)args[1],
@@ -1511,6 +1525,9 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 		break;
 	case VE_SYSVE_IS_ACC_IO_ENABLED:
 		retval = sys_is_acc_io_enabled(handle);
+		break;
+	case VE_SYSVE_SET_NEXT_THREAD_WORKER:
+		retval = ve_sys_set_next_thread_worker(handle);
 		break;
 	default:
 		/* write return value */

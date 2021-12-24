@@ -29,26 +29,39 @@
 
 #include <sys/types.h>
 #include "sys_common.h"
+#include "veaio_defs.h"
 
 struct vh_aio_ctx {
-	char *device_name; /*!< veos device file name */
-	char *veos_sock_name; /*!< veos socket file name */
+	veos_handle *handle;
 	pid_t tid; /*!< tid used when transfer/receive VE data from AIO worker thread  */
 	pthread_mutex_t vh_aio_status_lock; /*!< Protect vh_aio_hash and vh_aio_ctx->refcnt */
 	pthread_cond_t cond; /*!< Condition variable to wait for completion of read/write */
-	struct ve_aio_ctx *ve_ctx; /*!< AIO context on VE */
+	void *ve_ctx; /*!< AIO context on VE */
 	int status; /*!< Status of read/write on worker thread */
 	int refcnt; /*!< Reference sount of this context */
 	int fd; /*!< File discriptor */
 	size_t count; /*!< Number of bytes read/write */
-	void *buf; /*!< Read/write buffer */
+	uint64_t buf; /*!< Read/write buffer */
 	off_t offset; /*!< File offset */
+	int32_t             op;
+	uint64_t            total;
+	int32_t             alive;
+	int32_t             leave;
+	struct seq          *seq;
+	struct ve_aio2_result      *res;
 };
 
 int sys_ve_aio_read(veos_handle *handle, struct ve_aio_ctx *ve_ctx, int fd,
-		size_t count, void *buf, off_t offset);
+                size_t count, void *buf, off_t offset);
 int sys_ve_aio_write(veos_handle *handle, struct ve_aio_ctx *ve_ctx, int fd,
-		size_t count, void *buf, off_t offset);
+                size_t count, void *buf, off_t offset);
 int sys_ve_aio_wait(veos_handle *handle, struct ve_aio_ctx *ve_ctx);
+
+int sys_ve_aio2_init(veos_handle *handle);
+int sys_ve_aio2_read(veos_handle *handle, struct ve_aio2_ctx *ve_ctx, int fd,
+		size_t count, void *buf, off_t offset);
+int sys_ve_aio2_write(veos_handle *handle, struct ve_aio2_ctx *ve_ctx, int fd,
+		size_t count, void *buf, off_t offset);
+int sys_ve_aio2_wait(veos_handle *handle, struct ve_aio2_ctx *ve_ctx);
 
 #endif

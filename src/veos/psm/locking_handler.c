@@ -46,7 +46,7 @@ void pthread_mutex_lock_unlock(pthread_mutex_t *lock,
 {
 	int retval = -1;
 	va_list ap;
-	char message_str[VEOS_ABORT_MESSAGE_BUF_SIZE] = {0};
+	char message_str[VEOS_ABORT_MESSAGE_BUF_SIZE];
 
 	switch (flag) {
 	case LOCK:
@@ -86,7 +86,7 @@ void pthread_rwlock_lock_unlock(pthread_rwlock_t *lock,
 {
 	int retval = -1;
 	va_list ap;
-	char message_str[VEOS_ABORT_MESSAGE_BUF_SIZE] = {0};
+	char message_str[VEOS_ABORT_MESSAGE_BUF_SIZE];
 
 	switch (flag) {
 	case RDLOCK:

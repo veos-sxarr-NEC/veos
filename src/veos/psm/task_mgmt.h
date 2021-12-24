@@ -552,6 +552,11 @@ struct ve_task_struct {
 	uint64_t pmc_pmmr[16];		/* updated PMC/PMMR counter register */
 	int zombie_partial_cleanup;	/* Zombie VE process cleanup state */
 	uint64_t core_set;		/* Set of core where ATB update is needed */
+	bool ve_set_next_thread_worker;         /* Flag to indicate that create the next thread as worker */
+	struct ve_task_struct *ve_task_worker_belongs;          /* Pointer to parent thread of worker */
+	bool ve_task_worker_belongs_chg;          /* Flag to change parent thread of worker */
+	bool ve_task_have_worker;               /* Flag whether it have worker thread */
+	struct ve_task_struct *ve_worker_thread; /* Pointer to worker thread */
 };
 
 
@@ -679,4 +684,6 @@ void veos_zombie_cleanup_thread(void);
 bool check_for_zombie_deletion(struct ve_task_struct *);
 void psm_delete_zombie_task(struct ve_task_struct *);
 struct ve_task_struct*  checkpid_in_zombie_list(int pid);
+int psm_change_parent_ve_task_worker(struct ve_task_struct *, struct ve_task_struct *);
+int64_t psm_handle_set_next_thread_worker_request(pid_t);
 #endif

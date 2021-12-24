@@ -6140,11 +6140,9 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 	mm->arg_end = 0;
 	mm->env_start = 0;
 	mm->env_end = 0;
-//	mm->rss_max = 0;
 	mm->crss_max = 0;
 	mm->rsslim = 0;
 	mm->shared_rss = 0;
-//	mm->pgsz = 0;
 	mm->rss_data = 0;
 	mm->rss_stack = 0;
 	mm->vm_size = 0;
