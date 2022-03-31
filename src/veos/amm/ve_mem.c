@@ -5803,6 +5803,7 @@ void amm_copy_mm_data(struct ve_mm_struct *mm_old, struct ve_mm_struct *mm_new)
 	mm_new->auxv_size = mm_old->auxv_size;
 	mm_new->mem_policy = mm_old->mem_policy;
 	mm_new->mns = mm_old->mns;
+	mm_new->rdma_offset = mm_old->rdma_offset;
 
 }
 

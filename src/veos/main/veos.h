@@ -310,7 +310,7 @@ extern struct ve_task_struct ve_init_task;
 extern pthread_rwlock_t init_task_lock;
 int veos_register_signal_hnldr(void);
 int psm_terminate_all(int);
-void veos_request_termination(int);
+void veos_request_termination(int, siginfo_t *, void *);
 void veos_terminate_node_core(int);
 int veos_set_ve_node_state(struct ve_node_struct *, enum os_state);
 int ve_make_phys_core_id_table(struct ve_node_struct *);

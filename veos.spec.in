@@ -184,6 +184,7 @@ fi
 %{_libdir}/libvepseudo.so.*
 %{_libexecdir}/ve_exec
 %{_libdir}/libvhve.so.*
+%{_libdir}/libveproductinfo.so.*
 %doc
 
 %files libveptrace

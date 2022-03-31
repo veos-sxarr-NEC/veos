@@ -22,7 +22,8 @@ ve_include_HEADERS = \
 libvepseudo_headers_HEADERS = \
 	comm_request.h \
 	mm_type.h \
-	ve_memory.h
+	ve_memory.h \
+	vemva_layout.h
 
 noinst_HEADERS = \
 	vhve_request.h \

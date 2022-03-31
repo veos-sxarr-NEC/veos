@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2021 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -27,6 +27,8 @@
 #include "vemva_mgmt.h"
 #include "sys_common.h"
 #include "sys_mm.h"
+#include <assert.h>
+#include "vemmr_mgmt.h"
 
 as_attr_t as_attributes;
 
@@ -247,6 +249,7 @@ void *ve_get_vemva(veos_handle *handle, uint64_t addr,
 	uint64_t count = 0;
 	uint8_t reset_ve_page_info = 0;
 	int64_t mmap_flag, ret = 0;
+	int saved_errno = errno;
 
 	PSEUDO_TRACE("Invoked");
 	PSEUDO_DEBUG("Invoked to allocate vemva with addr:%lx size:%lx flag:%lx\
@@ -291,9 +294,9 @@ void *ve_get_vemva(veos_handle *handle, uint64_t addr,
 					0, count, flag);
 			if (NULL == vemva_tmp) {
 				PSEUDO_DEBUG("Error (%s) while allocating "
-						"directory", strerror(ENOMEM));
+					"directory", strerror(saved_errno));
 				pthread_mutex_unlock(&vemva_header.vemva_lock);
-				errno = ENOMEM;
+				saved_errno = ENOMEM;
 				goto err_exit;
 			}
 			/*
@@ -301,20 +304,20 @@ void *ve_get_vemva(veos_handle *handle, uint64_t addr,
 			 * As a new VEMVA is just allocated
 			 */
 			vemva = ve_get_free_vemva(handle, vemva_tmp,
-					(uint64_t)NULL, count);
+					(uint64_t)NULL, count, flag);
 			if (MAP_FAILED == vemva) {
 				PSEUDO_DEBUG("Error (%s) while allocating vemva \
 						from directory",
 						strerror(ENOMEM));
 				pthread_mutex_unlock(&vemva_header.vemva_lock);
-				errno = ENOMEM;
+				saved_errno = ENOMEM;
 				goto err_exit;
 			}
 		}
 	} else if (!addr && (flag & MAP_FIXED)) {
-		PSEUDO_DEBUG("Error (%s)", strerror(ENOMEM));
+		PSEUDO_DEBUG("Error (%s)", strerror(EPERM));
 		pthread_mutex_unlock(&vemva_header.vemva_lock);
-		errno = EPERM;
+		saved_errno = EPERM;
 		goto err_exit;
 	} else {
 		vemva = avail_vemva(handle, addr, size, flag);
@@ -322,7 +325,7 @@ void *ve_get_vemva(veos_handle *handle, uint64_t addr,
 			PSEUDO_DEBUG("Error (%s) while availing vemva from "
 					"existing directory", strerror(ENOMEM));
 			pthread_mutex_unlock(&vemva_header.vemva_lock);
-			errno = ENOMEM;
+			saved_errno = ENOMEM;
 			goto err_exit;
 		}
 	}
@@ -331,15 +334,15 @@ void *ve_get_vemva(veos_handle *handle, uint64_t addr,
 	 * Add MAP_NORESERVE if mmap is not file back or MAP_STACK as we are
 	 * not accessing VH memory*/
 	mmap_flag = (flag | MAP_FIXED) & (~(MAP_2MB | MAP_64MB | MAP_VESHM));
-	if ((flag & MAP_ANON) && (!(flag & (MAP_VDSO | MAP_STACK))))
+	if ((flag & MAP_ANON) && (!(flag & MAP_VDSO)))
 		mmap_flag |= MAP_NORESERVE;
 	if (vemva != mmap(vemva, size, prot, mmap_flag, fd, offset)) {
 		ret = errno;
 		PSEUDO_DEBUG("Error (%s) while performing VH MMAP",
-				strerror(errno));
+				strerror(ret));
 		mark_vemva((uint64_t)vemva, size, MARK_UNUSED);
 		pthread_mutex_unlock(&vemva_header.vemva_lock);
-		errno  = ret;
+		saved_errno  = ret;
 		goto err_exit;
 	}
 
@@ -360,10 +363,12 @@ void *ve_get_vemva(veos_handle *handle, uint64_t addr,
 
 	PSEUDO_DEBUG("returned with : vemva %p", vemva);
 	PSEUDO_TRACE("returned");
+	errno = saved_errno;
 	return vemva;
 err_exit:
 	if (reset_ve_page_info)
 		memset(&ve_page_info, '\0', sizeof(ve_page_info));
+	errno = saved_errno;
 	return (void *)-1;
 }
 
@@ -385,10 +390,14 @@ err_exit:
  * set errno.
  */
 void *ve_get_fixed_vemva(veos_handle *handle, struct vemva_struct *vemva_tmp,
-		uint64_t vaddr, int64_t entry, int64_t count, uint64_t flag)
+		uint64_t vaddr, int64_t entry, uint64_t count, uint64_t flag)
 {
 	void *vemva = (void *)-1;
-	int64_t free_count = count;
+	int saved_errno;
+	int expand_result = 0;
+	uint64_t req_vaddr, req_cnt, req_dir, i, remain;
+	struct vemva_struct **vemva_dirs = NULL;
+	struct vemva_struct *vemva_consec;
 
 	PSEUDO_DEBUG("invoked");
 	PSEUDO_DEBUG("invoked to get vemva %p", (void *)vaddr);
@@ -402,21 +411,71 @@ void *ve_get_fixed_vemva(veos_handle *handle, struct vemva_struct *vemva_tmp,
 		 */
 		entry = (vaddr & ve_page_info.chunk_mask) /
 			ve_page_info.page_size;
-		if ((entry+count) > ENTRIES_PER_DIR &&
-				(vemva_tmp->consec_dir == 1)) {
-			/* Before expanding checking total free vemva in
-			 * current directory*/
-			continous_free(vemva_tmp, entry, &free_count);
-			PSEUDO_DEBUG("vemva count %ld will expanded with dir %p",
-					free_count, vemva_tmp->vemva_base);
-			/*
-			 * try expanding
-			 */
-			vemva_tmp = alloc_vemva_dir(handle, vemva_tmp,
-					vaddr, free_count, flag | MAP_FIXED);
-			if (NULL == vemva_tmp)
+		req_dir = (count + entry) / ENTRIES_PER_DIR;
+		if ((count + entry) % ENTRIES_PER_DIR)
+			req_dir++;
+		PSEUDO_DEBUG("req_dir : %ld", req_dir);
+		if (req_dir > 1) {
+			PSEUDO_DEBUG("%s : Try to expand ATB Dir", __func__);
+			vemva_dirs = calloc(req_dir - 1,
+						sizeof(struct vemva_struct *));
+			if (!vemva_dirs) {
+				PSEUDO_DEBUG("Failed to alloc vemva_dirs %s",
+							strerror(ENOMEM));
+				errno = ENOMEM;
 				goto err_exit;
+			}
+			req_vaddr = vaddr + (ENTRIES_PER_DIR - entry) *
+							ve_page_info.page_size;
+			remain = count - (ENTRIES_PER_DIR - entry);
+			req_cnt = (remain > ENTRIES_PER_DIR) ?
+						ENTRIES_PER_DIR : remain;
+			saved_errno = errno;
+			for (i = 0; i < req_dir - 1; i++) {
+				PSEUDO_DEBUG(
+					"req_cnt : %ld, remain : %ld, req_vaddr : 0x%ld",
+					req_cnt, remain, req_vaddr);
+				vemva_dirs[i] = alloc_vemva_dir(
+						handle, NULL, req_vaddr,
+						req_cnt, flag | MAP_FIXED);
+				req_vaddr = req_vaddr +
+					req_cnt * ve_page_info.page_size;
+				req_cnt = (remain > ENTRIES_PER_DIR) ?
+						ENTRIES_PER_DIR : remain;
+				remain -= req_cnt;
+			}
+			errno = saved_errno;
+
+			vemva_consec = vemva_tmp;
+			for (i = 0; i < req_dir - 1; i++) {
+				vemva_consec = list_next_entry(vemva_consec, list);
+				PSEUDO_DEBUG("i : %ld, "
+						"vemva_tmp->vemva_base : %p, "
+						"vemva_consec->vemva_base : %p",
+						i, vemva_tmp->vemva_base,
+						vemva_consec->vemva_base);
+				if (((uint64_t)(vemva_consec->vemva_base)) !=
+					((uint64_t)(vemva_tmp->vemva_base) +
+					(i + 1) * ve_page_info.chunk_size)) {
+					PSEUDO_DEBUG("Failed to allocate continuous dirs");
+					expand_result = 1;
+					break;
+				}
+			}
 		}
+
+		if (expand_result) {
+			PSEUDO_DEBUG("%s : Failed to expand ATB Dir", __func__);
+			for (i = 0; i < req_dir - 1; i++) {
+				if (vemva_dirs[i])
+					dealloc_vemva_dir(vemva_dirs[i]);
+			}
+			free(vemva_dirs);
+			errno = ENOMEM;
+			goto err_exit;
+		}
+		free(vemva_dirs);
+
 		if (free_vemva(handle, vemva_tmp, entry,
 					count)) {
 			PSEUDO_DEBUG("Error (%s) while getting free VEMVA",
@@ -450,7 +509,7 @@ err_exit:
  */
 void *ve_get_nearby_vemva(veos_handle *handle, struct vemva_struct *vemva_tmp,
 		uint64_t vaddr, int64_t entry,
-		int64_t count, uint64_t flag)
+		uint64_t count, uint64_t flag)
 {
 	void *vemva = (void *)-1;
 
@@ -465,9 +524,53 @@ void *ve_get_nearby_vemva(veos_handle *handle, struct vemva_struct *vemva_tmp,
 		vemva = (void *)vaddr;
 	} else {
 		PSEUDO_DEBUG("free vemva is not found in dir %p", vemva_tmp->vemva_base);
-		vemva = ve_get_free_vemva(handle, vemva_tmp, 0, count);
+		vemva = ve_get_free_vemva(handle, vemva_tmp, vaddr, count, flag);
+		if (vemva == (void *)-1)
+			vemva = ve_get_free_vemva(
+					handle, vemva_tmp, 0, count, flag);
 	}
 
+	PSEUDO_DEBUG("returned with %p", vemva);
+	PSEUDO_TRACE("returned");
+	return vemva;
+}
+
+static void *
+ve_get_fixed_vemva_with_new_dir(veos_handle *handle,
+	uint64_t vaddr, uint64_t count, uint64_t entry, uint64_t flag)
+{
+	void *vemva = (void *)-1;
+	struct vemva_struct *first_dir;
+	uint64_t req_dir;
+
+	PSEUDO_TRACE("invoked");
+	PSEUDO_DEBUG("%s is invoked with vaddr 0x%lx, count %ld, entry %ld, flag %ld",
+					__func__, vaddr, count, entry, flag);
+
+	req_dir = (count + entry) / ENTRIES_PER_DIR;
+	if ((count + entry) % ENTRIES_PER_DIR)
+		req_dir++;
+	if (req_dir < 2) {
+		PSEUDO_DEBUG("%s : req_dir < 2", __func__);
+		goto hndl_return;
+	}
+
+	first_dir = alloc_vemva_dir(
+			handle, NULL, vaddr, (ENTRIES_PER_DIR - entry), flag);
+	if (first_dir == NULL) {
+		PSEUDO_DEBUG("Failed to allocate 1st dir");
+		goto hndl_return;
+	}
+
+	vemva = ve_get_fixed_vemva(
+				handle, first_dir, vaddr, entry, count, flag);
+	if (vemva == (void *)-1) {
+		PSEUDO_DEBUG("Failed to allocate remaining dirs");
+		dealloc_vemva_dir(first_dir);
+	}
+
+
+hndl_return:
 	PSEUDO_DEBUG("returned with %p", vemva);
 	PSEUDO_TRACE("returned");
 	return vemva;
@@ -484,7 +587,7 @@ void *ve_get_nearby_vemva(veos_handle *handle, struct vemva_struct *vemva_tmp,
  * @param[in] size Size of the memory to map
  * @param[in] flag Additional information for memory mapping
  *
- * @return On Success, return the request VEMVA, NULL on failure.
+ * @return On Success, return the request VEMVA, -1 on failure.
  */
 void *avail_vemva(veos_handle *handle, uint64_t vaddr,
 		uint64_t size, uint64_t flag)
@@ -509,6 +612,12 @@ void *avail_vemva(veos_handle *handle, uint64_t vaddr,
 	required_dir_count = (entry+count)/ENTRIES_PER_DIR;
 	if ((entry+count) % ENTRIES_PER_DIR)
 		required_dir_count++;
+
+	PSEUDO_DEBUG("required_dir_count = %ld", required_dir_count);
+	if (required_dir_count > MAX_VEMVA_LIST) {
+		PSEUDO_DEBUG("required_dir_count > MAX_VEMVA_LIST");
+		goto hndl_exit;
+	}
 
 	if (flag & MAP_ADDR_SPACE)
 		required_type = (uint8_t)((flag & MAP_64MB) ?
@@ -552,11 +661,22 @@ void *avail_vemva(veos_handle *handle, uint64_t vaddr,
 	 * Now the request could not be completed using existing list
 	 */
 	if ((void *)-1 == vemva) {
-		vemva_tmp = alloc_vemva_dir(handle, NULL, vaddr, count, flag);
+		vemva_tmp = alloc_vemva_dir(
+				handle, NULL, vaddr, count, flag|MAP_FIXED);
 		if (NULL == vemva_tmp) {
-			if (!(flag & MAP_FIXED))
-				vemva = scan_vemva_dir_list(handle, count, flag);
-			goto err_exit;
+			if (flag & MAP_FIXED) {
+				vemva = ve_get_fixed_vemva_with_new_dir(
+					handle, vaddr, count, entry, flag);
+				goto hndl_exit;
+			}
+			/* Giving priority to optimization of ATB */
+			vemva = scan_vemva_dir_list(handle, count, flag);
+			if (vemva != (void *)-1)
+				goto hndl_exit;
+			vemva_tmp = alloc_vemva_dir(
+					handle, NULL, vaddr, count, flag);
+			if (vemva_tmp == NULL)
+				goto hndl_exit;
 		}
 		/*Check If the requested block of VEMVA lies in this chunk*/
 		if (vemva_tmp->vemva_base == vemva_base) {
@@ -570,7 +690,7 @@ void *avail_vemva(veos_handle *handle, uint64_t vaddr,
 				PSEUDO_DEBUG("Required free vemva is not found");
 				PSEUDO_DEBUG("Again trying with dir:%p expantion",
 								vemva_tmp->vemva_base);
-				vemva = ve_get_free_vemva(handle, vemva_tmp, vaddr, count);
+				vemva = ve_get_free_vemva(handle, vemva_tmp, vaddr, count, flag);
 				if (vemva == (void *)-1) {
 					PSEUDO_DEBUG("New directory can't expanded");
 					PSEUDO_DEBUG("Deallocating directory :%p",
@@ -582,14 +702,14 @@ void *avail_vemva(veos_handle *handle, uint64_t vaddr,
 					if (flag & MAP_FIXED) {
 						/*fixed vemva not available  */
 						PSEUDO_DEBUG("Unable to allocate fixed vemva");
-						goto err_exit;
+						goto hndl_exit;
 					} else {
 						PSEUDO_DEBUG("trying to allocated elsewhere");
 						vemva_tmp = alloc_vemva_dir(handle, NULL, vaddr, count, flag);
 						if (NULL == vemva_tmp) {
 							PSEUDO_DEBUG("No free directory available");
 						} else {
-							vemva = ve_get_free_vemva(handle, vemva_tmp, 0, count);
+							vemva = ve_get_free_vemva(handle, vemva_tmp, 0, count, flag);
 							PSEUDO_DEBUG("allocated vemva %p instead of 0x%lx",
 									vemva, vaddr);
 						}
@@ -598,12 +718,98 @@ void *avail_vemva(veos_handle *handle, uint64_t vaddr,
 			}
 		} else
 			/*Serve the request from this chunk*/
-			vemva = ve_get_free_vemva(handle, vemva_tmp, 0, count);
+			vemva = ve_get_free_vemva(
+					handle, vemva_tmp, 0, count, flag);
 	}
-err_exit:
+hndl_exit:
 	PSEUDO_DEBUG("returned with vemva: %p", vemva);
 	PSEUDO_TRACE("returned");
 	return vemva;
+}
+
+/**
+ * @brief This function is used to get vemva dir which has specified address.
+ *
+ * @param[in] vaddr Address
+ *
+ * On Success return the pointer to vemva dir, NULL on failure.
+ */
+static struct vemva_struct *
+get_vemva_struct(uint64_t vaddr) {
+
+	uint64_t vemva_base = vaddr & (~(ve_page_info.chunk_size - 1));
+	struct vemva_struct *vemva_tmp = NULL;
+	struct vemva_struct *target_vemva = NULL;
+	struct list_head *temp_list_head = NULL;
+
+	PSEUDO_TRACE("invoked");
+	PSEUDO_DEBUG("Search vemva_struct which has vemva_base = 0x%lx",
+								vemva_base);
+
+	list_for_each(temp_list_head, &vemva_header.vemva_list) {
+		vemva_tmp = list_entry(temp_list_head,
+						struct vemva_struct, list);
+		if (((uint64_t)(vemva_tmp->vemva_base)) == vemva_base) {
+			target_vemva = vemva_tmp;
+			break;
+		}
+	}
+	if (target_vemva == NULL)
+		PSEUDO_DEBUG("Not found");
+	else
+		PSEUDO_DEBUG("vemva_struct:%p is found", target_vemva);
+
+	PSEUDO_TRACE("returned");
+	return target_vemva;
+}
+
+/**
+ * @brief This function is used to check whether specified ATB Dir has enough
+ *        entries or not.
+ *
+ * @param[in] vemva_dir Pointer to pseudo vemva list
+ * @param[in] entry Start entry
+ * @param[in] count Number of entries.
+ *
+ * @return On Success return 0, -1 on failure.
+ */
+static int
+check_continous_free(struct vemva_struct *vemva_dir, int entry, int count)
+{
+	int64_t word, bit;
+	uint64_t *bitmap;
+	int idx;
+	int cnt = 0;
+	int ret = -1;
+
+	PSEUDO_TRACE("invoked");
+
+	word = entry / BITS_PER_WORD;
+	bit = entry % BITS_PER_WORD;
+	bitmap = vemva_dir->bitmap;
+
+	for (idx = entry; idx < ENTRIES_PER_DIR; idx++) {
+		if (!(bitmap[word] & ((uint64_t)1 << bit)))
+			break;
+		else
+			cnt++;
+
+		if (cnt == count) {
+			ret = 0;
+			break;
+		}
+
+		bit++;
+
+		if (bit >= BITS_PER_WORD) {
+			word++;
+			bit = 0;
+		}
+	}
+
+	PSEUDO_TRACE("returned");
+
+	return ret;
 }
 
 /**
@@ -621,11 +827,11 @@ err_exit:
  * on failure.
  */
 void *ve_get_free_vemva(veos_handle *handle, struct vemva_struct *
-		vemva_dir, uint64_t vaddr, int64_t count)
+		vemva_dir, uint64_t vaddr, uint64_t count, uint64_t flag)
 {
 	void *vemva = NULL;
 	int64_t entry = 0;
-	int64_t contigious_free = 0;
+	int64_t contiguous_free = 0;
 	int64_t word = 0, index = 0;
 	uint8_t word_index = 0, bit_index = 0;
 	uint8_t entry_index = 0;
@@ -643,6 +849,7 @@ void *ve_get_free_vemva(veos_handle *handle, struct vemva_struct *
 
 	PSEUDO_TRACE("invoked");
 	PSEUDO_DEBUG("invoked with word count = %ld, entry_index %d", word_count, entry_index);
+	PSEUDO_DEBUG("word_index = %d, bit_index = %d\n", word_index, bit_index);
 
 	for (index = word_index; index < word_count; index++, word_index++) {
 		if (word_index >= WORDS_PER_BITMAP) {
@@ -650,36 +857,37 @@ void *ve_get_free_vemva(veos_handle *handle, struct vemva_struct *
 			vemva_tmp = list_next_entry(vemva_tmp,
 					list);
 		}
-		for (bit_index = entry_index;
-				bit_index < BITS_PER_WORD;
-				bit_index++) {
+		for (; bit_index < BITS_PER_WORD; bit_index++) {
 			if (vemva_tmp->bitmap[word_index] &
 					((uint64_t)1<<bit_index)) {
-				contigious_free++;
+				contiguous_free++;
 				/*
 				 * Maintain vemva_dir from which free
 				 * vemva has been found first
 				 */
-				if (1 == contigious_free) {
+				if (1 == contiguous_free) {
 					vemva_dir = vemva_tmp;
 					entry = bit_index;
 					word = word_index;
 				}
-				if (contigious_free == count)
+				if (contiguous_free == count)
 					goto out;
 			} else
-				contigious_free = 0;
+				contiguous_free = 0;
 		}
-		entry_index = 0;
+		bit_index = 0;
 	}
 
-	if (contigious_free) {
-		PSEUDO_DEBUG("contigious_free from previous dir %ld", contigious_free);
+	PSEUDO_DEBUG("contiguous_free = %ld\n", contiguous_free);
+
+	if (contiguous_free) {
+		PSEUDO_DEBUG("contiguous_free from previous dir %ld",
+							contiguous_free);
 		/*Check if dir is expandable or not*/
 		PSEUDO_DEBUG("Trying to expand vemva");
 		vemva_dir = alloc_vemva_dir(handle, vemva_dir,
-				0, (count-contigious_free),
-				MAP_FIXED);
+				0, (count-contiguous_free),
+				flag|MAP_FIXED);
 		if (!(NULL == vemva_dir)) {
 			/*Request can be fulfilled*/
 			goto out;
@@ -1144,7 +1352,7 @@ void *scan_vemva_dir_list(veos_handle *handle, uint64_t count, uint64_t flag)
 		if (vemva_tmp->type != required_type)
 			continue;
 
-		vemva = ve_get_free_vemva(handle, vemva_tmp, 0, count);
+		vemva = ve_get_free_vemva(handle, vemva_tmp, 0, count, flag);
 		if (vemva == (void *)-1)
 			continue;
 		else
@@ -1191,8 +1399,8 @@ void init_as_attr(void)
 	/*init as_attr_lock */
 	if (0 != pthread_mutex_init(&as_attributes.as_attr_lock, NULL)) {
 		PSEUDO_ERROR("failed to initialize as_attr_lock");
-                fprintf(stderr, "VE process setup failed\n");
-                pseudo_abort();
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
 	}
 }
 
@@ -1270,110 +1478,54 @@ int vemva_mapped(void *vemva_addr, size_t size, uint8_t flag)
  * @return Will return base address of the chunk
  * on success and (void *)-1 on failure and set errno.
  */
-void *get_aligned_chunk(uint64_t vaddr_req, uint8_t required_chunks,
+void *get_aligned_chunk(uint64_t vaddr_req, uint64_t required_chunks,
 		uint64_t flag)
 {
-	int64_t retval = 0;
-	uint64_t vaddr = 0;
-	uint64_t chunk_size = 0;
-	int vh_page_size = 0;
-	uint64_t size_align = 0, size_unmap = 0;
-	uint64_t vaddr_unaligned = 0, vaddr_aligned = 0;
+	int saved_errno = errno;
+	uint64_t vaddr;
 	uint64_t lflag = 0;
 
-	chunk_size = ve_page_info.chunk_size * required_chunks;
+	if ((VEMMR_START <= vaddr_req) &&
+			(vaddr_req < (VEMMR_START + VEMMR_NONFIXED_OFFSET))) {
+		if (!(flag & (MAP_ADDR_SPACE|
+				MAP_ADDR_64GB_SPACE|MAP_ADDR_64GB_FIXED))) {
+			saved_errno = ENOMEM;
+			PSEUDO_DEBUG("User is not allowed to allocate 0x%lx",
+								vaddr_req);
+			vaddr = (uint64_t)-1;
+			goto hndl_return;
+		}
+	}
 
 	lflag = MAP_PRIVATE | MAP_ANON;
 	lflag |= (flag & MAP_ADDR_SPACE) ? MAP_FIXED : 0;
+	lflag |= (flag & MAP_ADDR_64GB_FIXED) ? MAP_FIXED : 0;
 	lflag |= (flag & MAP_ADDR_64GB_SPACE) ? MAP_FIXED : 0;
+
+	assert((flag & MAP_64MB) || (flag & MAP_2MB));
+	lflag |= (flag & MAP_2MB) ? MAP_2MB : MAP_64MB;
+	if (flag & MAP_FIXED)
+		lflag |= MAP_FIXED;
 
 	PSEUDO_TRACE("invoked");
 	PSEUDO_DEBUG("invoked with flag 0x%lx lflag 0x%lx",
 			flag, lflag);
 
-	vaddr = (uint64_t)mmap((void *)vaddr_req, chunk_size, PROT_NONE,
-			lflag, -1, 0);
-	if (MAP_FAILED == (void *)vaddr) {
-		retval = errno;
-		PSEUDO_DEBUG("Error (%s) while performing VH mmap",
-				strerror(errno));
-		errno = retval;
-		return MAP_FAILED;
+	vaddr = allocate_chunk(vaddr_req, required_chunks, lflag);
+	if (vaddr == (uint64_t)-1) {
+		saved_errno = errno;
+		if (flag & MAP_64MB)
+			PSEUDO_ERROR("Failed to allocate 16GB chunks %s",
+							strerror(saved_errno));
+		else
+			PSEUDO_ERROR("Failed to allocate 512MB chunks %s",
+							strerror(saved_errno));
 	}
-
-	PSEUDO_DEBUG("vaddr_req %p : vaddr %p : ve_page_info.chunk_size 0x%lx",
-		(void *)vaddr_req, (void *)vaddr, ve_page_info.chunk_size);
-
-	if (!IS_ALIGNED(vaddr, ve_page_info.chunk_size)) {
-		retval = munmap((void *)vaddr, chunk_size);
-		if (-1 == retval) {
-			retval = errno;
-			PSEUDO_DEBUG("Error (%s) while performing VH munmap",
-					strerror(errno));
-			errno = retval;
-			return MAP_FAILED;
-		}
-	} else {
-		PSEUDO_DEBUG("addr already aligned: 0x%lx",
-				vaddr);
-		return (void *)vaddr;
-	}
-
-	/* New size calculation */
-	vh_page_size = getpagesize();
-	size_align = chunk_size + chunk_size - vh_page_size;
-
-	/* mmap with new size */
-	vaddr_unaligned = (uint64_t)mmap((void *)vaddr, size_align,
-			PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
-	if (MAP_FAILED == (void *)vaddr_unaligned) {
-		retval = errno;
-		PSEUDO_DEBUG("Error (%s) while performing VH mmap",
-				strerror(errno));
-		errno = retval;
-		return (void *)vaddr_unaligned;
-	}
-
-	/* Align the address to 512MB page boundary  */
-	vaddr_aligned = ALIGN(vaddr_unaligned, chunk_size);
-	/* Release additional mapped area */
-	size_unmap = (vaddr_aligned - vaddr_unaligned);
-	if (size_unmap > 0) {
-		retval = munmap((void *)vaddr_unaligned, size_unmap);
-		if (-1 == retval) {
-			retval = errno;
-			PSEUDO_DEBUG("Error (%s) while performing VH mmap",
-					strerror(errno));
-			PSEUDO_DEBUG("ArgsDump,arg1: %p arg2: %ld",
-					(void *)(vaddr_unaligned), size_unmap);
-			errno = retval;
-			retval = -1;
-			return (void *)retval;
-		}
-	}
-	size_unmap = (vaddr_unaligned + chunk_size +
-			chunk_size - vh_page_size) -
-		(vaddr_aligned + chunk_size);
-	/* Release additional mapped area */
-	if (size_unmap > 0) {
-		retval = munmap((void *)(vaddr_aligned + chunk_size),
-				size_unmap);
-		if (-1 == retval) {
-			retval = errno;
-			PSEUDO_DEBUG("Error (%s) while performing VH munmap",
-					strerror(errno));
-			PSEUDO_DEBUG("ArgsDump,arg1: %p arg2: %ld",
-					(void *)(vaddr_aligned+chunk_size),
-					size_unmap);
-			errno = retval;
-			retval = -1;
-			return (void *)retval;
-		}
-	}
-
-	PSEUDO_DEBUG("returned with 0x%lx", vaddr_aligned);
+hndl_return:
+	PSEUDO_DEBUG("returned with 0x%lx", vaddr);
 	PSEUDO_TRACE("returned");
-	return (void *)vaddr_aligned;
+	errno = saved_errno;
+	return (void *)vaddr;
 
 }
 
@@ -1501,21 +1653,28 @@ uint64_t __get_page_size(vemva_t vaddr)
  * NULL in case of failure.
  */
 struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *vemva_dir,
-		uint64_t vaddr, uint16_t count, int64_t flag)
+		uint64_t vaddr, uint64_t count, int64_t flag)
 {
+	int saved_errno = 0;
+	int tmp_errno;
 	uint64_t required_base = 0;
 	uint64_t retval = 0;
-	uint8_t req_dir_count = 0;
+	uint64_t required_bottom, entry, req_dir_count;
+	uint8_t last_chunk_entries;
 	void *vemva_base = NULL;
 	struct vemva_struct *vemva_tmp = NULL;
 	struct vemva_struct *vemva_ret = NULL;
+	struct vemva_struct *last_vemva_dir = NULL;
 
 	PSEUDO_TRACE("Invoked");
-	PSEUDO_DEBUG("Invoked with flag 0x%lx, count %d", flag, count);
+	PSEUDO_DEBUG("Invoked with flag 0x%lx, count %ld", flag, count);
 
-	req_dir_count = count / ENTRIES_PER_DIR;
-	if (count % ENTRIES_PER_DIR)
+	entry = (vaddr & ve_page_info.chunk_mask) / ve_page_info.page_size;
+	req_dir_count = (count + entry) / ENTRIES_PER_DIR;
+	if ((count + entry) % ENTRIES_PER_DIR)
 		req_dir_count++;
+
+	PSEUDO_DEBUG("entry = %ld, req_dir_count = %ld", entry, req_dir_count);
 
 	if (vaddr && !vemva_dir) {
 		required_base = (vaddr & (~ve_page_info.chunk_mask));
@@ -1531,6 +1690,16 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *v
 		required_base = 0;
 	}
 
+	required_bottom =
+		required_base + req_dir_count * ve_page_info.chunk_size;
+	if (required_base && ((required_base < VEMMR_START)
+					|| (required_bottom > VEMMR_BOTTOM))) {
+		saved_errno = EINVAL;
+		PSEUDO_DEBUG("Can not allocate specified VEMVA.");
+		vemva_ret = NULL;
+		goto err_exit;
+	}
+
 	/*
 	 * Depending upon MAX_VEMVA_LIST if new pseudo_vemva
 	 * list can be allocated or not.
@@ -1538,18 +1707,58 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *v
 	if ((vemva_header.vemva_count + req_dir_count)
 			> MAX_VEMVA_LIST) {
 		PSEUDO_DEBUG("(vemva_header.vemva_count = %ld "
-			"req_dir_count = %d", vemva_header.vemva_count
+			"req_dir_count = %ld", vemva_header.vemva_count
 			, req_dir_count);
 		PSEUDO_DEBUG("Can not allocate more VEMVA.");
 		vemva_ret = NULL;
+		saved_errno = ENOMEM;
 		goto err_exit;
 	}
 
+	tmp_errno = errno;
 	vemva_base = get_aligned_chunk(required_base, req_dir_count, flag);
 	if (MAP_FAILED == vemva_base) {
-		PSEUDO_DEBUG("Can't get 512Mb Chunk.");
-		vemva_ret = NULL;
-		goto err_exit;
+		saved_errno = errno;
+		if (!(flag & MAP_FIXED) || (req_dir_count == 1)) {
+			PSEUDO_DEBUG("Can't get Chunk");
+			vemva_ret = NULL;
+			goto err_exit;
+		}
+		/* get_aligned_chunk() fails when last chunk has been already
+		 * allocated, even if last chunk has enough unused entries.
+		 * So, retry to allocate chunkss excluding last one
+		 * when last block has enough unused entries.
+		 * */
+		PSEUDO_DEBUG("Retry to allocate chunks");
+		last_vemva_dir = get_vemva_struct(
+					required_base + (req_dir_count - 1) *
+					ve_page_info.chunk_size);
+		if (last_vemva_dir == NULL) {
+			PSEUDO_DEBUG("Last chunk is nou found");
+			vemva_ret = NULL;
+			goto err_exit;
+		}
+
+		last_chunk_entries = (count + entry) % ENTRIES_PER_DIR;
+		if (check_continous_free(
+				last_vemva_dir, 0, last_chunk_entries)) {
+			PSEUDO_DEBUG("Last chunk does not have enough unused entries");
+			vemva_ret = NULL;
+			goto err_exit;
+		}
+
+		vemva_base = get_aligned_chunk(
+					required_base, req_dir_count - 1, flag);
+		if (MAP_FAILED == vemva_base) {
+			PSEUDO_DEBUG("Can't get Chunk");
+			vemva_ret = NULL;
+			goto err_exit;
+		}
+
+		PSEUDO_DEBUG("Allocated chunks excluding last one");
+		errno = tmp_errno;
+		saved_errno = 0;
+		req_dir_count = req_dir_count - 1;
 	}
 
 	/*
@@ -1557,12 +1766,7 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *v
 	 */
 	if (required_base && (vemva_base != (void *)required_base)) {
 		PSEUDO_DEBUG("Unable to allocate required chunk.");
-		if (flag & MAP_FIXED) {
-			munmap(vemva_base, ve_page_info.chunk_size*
-					req_dir_count);
-			vemva_ret = NULL;
-			goto err_exit;
-		}
+		assert(!(flag & MAP_FIXED));
 	}
 
 	/*
@@ -1572,9 +1776,10 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *v
 		vemva_tmp = (struct vemva_struct *)malloc(sizeof
 				(struct vemva_struct));
 		if (vemva_tmp == NULL) {
-			munmap(vemva_base, ve_page_info.chunk_size*
-					req_dir_count);
+			free_chunks((uint64_t)vemva_base,
+				ve_page_info.chunk_size * req_dir_count, flag);
 			PSEUDO_DEBUG("malloc in alloc_vemva FAILED");
+			errno = ENOMEM;
 			return NULL;
 		}
 		memset(vemva_tmp, '\0', sizeof(struct vemva_struct));
@@ -1623,13 +1828,14 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *v
 			retval = new_vemva_chunk_atb_init(handle,
 					(uint64_t)vemva_base,
 					ve_page_info.page_size);
-			if (retval == -1) {
+			if (retval != 0) {
 				PSEUDO_DEBUG("new_vemva_chunk_atn_init failed");
-				munmap(vemva_base, ve_page_info.chunk_size*
-					req_dir_count);
+				free_chunks((uint64_t)vemva_base,
+					ve_page_info.chunk_size * req_dir_count,
+					flag);
 				vemva_ret = NULL;
 				free(vemva_tmp);
-				errno = ENOMEM;
+				saved_errno = ENOMEM;
 				goto err_exit;
 			}
 		}
@@ -1658,6 +1864,8 @@ struct vemva_struct *alloc_vemva_dir(veos_handle *handle, struct vemva_struct *v
 err_exit:
 	PSEUDO_DEBUG("returned with 0x%p", vemva_ret);
 	PSEUDO_TRACE("returned");
+	if (saved_errno)
+		errno = saved_errno;
 	return vemva_ret;
 }
 
@@ -1795,10 +2003,9 @@ int dealloc_vemva_dir(struct vemva_struct *vemva_del)
 		vemva_current = vemva_prev;
 	}
 
-	/*unmap vemva_base*/
-	ret = munmap(vemva_del->vemva_base, vemva_del->dir_size);
+	/* Return chunk to VEMMR */
+	ret = free_chunk(vemva_del->type, vemva_del->vemva_base);
 	if (0 > ret) {
-		ret = -errno;
 		PSEUDO_DEBUG("VH OS munmap failed");
 		return ret;
 	}

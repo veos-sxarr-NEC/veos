@@ -34,9 +34,8 @@ typedef Elf64_Phdr Elf_Phdr;
 typedef Elf64_Shdr Elf_Shdr;
 
 typedef unsigned long long offset_t;
-#define CHUNK_512_GB		0x8000000000
-#define CHUNK_1TB              0x10000000000
-#define VE_ADDRESS_SPACE_SIZE  CHUNK_1TB
+
+#define VE_FIXED_ADDRESS_SPACE_SIZE  0x10000000000 /* 1TB */
 
 #define DEFAULT_STACK_LIMIT	0x0L	/*!< Indicates unlimited Stack */
 #define AT_QUICKCALL_VADDR	AT_SYSINFO_EHDR
@@ -135,7 +134,7 @@ struct ve_load_data {
 extern struct ve_load_data load_elf;
 
 void ve_set_stack_limit(void);
-int ve_address_space_reserve(uint64_t);
+int ve_address_space_reserve(void);
 int pse_load_binary(char *, veos_handle *, struct ve_start_ve_req_cmd *);
 int pse_load_interp(char *, veos_handle *);
 Elf_Shdr *get_shdr(Elf_Ehdr *, int);

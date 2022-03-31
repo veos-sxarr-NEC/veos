@@ -80,6 +80,8 @@ int no_update_os_state = 0;
 struct ve_node_struct ve_node; /* the VE node */
 struct ve_node_struct *p_ve_node_global = &ve_node; /* the pointer to VE node */
 static char veos_abort_message[VE_ABORT_CAUSE_BUF_SIZE];
+static siginfo_t r_sig_info;
+static int signal_received_flag = false;
 
 /**
  * @brief This function releases all the resources
@@ -208,10 +210,14 @@ void veos_terminate_node_core(int abnormal)
  *
  * @author VEOS main
  */
-void veos_request_termination(int signal)
+void veos_request_termination(int signal, siginfo_t *info, void *ucontext)
 {
 	terminate_flag = REQUIRED;
 	sem_post(&terminate_sem);
+	if (info != NULL) {
+		memcpy(&r_sig_info, info, sizeof(siginfo_t));
+		signal_received_flag = true;
+	}
 }
 
 /**
@@ -596,6 +602,38 @@ hndl_error:
 	remove(sa.sun_path);
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
 	return -1;
+}
+
+static void veos_logging_recived_signal(void)
+{
+	int fd;
+	char cmd[PATH_MAX + 1] = {'\0'};
+	char path_to_proc[PATH_MAX + 1] = {'\0'};
+	ssize_t rd;
+
+	if (signal_received_flag == false)
+		return;
+
+	snprintf(path_to_proc, PATH_MAX + 1,
+					"/proc/%d/cmdline", r_sig_info.si_pid);
+	fd = open(path_to_proc, O_RDONLY|O_NOFOLLOW);
+	if (fd != -1) {
+		rd = read(fd, cmd, PATH_MAX);
+		if (rd == -1) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_NOTICE,
+				"Signal %d from PID %d recived",
+				r_sig_info.si_signo, r_sig_info.si_pid);
+		} else {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_NOTICE,
+				"Signal %d from %s(PID : %d) recived",
+				r_sig_info.si_signo, cmd, r_sig_info.si_pid);
+		}
+		close(fd);
+	} else {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_NOTICE,
+				"Signal %d from PID %d recived",
+				r_sig_info.si_signo, r_sig_info.si_pid);
+	}
 }
 
 /**
@@ -1080,7 +1118,7 @@ int main(int argc, char *argv[])
 				"Faild to create veos_sigstop_thread: %s",
 				strerror(retval));
 		retval = 1;
-		veos_request_termination(0);
+		veos_request_termination(0, NULL, NULL);
 	}
 	if (retval == 0) {
 		retval = pthread_create(&veos_poller_thread, &attr,
@@ -1090,7 +1128,7 @@ int main(int argc, char *argv[])
 				"Faild to create veos_poller_thread: %s",
 				strerror(retval));
 			retval = 1;
-			veos_request_termination(0);
+			veos_request_termination(0, NULL, NULL);
 		}
 	}
 	retval = pthread_create(&veos_zombie_cleaner_thread, &attr,
@@ -1100,7 +1138,7 @@ int main(int argc, char *argv[])
 			"Faild to create veos_zombie_cleanup_thread: %s",
 			strerror(retval));
 		retval = 1;
-		veos_request_termination(0);
+		veos_request_termination(0, NULL, NULL);
 	}
 	/* Wait to change terminate_flag value from 0 to 1. */
 	sem_wait(&terminate_sem);
@@ -1108,6 +1146,8 @@ int main(int argc, char *argv[])
 		veos_abort("Failed to post semaphore. %s", strerror(errno));
 
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_NOTICE, "Terminating VEOS ...");
+
+	veos_logging_recived_signal();
 
 	if (veos_set_ve_node_state(VE_NODE(0), OS_ST_TERMINATING) != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
@@ -1198,7 +1238,7 @@ hndl_termination:
 	if (veos_remove_timer(&ve_node) != 0)
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 		       "Can't stop VEOS scheduler timer");
-	veos_request_termination(0);
+	veos_request_termination(0, NULL, NULL);
 	send_notice_to_swap_thread();
 	veos_termination(retval);
 

@@ -38,6 +38,7 @@
 #include "mm_transfer.h"
 #include "handle.h"
 #include "ve_swap_request.h"
+#include "productinfo.h"
 
 #define VE_VEHVA_SYS_COM_REG_PAGE0_ADDR       0x000000001000
 #define VE_VEHVA_SYS_COM_REG_PAGE1_ADDR       0x000000002000
@@ -424,10 +425,8 @@ ssize_t ve_sys_get_ve_info(veos_handle *handle, char *name, char *buffer,
 {
 	ssize_t ret;
 	char *tmp_buffer = NULL;
-	const char *sysfs_path;
 	char filepath[PATH_MAX];
 	char filename[PATH_MAX];
-	int fd = -1;
 	ssize_t cnt = 0;
 
 	VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_TRACE, "In Func");
@@ -481,60 +480,19 @@ ssize_t ve_sys_get_ve_info(veos_handle *handle, char *name, char *buffer,
 	}
 	memset(tmp_buffer, '\0', size);
 
-	sysfs_path = vedl_get_sysfs_path(handle->ve_handle);
-	if (sysfs_path == NULL) {
-		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
-					 "Getting sysfs path failed");
-		ret = -EINVAL;
+	ret = get_ve_info(handle, filename, filepath, tmp_buffer, &cnt, sizeof(filepath), size);
+	if (ret != 0) {
 		goto hndl_return;
-	}
-
-	ret = snprintf(filepath, sizeof(filepath), "%s/%s", sysfs_path, filename);
-	/*  ret doesn't include null termination. */
-	if (ret < 0 || ret > (sizeof(filepath) - 1)) {
-		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
-						"filename is too long");
-		ret = -ENAMETOOLONG;
-		goto hndl_return;
-
-	}
-
-	VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_DEBUG, "filepath = %s",
-								filepath);
-
-	errno = 0;
-	fd = open(filepath, O_RDONLY | O_NOFOLLOW);
-	if (fd < 0) {
-		ret = -errno;
-		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
-			"Failed to open %s.%s", filepath, strerror(errno));
-		goto hndl_return;
-	}
-
-	errno = 0;
-	cnt = read(fd, tmp_buffer, size - 1);
-	if (cnt < 0) {
-		ret = -errno;
-		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
-			"Failed to read %s.%s", filepath, strerror(errno));
-		goto hndl_close;
 	}
 
 	if (ve_send_data(handle, (uint64_t)buffer, size, tmp_buffer) != 0) {
 		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
 					"Failed to send %s info", filepath);
 		ret = -EFAULT;
-		goto hndl_close;
+		goto hndl_return;
 	}
 
 	ret = cnt;
-
-hndl_close:
-	if (close(fd) != 0) {
-		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
-		       "Failed to close file descriptor: %s", strerror(errno));
-		ret = -errno;
-	}
 
 hndl_return:
 	free(tmp_buffer);
@@ -885,3 +843,209 @@ hndl_return:
 	PSEUDO_TRACE("Exiting");
 	return ret;
 }
+
+/**
+ * @brief This function gets VE product neme from a sysfs file of current VE node and a correspondence table.
+ *
+ * @param[in] handle VEOS handle of pseudo process.
+ * @param[out] name VEMVA of the buffer in VE memory to store VE product name.
+ *                  VE product name will be a null-terminated string even if buffer size 
+ *                  is small or equal to the size of information.
+ * @param[in] size Buffer (name) size.
+ *
+ * @return On Success, an negative error number on Failure.
+ *
+ * @retval -EFAULT on Pointer is invalid.
+ * @retval -EINVAL on Invalid argument.
+ * @retval -ENOENT on Correspondence table file does not exist.
+ * @retval -ENODEV on The product name does not exist in the correspondence table.
+ * @retval -ENOMEM on Insufficient memory is available.
+ *
+ * @internal
+ *
+ * @author libsysve
+ */
+int ve_sys_get_ve_product_name(veos_handle *handle, char *name, size_t size)
+{
+	int ret = 0;
+	char *tmp_buffer = NULL;
+	char *model_buffer = NULL;
+	char *type_buffer = NULL;
+	char *model = "model";
+	char *type = "type";
+	char filepath[PATH_MAX];
+	ssize_t cnt = 0;
+
+	/* About 3 times <model>, <type> string */
+	int model_type_size = 10;
+
+	VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_TRACE, "In Func");
+
+	memset(&filepath, '\0', sizeof(filepath));
+
+	if ((int)size <= 0) {
+		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
+				"Illegal argument (size_t size)");
+		ret = -EINVAL;
+		goto hndl_return;
+	}
+
+	if (name == NULL) {
+		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
+						"NULL pointer");
+		ret = -EFAULT;
+		goto hndl_return;
+	}
+
+	tmp_buffer = (char *)malloc(size);
+	if (tmp_buffer == NULL) {
+		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
+				"Failed to malloc buffer for information");
+		ret = -ENOMEM;
+		goto hndl_return;
+	}
+	memset(tmp_buffer, '\0', size);
+
+	model_buffer = (char *)malloc(model_type_size);
+	if (model_buffer == NULL) {
+		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
+			"Failed to malloc buffer for information");
+		ret = -ENOMEM;
+		goto hndl_return;
+	}
+	memset(model_buffer, '\0', model_type_size);
+
+	type_buffer = (char *)malloc(model_type_size);
+	if (type_buffer == NULL) {
+		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
+			"Failed to malloc buffer for information");
+		ret = -ENOMEM;
+		goto hndl_return;
+	}
+	memset(type_buffer, '\0', model_type_size);
+
+	ret = get_ve_info(handle, model, filepath, model_buffer, &cnt, sizeof(filepath), model_type_size);
+	if (ret != 0) {
+		goto hndl_return;
+	}
+	
+	ret = get_ve_info(handle, type, filepath, type_buffer, &cnt, sizeof(filepath), model_type_size);
+	if (ret != 0) {
+		goto hndl_return;
+	}
+
+	ret = get_ve_product_name(model_buffer, type_buffer, tmp_buffer, size);
+	if(ret != 0){
+		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
+					"Getting product name failed");
+		goto hndl_return;
+	}
+
+	if (ve_send_data(handle, (uint64_t)name, size, tmp_buffer) != 0) {
+		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
+				"Failed to send veproduct info");
+		ret = -EFAULT;
+		goto hndl_return;
+	}
+
+	ret = 0;
+
+hndl_return:
+	free(tmp_buffer);
+	free(model_buffer);
+	free(type_buffer);
+	VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
+	return ret;
+	
+}
+
+/**
+ * @brief This function gets information from a sysfs file of current VE node.
+ *
+ * @param[in] handle VEOS handle of pseudo process.
+ * @param[in] filename A null-terminated name of sysfs file.
+ * @param[out] filepath A path of sysfs file.
+ * @param[out] buffer VEHVA of a buffer to store the information.
+ * @param[out] cnt To store Read() return value.
+ * @param[in] path_size Filepath buffer size.
+ * @param[in] size Buffer size.
+ *
+ * @return On Success, the number of bytes of the gotten information.
+ * it excludes the null byte used to end output to string.
+ * an negative error number on Failure.
+ *
+ * @retval -EINVAL on The name includes '/'.
+ * @retval -ENOENT on Sysfs file does not exist.
+ * @retval -EISDIR on The name is a directory's name.
+ * @retval -ELOOP on The name is a symbolic link's name.
+ * @retval -ENFILE on The system limit on the total number of open files has
+ * been reached.
+ * @retval -EMFILE on The process already has the maximum number of files open.
+ * @retval -ENAMETOOLONG on The specified name is too long.
+ *
+ * @internal
+ *
+ * @author libsysve
+ */
+ssize_t get_ve_info(veos_handle *handle, char *filename, char *filepath, char *buffer,
+					ssize_t *cnt, size_t path_size, size_t size)
+{
+	ssize_t ret;
+	const char *sysfs_path;
+	int fd = -1;
+
+	VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_TRACE, "In Func");
+
+	sysfs_path = vedl_get_sysfs_path(handle->ve_handle);
+	if (sysfs_path == NULL) {
+		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
+					"Getting sysfs path failed");
+		ret = -EINVAL;
+		goto hndl_return;
+	}
+
+	ret = snprintf(filepath, path_size, "%s/%s", sysfs_path, filename);
+	/*  ret doesn't include null termination. */
+	if (ret < 0 || ret > (path_size - 1)) {
+		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
+					"filename is too long");
+		ret = -ENAMETOOLONG;
+	goto hndl_return;
+
+	}
+
+	VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_DEBUG, "filepath = %s",
+								filepath);
+
+	errno = 0;
+	fd = open(filepath, O_RDONLY | O_NOFOLLOW);
+	if (fd < 0) {
+		ret = -errno;
+		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
+			"Failed to open %s.%s", filepath, strerror(errno));
+		goto hndl_return;
+	}
+
+	errno = 0;
+	*cnt = read(fd, buffer, size - 1);
+	if (*cnt < 0) {
+		ret = -errno;
+		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
+			"Failed to read %s.%s", filepath, strerror(errno));
+		goto hndl_close;
+	}
+
+	ret = 0;
+
+hndl_close:
+	if (close(fd) != 0) {
+		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
+			"Failed to close file descriptor: %s", strerror(errno));
+		ret = -errno;
+	}
+
+hndl_return:
+	VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
+	return ret;
+}
+

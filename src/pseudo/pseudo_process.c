@@ -60,6 +60,7 @@
 #include "handle.h"
 #include <libudev.h>
 #include <libved.h>
+#include "vemmr_mgmt.h"
 #include <sys/time.h>
 #include <sys/resource.h>
 
@@ -1116,6 +1117,11 @@ int main(int argc, char *argv[], char *envp[])
 		fprintf(stderr, "VE process setup failed\n");
 		pseudo_abort();
 	}
+	if (ve_init_vemmr()) {
+		PSEUDO_ERROR("Failled to initialize VE memory manegement region");
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
 
 	/* Check if the request address is obtained or not */
 	if (ptrace_private != (void *)PTRACE_PRIVATE_DATA) {
@@ -1282,6 +1288,13 @@ int main(int argc, char *argv[], char *envp[])
 
 	PSEUDO_DEBUG("CORE ID : %d\t NODE ID : %d NUMA NODE ID : %d",
 			core_id, node_id, numa_node);
+
+	if (ve_init_rvr(handle, VEMMR_START)) {
+		PSEUDO_ERROR("Failed to map RVR");
+		fprintf(stderr, "Failed to map RVR");
+		pseudo_abort();
+	}
+
 	/* close the fd of syscall args file and remove the file */
 	close_syscall_args_fille(ret, sfile_name );
 

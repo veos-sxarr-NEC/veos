@@ -34,6 +34,8 @@ LIBVEPSEUDO_1.0 {
     veos_handle_copy;
     ve_send_data_tid;
     ve_recv_data_tid;
+    ve_init_vemmr;
+    ve_init_rvr;
   local:
     *;
 };

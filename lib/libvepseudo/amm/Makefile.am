@@ -7,7 +7,9 @@ libpseudoamm_la_SOURCES = \
 	vemva_mgmt.c \
 	vemva_mgmt.h \
 	sys_shm.c \
-	sys_shm.h
+	sys_shm.h \
+	vemmr_mgmt.c \
+	vemmr_mgmt.h
 
 libpseudoamm_la_CFLAGS = \
 	-g -Wall -Werror -DDEBUG -D_GNU_SOURCE \

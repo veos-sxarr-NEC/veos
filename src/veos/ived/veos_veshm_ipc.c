@@ -1501,9 +1501,6 @@ err_ret_free_info:
 err_ret_cancel_req:
 	/* NOTE: For err_ret_cancel_req, need entry and renewed_veshm */
 err_ret_clear_reply:
-	if (ret_ived != NULL)
-		ived_return__free_unpacked(ret_ived, NULL);
-
 	if (ived_req_sock != -1){
 		ret = ived_finish_soc(ived_req_sock);
 		if (errno == EIO){
@@ -1520,6 +1517,9 @@ err_ret_clear_reply:
 	}
 
 err_ret:
+	if (ret_ived != NULL)
+		ived_return__free_unpacked(ret_ived, NULL);
+
 	/* unlock & put task */
 	if (user_ived_locked == 1){
 		user_ived_locked = 0;

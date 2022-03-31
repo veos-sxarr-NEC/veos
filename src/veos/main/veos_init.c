@@ -1011,7 +1011,7 @@ hndl_amm:
 	/*clear AMM data*/
 	veos_amm_fini();
 hndl_thread:
-	veos_request_termination(0);
+	veos_request_termination(0, NULL, NULL);
 	pthread_join(terminate_dma_th, NULL);
 hndl_ived:
 	if (opt_ived != 0) {
@@ -1052,7 +1052,8 @@ int veos_register_signal_hnldr(void)
 
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "In Func");
 	memset(&act, '\0', sizeof(act));
-	act.sa_handler = &veos_request_termination;
+	act.sa_sigaction = veos_request_termination;
+	act.sa_flags = SA_SIGINFO;
 
 	if (sigaction(SIGTERM, &act, NULL) < 0) {
 		perror("Handle SIGTERM");

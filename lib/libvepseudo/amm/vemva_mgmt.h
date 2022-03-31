@@ -41,6 +41,7 @@
 #include "comm_request.h"
 #include "sys_common.h"
 #include "mm_type.h"
+#include "vemva_layout.h"
 
 /* AMM specific macros and function prototype */
 #define PAGE_SIZE_4KB		(2 * 2 * 1024)
@@ -103,19 +104,6 @@
 #define ALL_CONSEC		(((uint8_t)1)<<3)
 #define MARK_VESHM		(((uint8_t)1)<<4)
 #define MARK_FILE		(((uint8_t)1)<<5)
-
-
-/**
-* @brief These macro are related to mapping that comes under first 64GB
-*        of process address space.
-*/
-#define HEAP_START			0x601000000000
-#define ADDR_SPACE_2MB_START		0x600000000000
-#define ADDR_SPACE_64MB_START		0x600000000000
-#define ADDR_SPACE_2MB_END		0x600400000000
-#define ADDR_SPACE_64MB_END		0x600c00000000
-#define TRAMP_2MB                       0x6003ffe00000
-#define TRAMP_64MB                      0x600fffe00000
 
 extern uint64_t default_page_size;
 /**
@@ -188,21 +176,21 @@ void *ve_get_vemva(veos_handle *, uint64_t, uint64_t,
 void *ve_get_vemva_under_64GB(veos_handle *, vemva_t, uint64_t,
 		uint64_t, int, int, uint64_t);
 void *ve_get_nearby_vemva(veos_handle *, struct vemva_struct *,
-		uint64_t, int64_t, int64_t, uint64_t);
+		uint64_t, int64_t, uint64_t, uint64_t);
 void *ve_get_fixed_vemva(veos_handle *, struct vemva_struct *,
-		uint64_t, int64_t, int64_t, uint64_t);
+		uint64_t, int64_t, uint64_t, uint64_t);
 void *ve_get_free_vemva(veos_handle *, struct vemva_struct *,
-		uint64_t, int64_t);
+		uint64_t, uint64_t, uint64_t);
 
 void *avail_vemva(veos_handle *, uint64_t, uint64_t, uint64_t);
-void *get_aligned_chunk(uint64_t, uint8_t, uint64_t);
+void *get_aligned_chunk(uint64_t, uint64_t, uint64_t);
 int ve_free_vemva(void *, size_t);
 int __ve_free_vemva(void *, size_t, bool);
 int free_vemva(veos_handle *, struct vemva_struct *, int64_t,
 		int64_t);
 void *scan_vemva_dir_list(veos_handle *, uint64_t, uint64_t);
 struct vemva_struct *alloc_vemva_dir(veos_handle *, struct vemva_struct *,
-		uint64_t, uint16_t, int64_t);
+		uint64_t, uint64_t, int64_t);
 int dealloc_vemva_dir(struct vemva_struct *);
 void add_vemva_dir_in_list(struct vemva_struct *);
 int mark_vemva(uint64_t, uint64_t, int);

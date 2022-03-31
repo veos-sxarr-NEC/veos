@@ -551,11 +551,9 @@ vemva_t *__ve_shmat(veos_handle *handle, int64_t shmid, vemva_t shmaddr,
 
 	if (shmaddr < 0) {
 		PSEUDO_DEBUG("Invalid shmaddr(0x%lx)\n", shmaddr);
-		errno = ENOMEM;
+		errno = EINVAL;
 		return (void *)-1;
-
 	}
-
 	if (shmaddr && (shmflag & SHM_RND)) {
 		shmaddr = shmaddr & ~(ve_page_info.page_mask);
 		PSEUDO_DEBUG("shm vemva(0x%lx)", shmaddr);

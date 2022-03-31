@@ -122,7 +122,7 @@ struct ve_mm_struct {
 	struct list_head swapped_pages; /*!< List of ATB/DMAATB corresponding
 					 * to VE memory which was deallocated
 					 * in Swap-out */
-
+	int64_t rdma_offset; /* RDMA_OFFSET */
 };
 
 

@@ -48,6 +48,7 @@
 #include "mm_transfer.h"
 #include "velayout.h"
 #include "sys_mm.h"
+#include "vemva_layout.h"
 
 static struct auxv_info auxv;
 
@@ -66,9 +67,6 @@ static struct auxv_info auxv;
 #define VE_AX 0x6
 #define VE_WA 0x3
 #define VE_WAT 0x403
-#define HEAP_START 0x601000000000
-#define MAP_ADDR_64GB_SPACE     ((uint64_t)1<<35)
-#define MAP_ADDR_64GB_FIXED     ((uint64_t)1<<36)
 
 /**
 * @brief from sys/elf_common.
@@ -94,17 +92,18 @@ unsigned long long dyn_seg_addr_interp; /*!< PT_DYN: phdr->p_vaddr */
  *
  * @return On Success it returns 0 or -1 on failure.
  */
-int ve_address_space_reserve(uint64_t ve_text_page)
+int ve_address_space_reserve(void)
 {
 	void *ret_addr;
 	int ret = 0;
 
-	/* VH mmap is called to reserve VE address space
-	 * VE_TEXT + VE_DATA + VE_HEAP + VE_STACK
+	/* VH mmap is called to reserve VE memory virtual address region.
+	 * Corresponding Pseudo Process's virtual address region is called
+	 * "VE Memory management region (VEMMR)"
 	 */
-	PSEUDO_DEBUG("Reserving Space for VE_TEXT + VE_DATA "
-			"+ VE_HEAP + VE_STACK");
-	ret_addr = mmap((void *)ve_text_page, VE_ADDRESS_SPACE_SIZE,
+	PSEUDO_DEBUG("Reserving Space for VE memory virtual address region");
+
+	ret_addr = mmap((void *)VEMMR_START, VEMMR_SIZE,
 			PROT_NONE, MAP_PRIVATE|MAP_ANON|MAP_FIXED,
 			-1, 0);
 	if ((void *)-1 == ret_addr) {
@@ -268,13 +267,13 @@ int pse_load_binary(char *filename, veos_handle *handle,
 	auxv.e_phdr = (Elf64_Addr)(char *)ve_text_page + sizeof(Elf64_Ehdr);
 
 	/* Default stack information for the VE Program */
-	ve_info.stack_bottom = VE_ADDRESS_SPACE_SIZE +
+	ve_info.stack_bottom = VE_FIXED_ADDRESS_SPACE_SIZE +
 		ve_text_page - 0x10;/* 512GB-0x10 */
 
 	/* Read the stack limit from enviorment variable VE_STACK_LIMIT */
 	ve_set_stack_limit();
 
-	ret = ve_address_space_reserve(ve_text_page);
+	ret = ve_address_space_reserve();
 	if (0 > ret) goto err_ret;
 	fill_ve_vh_segmap(handle);
 	auxv.e_base = (Elf64_Addr)load_elf.ve_interp_map;
@@ -1060,20 +1059,22 @@ void fill_ve_elf_data(char *head)
 char * open_bin_file (char *filename, int *pfd)
 {
 	char *buf = NULL;
+	char *fname = NULL;
 	int fd = -1;
 	int retval = 0;
 	struct statvfs st = {0};
         struct stat sb = {0};
 
+	fname = filename;
 	filename = realpath(filename, NULL);
         if (NULL == filename) {
                 retval = -errno;
                 PSEUDO_ERROR("Failed to get realpath");
                 PSEUDO_DEBUG("Fail(%s) to get realpath of:%s",
                                 strerror(-retval),
-                                filename);
+                                fname);
                 fprintf(stderr, "Failed to get binary realpath: %s\n",
-			filename);
+			fname);
                 goto end;
         }
 

@@ -44,4 +44,5 @@ libvepseudo_la_LIBADD = \
 	./psm/libpseudopsm.la \
 	./sys/libpseudosys.la \
 	./ived/libpseudoived.la \
-	$(top_builddir)/lib/libveosprotoc/libveosprotoc.la
+	$(top_builddir)/lib/libveosprotoc/libveosprotoc.la \
+	$(top_builddir)/lib/libveproductinfo/libveproductinfo.la

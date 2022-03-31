@@ -26,6 +26,8 @@
 
 #include "sys_common.h"
 #include <veos_defs.h>
+#include "proto_buff_schema.pb-c.h"
+#include "comm_request.h"
 
 int ve_sys_get_pci_sync(veos_handle *, uint8_t, uint64_t *, uint64_t *);
 int ve_sys_get_fixed_vehva(veos_handle *, uint64_t, uint64_t *);
@@ -36,5 +38,9 @@ int ve_sys_unmap_dmades(veos_handle *, uint64_t );
 int ve_sys_get_veos_pid(veos_handle *);
 int64_t ve_sys_get_mns(veos_handle *, uint64_t);
 int ve_sys_set_next_thread_worker(veos_handle *);
+int ve_request_veos(veos_handle *, enum pseudo_veos_msg_id,
+				ProtobufCBinaryData *, PseudoVeosMessage **);
+int ve_sys_get_ve_product_name(veos_handle *, char *, size_t);
+ssize_t get_ve_info(veos_handle *, char *, char *, char *, ssize_t *, size_t, size_t);
 
 #endif

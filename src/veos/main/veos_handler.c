@@ -93,6 +93,7 @@ struct veos_cmd_entry pseudo_veos_cmd[PSEUDO_VEOS_MAX_MSG_NUM] = {
 	{"GET_VEOS_PID", veos_handle_get_veos_pid_req},
 	{"CMD_GET_MNS", veos_handle_get_mns},
 	{"SET_NEXT_THREAD_WORKER", psm_handle_set_next_thread_worker_req},
+	{"TELL_RDMAOFFSET", veos_handle_set_rdmaoffset},
 };
 
 struct veos_vhve_cmd_entry vhve_veos_cmd[VHVE_VEOS_MAX_MSG_NUM] = {

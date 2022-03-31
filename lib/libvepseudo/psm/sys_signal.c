@@ -161,6 +161,7 @@ ret_t ve_rt_sigaction(int syscall_num, char *syscall_name, veos_handle *handle)
 		pseudo_act.sa_sigaction =  &ve_sa_sigaction_handler;
 	}
 
+	pseudo_act.sa_flags |= SA_SIGINFO;
 	pseudo_act.sa_flags &= (~(1 << RESTART_BIT));
 	pseudo_act.sa_flags &= (~(1 << RESETHAND_BIT));
 

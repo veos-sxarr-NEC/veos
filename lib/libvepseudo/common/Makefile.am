@@ -33,6 +33,7 @@ libpseudocommon_la_CFLAGS = \
 	-I$(top_srcdir)/vhcall/include \
 	-I$(top_srcdir)/include \
 	-I$(top_builddir)/lib/libveosprotoc \
+        -I$(top_builddir)/lib/libveproductinfo \
 	-I@prefix@/include
 
 dist_noinst_DATA = syscall.tbl syscalltbl.sh

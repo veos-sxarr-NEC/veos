@@ -1428,3 +1428,91 @@ hndl_error:
 	VEOS_TRACE("returned");
 	return ret;
 }
+
+/**
+ * @brief Set RDMA_OFFSET to mm_struct of specified process.
+ *
+ * @param[in] pti Pointer to the thread argument structure containing IPC data.
+ *
+ * @return  0 on Success, -1 value on Failure.
+ */
+int
+veos_handle_set_rdmaoffset(veos_thread_arg_t *pti)
+{
+	int w_retval = 0;
+	int p_retval = 0;
+	int ret;
+	pid_t requester;
+	PseudoVeosMessage ack = PSEUDO_VEOS_MESSAGE__INIT;
+	PseudoVeosMessage *request = NULL;
+	struct ve_task_struct *tsk = NULL;
+	ssize_t msg_len = 0;
+	void *msg_buff = NULL;
+
+	VEOS_TRACE("invoked thread arg pti(%p)", pti);
+
+	request = (PseudoVeosMessage *)pti->pseudo_proc_msg;
+	if (request == NULL) {
+		VEOS_ERROR("TELL_RDMAOFFSET request %p", request);
+		w_retval = -1;
+		goto hndl_return;
+	}
+	if (!(request->has_pseudo_msg)) {
+		VEOS_ERROR("TELL_RDMAOFFSET has no message");
+		p_retval = -ECANCELED;
+		goto hndl_responce;
+	} else if (request->pseudo_msg.data == NULL) {
+		VEOS_ERROR("TELL_RDMAOFFSET has invalid message");
+		p_retval = -ECANCELED;
+		goto hndl_responce;
+	} else if (request->pseudo_msg.len != sizeof(int64_t)) {
+		VEOS_ERROR("TELL_RDMAOFFSET has invalid size message");
+		p_retval = -ECANCELED;
+		goto hndl_responce;
+	} else if (!(request->has_pseudo_pid)) {
+		VEOS_ERROR("TELL_RDMAOFFSET has no Pseudo PID");
+		p_retval = -ECANCELED;
+		goto hndl_responce;
+	}
+	requester = request->pseudo_pid;
+	VEOS_DEBUG("TELL_RDMAOFFSET : requester(%d)", requester);
+
+	tsk = find_ve_task_struct(requester);
+	if (tsk == NULL) {
+		VEOS_ERROR("TELL_RDMAOFFSET : requester(%d) %s",
+						requester, strerror(ESRCH));
+		p_retval = -ECANCELED;
+		goto hndl_responce;
+	}
+	tsk->p_ve_mm->rdma_offset = *(int64_t *)(request->pseudo_msg.data);
+	VEOS_DEBUG("PID(%d) RDMA_OFFSET : %ld",
+					tsk->pid, tsk->p_ve_mm->rdma_offset);
+
+hndl_responce:
+	ack.has_syscall_retval = true;
+	ack.syscall_retval = p_retval;
+	ack.has_pseudo_msg = false;
+	msg_len = pseudo_veos_message__get_packed_size(&ack);
+	msg_buff = calloc(1, msg_len);
+	if (msg_buff == NULL) {
+		VEOS_ERROR("Failed to alloc TELL_RDMAOFFSET ack buff");
+		w_retval = -1;
+	} else if (msg_len != pseudo_veos_message__pack(&ack, msg_buff)) {
+		VEOS_ERROR("Failed to pack TELL_RDMAOFFSET ack");
+		w_retval = -1;
+	} else {
+		ret = psm_pseudo_send_cmd(pti->socket_descriptor,
+							msg_buff, msg_len);
+		if (ret < msg_len) {
+			VEOS_ERROR("Failed to send TELL_RDMAOFFSET ack");
+			w_retval = -1;
+		}
+	}
+	free(msg_buff);
+
+hndl_return:
+	if (tsk)
+		put_ve_task_struct(tsk);
+	VEOS_TRACE("returned");
+	return w_retval;
+}

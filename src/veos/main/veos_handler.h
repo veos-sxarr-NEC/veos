@@ -68,6 +68,7 @@ int amm_handle_vemva_init_atb_req(veos_thread_arg_t *);
 int amm_handle_vhva_sync_req(veos_thread_arg_t *);
 int set_cr_rlimit_req(veos_thread_arg_t *);
 int amm_dump_cr_req(veos_thread_arg_t *);
+int veos_handle_set_rdmaoffset(veos_thread_arg_t *);
 
 /*  PSM <--------------> PSEUDO*/
 int psm_handle_get_pseudo_vefd_req(struct veos_thread_arg *);

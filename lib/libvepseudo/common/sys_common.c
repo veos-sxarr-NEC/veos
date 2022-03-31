@@ -44,6 +44,7 @@
 #include "sys_accelerated_io.h"
 #include "sys_offload.h"
 #include "exception.h"
+#include "vemmr_mgmt.h"
 
 /**
  * @brief This function will be invoked to handle the MONC interrupt
@@ -1528,7 +1529,13 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 		break;
 	case VE_SYSVE_SET_NEXT_THREAD_WORKER:
 		retval = ve_sys_set_next_thread_worker(handle);
+	case VE_SYSVE_VEMVA_REGION:
+		retval = ve_sys_get_vemva_region(handle,
+						args[1], args[2], args[3]);
 		break;
+	case VE_SYSVE_GET_VE_PRODUCT_NAME:
+                retval = ve_sys_get_ve_product_name(handle, (char *)args[1], (size_t)args[2]);
+                break;
 	default:
 		/* write return value */
 		retval = -EINVAL;

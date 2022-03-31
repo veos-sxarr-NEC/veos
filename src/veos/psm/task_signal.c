@@ -1220,6 +1220,8 @@ static int setup_ve_frame(int signum,
 
 	memset(&ve_sigframe, '\0', sizeof(struct sigframe));
 
+	pthread_mutex_lock_unlock(&(p_ve_task->sighand->siglock), LOCK,
+		 "Failed to acquire task sighand lock");
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK
 		, "failed to acquire task lock");
 
@@ -1230,6 +1232,8 @@ static int setup_ve_frame(int signum,
 				p_ve_task->pid);
 		pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK
 				, "failed to release task lock");
+		pthread_mutex_lock_unlock(&(p_ve_task->sighand->siglock), UNLOCK,
+				"Failed to release task sighand lock");
 		return -EFAULT;
 	}
 
@@ -1296,14 +1300,12 @@ static int setup_ve_frame(int signum,
 			pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock),
 					UNLOCK,
 					"failed to release task lock");
-			return -EFAULT;
-		} else {
-			pthread_mutex_lock_unlock(&(p_ve_task->sighand->siglock), LOCK,
-				"Failed to acquire task sighand lock");
-			p_ve_task->sighand->pacct.acct_info.ac_transdata +=
-					(dma_size / (double)1024);
 			pthread_mutex_lock_unlock(&(p_ve_task->sighand->siglock), UNLOCK,
 				"Failed to release task sighand lock");
+			return -EFAULT;
+		} else {
+			p_ve_task->sighand->pacct.acct_info.ac_transdata +=
+					(dma_size / (double)1024);
 		}
 	}
 
@@ -1373,6 +1375,8 @@ static int setup_ve_frame(int signum,
 
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK
 			, "failed to release task lock");
+	pthread_mutex_lock_unlock(&(p_ve_task->sighand->siglock), UNLOCK,
+			"Failed to release task sighand lock");
 
 	VEOS_TRACE("Exiting");
 	return ret;

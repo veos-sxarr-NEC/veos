@@ -36,6 +36,7 @@
 #include "veos_veshm.h"
 #include "veos.h"
 #include "veshm_defs.h"
+#include "vemva_layout.h"
 
 #include "veos_vemm_log.h"
 #include "veos_vemm_handler.h"
@@ -43,6 +44,39 @@
 #define VADDR(va) ((va) & 0xffffffffffffUL)
 #define USE_PCISYNC(va) (((va) & 0x4000000000000000UL) != 0)
 #define SYNCNUM(va) (((va) & 0x3000000000000000UL) >> 60)
+
+/**
+ * @brief Remove RDMA_OFFSET from requested address.
+ *
+ * @param[in] pid Process ID
+ * @param[in] vaddr Requested address
+ *
+ * @return VEMVA on success, 0 on failure.
+ */
+static uint64_t
+veos_vemm_remove_rdmaoffset(pid_t pid, uint64_t vaddr)
+{
+	struct ve_task_struct *tsk = NULL;
+	uint64_t retval = 0;
+
+	VEMM_AGENT_TRACE("%s(%d, 0x%lx)", __func__, (int)pid, vaddr);
+
+	tsk = find_ve_task_struct(pid);
+	if (tsk == NULL) {
+		VEMM_AGENT_ERROR("pid %d %s", pid, strerror(ESRCH));
+		goto hndl_return;
+	}
+	retval = VADDR(vaddr);
+	if ((retval < VEMMR_START) || (retval > VEMMR_BOTTOM))
+		retval = retval - tsk->p_ve_mm->rdma_offset;
+	put_ve_task_struct(tsk);
+	VEMM_AGENT_DEBUG("PID %d : 0x%lx -> 0x%lx", pid, vaddr, retval);
+
+hndl_return:
+	VEMM_AGENT_TRACE("%s() returns 0x%lx", __func__, retval);
+	return retval;
+}
+
 /**
  * @brief Check process ID
  *
@@ -121,10 +155,19 @@ int veos_vemm_acquire(pid_t pid, uint64_t encoded_vaddr, size_t size)
 	VEMM_AGENT_DEBUG("acquire: pid=%d, addr=%p, size=%lu", (int)pid,
 		(void *)encoded_vaddr, size);
 
+	uint64_t start_vaddr;
+	int page_size;
+	int min_page_size;
+
 	/* check the first page */
-	uint64_t start_vaddr = VADDR(encoded_vaddr);
-	int page_size = veos_vemm_get_page_size(pid, start_vaddr);
-	int min_page_size = page_size;
+	start_vaddr = veos_vemm_remove_rdmaoffset(pid, encoded_vaddr);
+	if (!start_vaddr) {
+		VEMM_AGENT_ERROR("cannot remove RDMA_OFFSET : pid=%d, addr=%p",
+			(int)pid, (void *)encoded_vaddr);
+		return 0;
+	}
+	page_size = veos_vemm_get_page_size(pid, start_vaddr);
+	min_page_size = page_size;
 
 	VEMM_AGENT_DEBUG("pid=%d, addr=%p: page size = %d", (int)pid,
 		(void *)start_vaddr, page_size);
@@ -185,9 +228,17 @@ int veos_vemm_get_pages(uid_t euid, pid_t pid, uint64_t encoded_vaddr,
 	VEMM_AGENT_TRACE("%s(%d, %d, %p, %lu, %d, ...)", __func__,
 		(int)euid, (int)pid, (void *)encoded_vaddr, size, writable);
 
-	uint64_t vaddr = VADDR(encoded_vaddr);
-	int pciatb_page_size = veos_ived_get_pciatb_pgmode(pid);
+	uint64_t vaddr;
+	int pciatb_page_size;
 	uint64_t *pci_address = NULL;
+
+	vaddr = veos_vemm_remove_rdmaoffset(pid, encoded_vaddr);
+	if (!vaddr) {
+		VEMM_AGENT_ERROR("cannot remove RDMA_OFFSET : pid=%d, addr=%p",
+			(int)pid, (void *)encoded_vaddr);
+		return -ESRCH;
+	}
+	pciatb_page_size = veos_ived_get_pciatb_pgmode(pid);
 
 	VEMM_AGENT_DEBUG("PCIATB page size for PID %d = %d", (int)pid,
 		pciatb_page_size);
