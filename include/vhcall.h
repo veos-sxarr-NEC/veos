@@ -53,10 +53,4 @@ typedef struct vhcall_data {
 	size_t size;
 } vhcall_data;
 
-typedef struct vhcall_args {
-	int num;
-	vhcall_data data;
-	struct vhcall_args *next;
-} vhcall_args;
-
 #endif
