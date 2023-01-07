@@ -98,12 +98,12 @@ int64_t veos_alloc_dmaatb_entry_for_syscall(struct ve_task_struct *tsk,
  *
  * @param[in] requester PID of the requesting process.
  * @param[in] owner PID of the process which owns the VEMVA specified.
- * @param[in] vemva VEMVA address of the owner process.
+ * @param[in] vemva_addr VEMVA address of the owner process.
  * @param[in] size Size of VEMVA region for which DMAATB entries needs
  *            to be allocated.
  * @param[in] permission Access permission (PROT_READ, PROT_WRITE)
  *            to requesting process DMAATB.
- * @param[in] access Whether it is required to verify requestor permission
+ * @param[in] access_ok Whether it is required to verify requestor permission
  *            flags match with owner or not.
  *
  * @return on success returns start address of VEHVA and negative of errno is
@@ -268,15 +268,76 @@ err_handle:
 }
 
 /**
+ * @brief  This function will set VEHVA to DMATB entry of specified DMAATB 
+ *         director number.
+ *
+ * @param[in] requester PID of VE process
+ * @param[in] addr Array of VE_ADDR_VERAA, VE_ADDR_VECRAA and VE_ADDR_VHSAA.
+ * @param[in] permission Access permission (PROT_READ, PROT_WRITE) to
+ *            requesting process DMAATB.
+ * @param[in] addr_flag Type of address to allocate DMA entry.
+ * @param[in] vehva_flag Type of vehva address.
+ * @param[in] vehva address.
+ *
+ * @return on success returns start address of VEHVA and negative of errno is
+ *         returned on failure.
+ */
+int64_t veos_alloc_dmaatb_entry_by_vehva(pid_t requester, uint64_t *addr,
+		int permission, int addr_flag, uint64_t vehva_flag, uint64_t vehva)
+{
+	struct ve_task_struct *tsk = NULL;
+	int64_t ret = 0;
+
+	VEOS_TRACE("Invoked");
+	VEOS_DEBUG("Invoked with pid %d permission = %d add_type = %d vehva_flag = "
+		"0x%lx, vehva = %#08lx",
+		requester, permission, addr_flag, vehva_flag, vehva);
+
+	tsk = find_ve_task_struct(requester);
+	if (NULL == tsk) {
+		ret = -ESRCH;
+		VEOS_DEBUG("Error (%s) while searching for pid %d",
+				strerror(-ret), requester);
+		goto err_handle;
+	}
+
+	amm_dump_dmaatb(tsk, 1);
+
+	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, LOCK,
+			"Failed to acquire thread-group-mm-lock");
+	ret = veos_alloc_dmaatb_entry_by_vehva_tsk(tsk, (vehva_t *)addr, permission,
+			addr_flag, vehva_flag, true, vehva);
+	if (0 > ret) {
+		VEOS_DEBUG("Error (%s) while searching for pid %d",
+				strerror(-ret), requester);
+		pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock,
+				UNLOCK,
+				"Failed to release thread-group-mm-lock");
+		goto err_handle;
+	}
+	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, UNLOCK,
+			"Failed to release thread-group-mm-lock");
+	amm_dump_dmaatb(tsk, 1);
+
+err_handle:
+	if (tsk)
+		put_ve_task_struct(tsk);
+	VEOS_DEBUG("returned with 0x%lx", ret);
+	VEOS_TRACE("returned");
+	return ret;
+}
+
+
+/**
  * @brief  This function will allocate DMATB entry for requests that include
  *         VHSAA of VESHM and CR.
  *
  * @param[in] requester PID of VE process
- * @param[in] arr Array of VE_ADDR_VERAA, VE_ADDR_VECRAA and VE_ADDR_VHSAA.
+ * @param[in] addr Array of VE_ADDR_VERAA, VE_ADDR_VECRAA and VE_ADDR_VHSAA.
  * @param[in] permission Access permission (PROT_READ, PROT_WRITE) to
  *            requesting process DMAATB.
- * @param[in] addr_type Type of address to allocate DMA entry.
- * @param[in] vehva_type Type of vehva address.
+ * @param[in] addr_flag Type of address to allocate DMA entry.
+ * @param[in] vehva_flag Type of vehva address.
  *
  * @return on success returns start address of VEHVA and negative of errno is
  *         returned on failure.
@@ -325,15 +386,180 @@ err_handle:
 }
 
 /**
+ * @brief  This function will set VEHVA to DMAATB entry of specified DMAATB
+ *         director number.
+ *
+ * @param[in] tsk Pointer to VE process task structure
+ * @param[in] addr Array of VE_ADDR_VERAA, VE_ADDR_VECRAA and VE_ADDR_VHSAA.
+ * @param[in] permission Access permission (PROT_READ, PROT_WRITE) to
+ *            requesting process DMAATB.
+ * @param[in] addr_flag Type of address to allocate DMA entry.
+ * @param[in] vehva_flag Type of vehva address.
+ * @param[in] halt_all Halt other task or not
+ * @param[in] vehva Address of VEHVA.
+ *
+ * @return on success returns start address of VEHVA and negative of errno is
+ *         returned on failure.
+ */
+int64_t veos_alloc_dmaatb_entry_by_vehva_tsk(struct ve_task_struct *tsk,
+		vhsaa_t *addr, int permission, int addr_flag,
+		uint64_t vehva_flag, bool halt_all, uint64_t vehva)
+{
+	struct ve_node_struct *vnode = VE_NODE(0);
+	ssize_t i = 0, ret = -1;
+	size_t pgsize = 0;
+	int pgmod = 0;
+	uint64_t *bmap = NULL;
+	int64_t entry = -1;
+	size_t size = 0;
+	dir_t prv_dir = -1;
+	dir_t dir_num = -1;
+	dir_t dirs[DMAATB_DIR_NUM] = {0};
+	int prot = 0, cnt = 0;
+	int64_t count = 0;
+	pthread_mutex_t *vehva_lock = NULL; /*!< mutex lock*/
+	dmaatb_reg_t tsk_cp = { { { {0} } } } ,node_cp = { { { {0} } } };
+
+	memset(dirs, -1, sizeof(dirs));
+
+	VEOS_TRACE("Invoked");
+	VEOS_DEBUG("Invoked with pid = %d, permission = %d, addr_flag = %d"
+		"vehva_flag = %ld halt_all = %d vehva = %#08lx",
+		tsk->pid, permission, addr_flag, vehva_flag, halt_all, vehva);
+
+	VEOS_DEBUG("Dump dmaatb before alloc entry by vehva");
+	amm_dump_dmaatb(tsk, true);
+
+	pgsize = (size_t)((vehva_flag & VEHVA_4K) ? PAGE_SIZE_4KB :
+		(vehva_flag & VEHVA_2MB) ? PAGE_SIZE_2MB :
+		PAGE_SIZE_64MB);
+	pgmod = (vehva_flag & VEHVA_4K) ? PG_4K :
+		(vehva_flag & VEHVA_2MB) ? PG_2M :
+		PG_HP;
+
+	for (i = 0; addr[i]; i++) {
+		VEOS_DEBUG("addr[%ld]:%lx", i, addr[i]);
+		size += pgsize;
+		count = i + 1;
+	}
+
+	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, LOCK,
+			"Failed to acquire node dmaatb lock");
+	if (vehva_flag & VEHVA_2MB) {
+		VEOS_DEBUG("VEHVA request type VESHM_2MB");
+		bmap = tsk->p_ve_mm->vehva_header.bmap_2m;
+		entry = (vehva - VEHVA_2M_START)/PAGE_SIZE_2MB;
+		vehva_lock = &tsk->p_ve_mm->vehva_header.vehva_2m_lock;
+	} else if (vehva_flag & VEHVA_64MB) {
+		VEOS_DEBUG("VEHVA request type VESHM_64MB");
+		bmap = tsk->p_ve_mm->vehva_header.bmap_64m;
+		entry = (vehva - VEHVA_64M_START)/PAGE_SIZE_64MB;
+		vehva_lock = &tsk->p_ve_mm->vehva_header.vehva_64m_lock;
+	} else if (vehva_flag & VEHVA_4K) {
+		VEOS_DEBUG("VEHVA request type VESHM_4KB");
+		bmap = tsk->p_ve_mm->vehva_header.bmap_4k;
+		entry = (vehva - VEHVA_4K_START)/PAGE_SIZE_4KB;
+		vehva_lock = &tsk->p_ve_mm->vehva_header.vehva_4k_lock;
+	} else {
+		ret = -EINVAL;
+		VEOS_DEBUG("Error (%s) for VESHM vehva", strerror(-ret));
+		goto err_handle;
+	}
+
+	VEOS_DEBUG("vehva:0x%lx count:%ld entry:%ld pgmod:%d",
+			vehva, count, entry, pgmod);
+	pthread_mutex_lock_unlock(vehva_lock, LOCK,
+			"Failed to acquire VEHVA VESHM lock");
+	if (check_bits(bmap, entry, count, MARK_UNUSED)) {
+		mark_bits(bmap, entry, count, MARK_USED);
+		pthread_mutex_lock_unlock(vehva_lock, UNLOCK,
+			"Failed to release VEHVA VESHM lock");
+	} else {
+		pthread_mutex_lock_unlock(vehva_lock, UNLOCK,
+			"Failed to release VEHVA VESHM lock");
+		VEOS_ERROR("Used bit is already set");
+		ret = -EINVAL;
+		VEOS_DEBUG("Error (%s) for VESHM vehva", strerror(-ret));
+		goto err_handle;
+	}
+	memset(&tsk_cp, 0, sizeof(dmaatb_reg_t));
+	memset(&node_cp, 0, sizeof(dmaatb_reg_t));
+	/* Here we save the content of node_dmaatb and task_dmaatb.
+	 * so in case of failure we can do proper cleanup.
+	 */
+	memcpy(&tsk_cp, &tsk->p_ve_mm->dmaatb, sizeof(dmaatb_reg_t));
+	memcpy(&node_cp, &vnode->dmaatb, sizeof(dmaatb_reg_t));
+
+	prot = (permission & PROT_WRITE) ? 1 : 0;
+
+	/* Allocate DMAATB entry for the absolute address */
+	for (i = 0; addr[i]; i++) {
+		dir_num = validate_vehva(vehva+(i*pgsize), prot,
+				pfnum(addr[i], pgmod),
+				&tsk->p_ve_mm->dmaatb,
+				pgmod, addr_flag, tsk->jid, vehva_flag,
+				tsk->numa_node);
+		if (0 > dir_num) {
+				ret = -ENOMEM;
+			VEOS_DEBUG("Error (%s) while setting vehva 0x%lx",
+					strerror(-ret), vehva);
+			goto clean_up;
+		}
+		if (prv_dir == -1 || (prv_dir != dir_num)) {
+			if (DMAATB_DIR_NUM == dir_num)
+				continue;
+			dirs[cnt++] = dir_num;
+			prv_dir = dir_num;
+		}
+	}
+
+	i = 0;
+	while (0 <= dirs[i]) {
+		/* Syncing DMAATB with h/w */
+		dir_num = dirs[i++];
+		if (DMAATB_DIR_NUM == dir_num)
+			continue;
+		psm_sync_hw_regs(tsk, _DMAATB, halt_all, dir_num, 1);
+	}
+
+	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
+			"Failed to release node dmaatb lock");
+
+	ret = vehva;
+	VEOS_DEBUG("returned with 0x%lx", ret);
+	VEOS_TRACE("returned");
+
+	VEOS_DEBUG("Dump dmaatb after alloc entry by vehva");
+	amm_dump_dmaatb(tsk, true);
+
+	return ret;
+clean_up:
+	memcpy(&tsk->p_ve_mm->dmaatb, &tsk_cp, sizeof(dmaatb_reg_t));
+	memcpy(&vnode->dmaatb, &node_cp, sizeof(dmaatb_reg_t));
+	if(0 > veos_vehva_free(vehva, size, tsk)) {
+		VEOS_DEBUG("Error (%s) while freeing vehva",
+				strerror(-ret));
+	}
+
+err_handle:
+	VEOS_DEBUG("returned with 0x%lx", ret);
+	VEOS_TRACE("returned");
+	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
+			"Failed to release node dmaatb lock");
+	return ret;
+}
+
+
+/**
  * @brief  This function will allocate DAATB entry for requests that include
  *         VHSAA of VESHM and CR.
  *
  * @param[in] tsk Pointer to VE process task structure
- * @param[in] arr Array of VE_ADDR_VERAA, VE_ADDR_VECRAA and VE_ADDR_VHSAA.
+ * @param[in] addr Array of VE_ADDR_VERAA, VE_ADDR_VECRAA and VE_ADDR_VHSAA.
  * @param[in] permission Access permission (PROT_READ, PROT_WRITE) to
  *            requesting process DMAATB.
- * @param[in] addr_type Type of address to allocate DMA entry.
- * @param[in] vehva_type Type of vehva address.
+ * @param[in] addr_flag Type of address to allocate DMA entry.
+ * @param[in] vehva_flag Type of vehva address.
  * @param[in] halt_all Halt other task or not
  *
  * @return on success returns start address of VEHVA and negative of errno is
@@ -595,7 +821,7 @@ int64_t veos_free_dmaatb_entry(pid_t pid, vehva_t vehva, size_t size)
 	int64_t ret = 0;
 
 	VEOS_TRACE("Invoked");
-	VEOS_TRACE("Invoked with pid:%d vehva = %ld size = %ld",
+	VEOS_TRACE("Invoked with pid:%d vehva = 0x%lx size = %ld",
 			pid, vehva, size);
 
 	tsk = find_ve_task_struct(pid);
@@ -649,7 +875,7 @@ int64_t veos_free_dmaatb_entry_tsk(struct ve_task_struct *req_tsk,
 	struct ve_node_struct *vnode = VE_NODE(0);
 
 	VEOS_TRACE("Invoked");
-	VEOS_DEBUG("Invoked with pid:%d vehva:%ld size:%ld",
+	VEOS_DEBUG("Invoked with pid:%d vehva:0x%lx size:%ld",
 			req_tsk->pid, vehva, size);
 
 	memset(dirs, -1, sizeof(dirs));

@@ -661,12 +661,18 @@ int psm_halt_ve_core(int node_id, int core_id, reg_t *regdata,
 	if (scheduler_expiry) {
 		if (curr_ve_task && (curr_ve_task->time_slice >= 0) &&
 				(curr_ve_task->ve_task_state == RUNNING)) {
-			VEOS_DEBUG("Time slice remaining %ld",
-					curr_ve_task->time_slice);
-			p_ve_core->core_running = true;
-			gettimeofday(&(curr_ve_task->stime), NULL);
-			gettimeofday(&(p_ve_core->core_stime), NULL);
-			return -1;
+			if (curr_ve_task->ve_sched_state == VE_THREAD_STOPPING) {
+				VEOS_DEBUG("pid %d change ve_sched_state from STOPPING"
+					 " to STOPPED", curr_ve_task->pid);
+				curr_ve_task->ve_sched_state = VE_THREAD_STOPPED;
+			} else {
+				VEOS_DEBUG("Time slice remaining %ld",
+						curr_ve_task->time_slice);
+				p_ve_core->core_running = true;
+				gettimeofday(&(curr_ve_task->stime), NULL);
+				gettimeofday(&(p_ve_core->core_stime), NULL);
+				return -1;
+			}
 		} else {
 			VEOS_DEBUG("Process time slice exhausted"
 					" or task state is WAIT");
@@ -1274,11 +1280,20 @@ struct ve_task_struct* psm_find_next_task_to_schedule(
 				}
 				temp_worker = temp_worker->next;
 			}
-			if(worker_found == 0){
-				VEOS_DEBUG("Ready task found with PID : %d",
-					temp->pid);
-				task_to_return = temp;
-				break;
+
+			if (temp->ve_sched_state == VE_THREAD_STOPPING) {
+				VEOS_DEBUG("pid %d change ve_sched_state from STOPPING"
+						" to STOPPED", temp->pid);
+				temp->ve_sched_state = VE_THREAD_STOPPED;
+			}
+
+			if (worker_found == 0) {
+				if (temp->ve_sched_state == VE_THREAD_STARTED) {
+					VEOS_DEBUG("Ready task found with PID : %d",
+						 temp->pid);
+					task_to_return = temp;
+					break;
+				}
 			}
 		}
 		VEOS_DEBUG("Skipping task with PID : %d",
@@ -3277,7 +3292,9 @@ void psm_find_sched_new_task_on_core(struct ve_core_struct *p_ve_core,
 			&& scheduler_expiry
 			&& (p_ve_core->nr_active == 1)
 			&& (curr_ve_task->ve_task_state == RUNNING)
-			&& p_ve_core->ve_core_state == EXECUTING) {
+			&& (p_ve_core->ve_core_state == EXECUTING)
+			&& (curr_ve_task->ve_sched_state == VE_THREAD_STARTED)) {
+
 		/* Update core busy time */
 		p_ve_core->busy_time +=
 			timeval_diff(now_time, p_ve_core->core_stime);
@@ -3379,7 +3396,8 @@ void psm_find_sched_new_task_on_core(struct ve_core_struct *p_ve_core,
 	if ((schedule_current) && (curr_ve_task)
 			&& (curr_ve_task->ve_task_state == RUNNING)
 			&& (curr_ve_task->time_slice > 0)
-			&& curr_ve_task->sigpending == 0) {
+			&& (curr_ve_task->sigpending == 0)
+			&& curr_ve_task->ve_sched_state == VE_THREAD_STARTED) {
 		/* Finally, schedule VE process on VE core */
 		VEOS_DEBUG("Scheduling Current Task with PID : %d",
 				curr_ve_task->pid);

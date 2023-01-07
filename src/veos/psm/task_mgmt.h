@@ -40,6 +40,7 @@
 #include "cr_api.h"
 #include "sys/time.h"
 #include "mm_type.h"
+#include "psm_defs.h"
 
 #define VE_MVL 256
 #define SCHED_OTHER 0
@@ -420,7 +421,7 @@ struct ve_udma {
 #define VE_SIGNAL_GROUP_EXIT		0x00000001
 #define VE_SIGNAL_GROUP_COREDUMP	0x00000002
 
-/*
+/**
  * @brief Structure containing tracing information for VE process.
  */
 struct ve_ptrace_info {
@@ -557,6 +558,7 @@ struct ve_task_struct {
 	bool ve_task_worker_belongs_chg;          /* Flag to change parent thread of worker */
 	bool ve_task_have_worker;               /* Flag whether it have worker thread */
 	struct ve_task_struct *ve_worker_thread; /* Pointer to worker thread */
+	enum VE_SCHED_STATE ve_sched_state; /* Flag whether it should be removed from scheduling */
 };
 
 
@@ -638,6 +640,7 @@ struct ve_mm_struct *alloc_ve_mm_struct_node();
 struct ve_task_struct *find_ve_task_struct(int);
 int find_veo_proc(int);
 int get_ve_task_struct(struct ve_task_struct *);
+int get_ve_task_struct_zombie(struct ve_task_struct *);
 void put_ve_task_struct(struct ve_task_struct *);
 void set_state(struct ve_task_struct *);
 struct ve_task_struct *alloc_ve_task_struct_node(void);
@@ -686,4 +689,7 @@ void psm_delete_zombie_task(struct ve_task_struct *);
 struct ve_task_struct*  checkpid_in_zombie_list(int pid);
 int psm_change_parent_ve_task_worker(struct ve_task_struct *, struct ve_task_struct *);
 int64_t psm_handle_set_next_thread_worker_request(pid_t);
+int64_t psm_handle_stop_user_threads_request(pid_t);
+int64_t psm_handle_start_user_threads_request(pid_t);
+int64_t psm_handle_get_user_threads_state_request(pid_t);
 #endif

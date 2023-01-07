@@ -279,7 +279,8 @@ struct ve_page {
 	struct ve_task_struct *owner;/*!< It will be Used in PG_PTRACE case*/
 	int buddy_order;	/*!< order of buddy in which page belongs*/
 	pthread_mutex_t ve_page_lock; /*!< mutex lock*/
-	uint64_t pci_count;     /*!< Registration counter for PCIATB */
+	uint64_t pci_ns_count;	/*!< Registration counter for PCIATB without
+									VE_SWAPPABLE */
 	struct ve_swapped_physical *swapped_info;
 				/*!< Information about Swapped-out VE page */
 };
@@ -365,6 +366,7 @@ int amm_get_page(vemaa_t *);
 int amm_put_page(vemaa_t);
 int amm_do_get_page(vemaa_t, bool);
 int amm_do_put_page(vemaa_t, bool);
+int amm_do_put_page_no_lock(vemaa_t, bool);
 int veos_free_page(vemaa_t);
 int64_t veos_virt_to_phy(vemva_t, pid_t, bool, int *);
 void veos_amm_fini(void);
@@ -436,4 +438,7 @@ int amm_update_atb_dir(vedl_handle *, int, struct ve_task_struct *, int);
  */
 int amm_update_rss_swapin(struct ve_page *);
 int amm_free_private_data(void *, uint64_t , uint64_t );
+
+void veos_operate_pci_ns_count(pgno_t, int);
+void veos_update_mns(struct ve_task_struct *);
 #endif

@@ -705,6 +705,25 @@ int psm_send_ve_signal(struct ve_task_struct *ve_task_curr,
 
 	VEOS_TRACE("Entering");
 
+	/* Re-attach VESHM when SIGCONT */
+	if (signum == SIGCONT) {
+		pthread_mutex_lock_unlock(&(ve_task_curr->ve_task_lock), LOCK,
+			"failed to acquire task lock");
+		if (ve_task_curr->ve_task_state == STOP &&
+				ve_task_curr->sstatus == ACTIVE) {
+			pthread_mutex_lock_unlock(&(ve_task_curr->ve_task_lock), UNLOCK,
+				"failed to acquire task lock");
+			if (veos_swap_in_user_veshm_pciatb_re_attach(ve_task_curr) != 0) {
+				VEOS_DEBUG("Re-attach VESHM is failed (user pid: %d), "
+					"but the SIGCONT processing is continue",
+					ve_task_curr->tgid);
+			}
+		} else {
+			pthread_mutex_lock_unlock(&(ve_task_curr->ve_task_lock), UNLOCK,
+				"failed to acquire task lock");
+		}
+	}
+
 	VEOS_DEBUG("Acquiring tasklist_lock");
 
 	/* When we fail to create signal handler frame while delivering signal,
@@ -1826,7 +1845,6 @@ void *do_ve_coredump(void *ve_dump_info)
 	ve_cprm.tsk = ((struct dump_info *)ve_dump_info)->ve_task;
 	ve_cprm.limit = ((struct dump_info *)ve_dump_info)
 				->ve_task->sighand->rlim[RLIMIT_CORE];
-
 
 	VEOS_DEBUG("Coredumper thread[%ld] Initiating Coredump for PID"
 			" %d, TGID: %d TGID(namespace): %d", syscall(186),

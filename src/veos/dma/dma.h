@@ -28,6 +28,7 @@
 #include <time.h>
 #include <libved.h>
 
+struct ve_ipc_sync;
 struct ve_dma_hdl_struct;
 typedef struct ve_dma_hdl_struct ve_dma_hdl;
 
@@ -68,7 +69,7 @@ int ve_dma_close_p(ve_dma_hdl *);
 
 ve_dma_req_hdl *ve_dma_post_p_va_with_opt(ve_dma_hdl *, ve_dma_addrtype_t, pid_t,
                                  uint64_t, ve_dma_addrtype_t, pid_t, uint64_t,
-                                 uint64_t, uint64_t, int);
+                                 uint64_t, uint64_t, int, struct ve_ipc_sync *);
 ve_dma_req_hdl *ve_dma_post_p_va(ve_dma_hdl *, ve_dma_addrtype_t, pid_t,
 				 uint64_t, ve_dma_addrtype_t, pid_t, uint64_t,
 				 uint64_t);

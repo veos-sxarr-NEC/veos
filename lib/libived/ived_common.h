@@ -48,6 +48,7 @@ enum veshm_memory_mode_flag{
 	VESHM_MODE_RO		= VE_SHM_RO,	        /* 0x1 */
 	VESHM_MODE_SYNC		= VE_PCISYNC,           /* 0x2 */
 	VESHM_MODE_PCIATB	= VE_REGISTER_PCI,      /* 0x4 */
+	VESHM_MODE_SWAPPABLE	= VE_SWAPPABLE,			/* 0x20 */
 	VESHM_MODE_CLOSE	= 0x0000000000000008LL,	/* VESHM is closed */
 };
 

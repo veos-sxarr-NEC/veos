@@ -1259,6 +1259,7 @@ uint64_t get_pss(struct ve_mm_struct *mm, uint64_t *ns)
 				mmap_mem->virt_page *
 				mmap_desc->ns_pages) /
 				mmap_desc->sum_virt_pages;
+				VEOS_DEBUG("ns_pages of pps is %ld", mmap_desc->ns_pages);
 		}
 		pthread_mutex_lock_unlock(&mmap_desc->mmap_desc_lock, UNLOCK,
 			"Failed to release mmap desc lock");
@@ -1301,6 +1302,7 @@ uint64_t get_uss(struct ve_mm_struct *mm, uint64_t *ns)
 					"Failed to get mmap desc lock");
 			uss += mdesc->in_mem_pages * mdesc->pgsz;
 			cns += mdesc->ns_pages * mdesc->pgsz;
+			VEOS_DEBUG("ns_pages of uss is %ld", mdesc->ns_pages);
 			pthread_mutex_lock_unlock(&mdesc->mmap_desc_lock, UNLOCK,
 					"Failed to release mmap desc lock");
 		}

@@ -300,6 +300,15 @@ void psm_set_task_state(struct ve_task_struct *task_struct,
 		veos_abort("Core struct is NULL");
 	}
 
+	/* If task_struct is VE_THREAD_STOPPING,
+	 * change it to VE_THREAD_STOPPED
+	 */
+	if (task_struct->ve_sched_state == VE_THREAD_STOPPING) {
+		VEOS_DEBUG("pid %d change ve_sched_state from STOPPING"
+		" to STOPPED", task_struct->pid);
+		task_struct->ve_sched_state = VE_THREAD_STOPPED;
+	}
+
 	VEOS_DEBUG("Core:%d nr_active:%d PID : %d"
 			" Current task state: %d, state to set: %d",
 			p_ve_core->core_num,
@@ -1446,6 +1455,49 @@ void set_state(struct ve_task_struct *task)
 }
 
 /**
+ * @brief Get VE task reference zombie.
+ *
+ * @param[in] task VE task whose reference count is to be incremented
+ *
+ * @internal
+ * @author PSMG / MP-MT
+ */
+int get_ve_task_struct_zombie(struct ve_task_struct *task)
+{
+	int retval = -1;
+	VEOS_TRACE("Entering");
+	if (task == NULL) {
+		VEOS_ERROR("Invalid argument received");
+		goto hndl_return;
+	}
+
+	pthread_mutex_lock_unlock(&task->ref_lock, LOCK,
+			"Failed to acquire task reference lock");
+
+	if (task->ref_count == -1)
+		goto err_handle;
+	if (task->exit_status != 0  && task->ve_task_state != ZOMBIE) {
+		pthread_mutex_lock_unlock(&task->ref_lock, UNLOCK,
+				"Failed to release task reference lock");
+		goto hndl_return;
+	}
+	task->ref_count++;
+
+	pthread_mutex_lock_unlock(&task->ref_lock, UNLOCK,
+			"Failed to release task reference lock");
+
+	VEOS_DEBUG("PID:%d :: ref_count(after increment):%d :: exiting flag:%d",
+			task->pid, task->ref_count, task->exit_status);
+	retval = 0;
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+err_handle:
+	VEOS_FATAL("veos terminating abnormally");
+	veos_abort("process %d in inconsistent state", task->pid);
+}
+
+/**
  * @brief Get VE task reference.
  *
  * @param[in] task VE task whose reference count is to be incremented
@@ -1467,7 +1519,8 @@ int get_ve_task_struct(struct ve_task_struct *task)
 
 	if (task->ref_count == -1)
 		goto err_handle;
-	if (task->exit_status != 0  && task->ve_task_state != ZOMBIE) {
+	if ((task->exit_status != 0  && task->ve_task_state != ZOMBIE)
+		|| (task->zombie_partial_cleanup != CLEANUP_NO)){
 		pthread_mutex_lock_unlock(&task->ref_lock, UNLOCK,
 				"Failed to release task reference lock");
 		goto hndl_return;
@@ -4988,6 +5041,231 @@ int64_t psm_handle_set_next_thread_worker_request(pid_t u_pid)
 	put_ve_task_struct(u_tsk);
 
 hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Set all the flag “ve_shed_state” of all threads
+ * except worker to VE_THREAD_STOPPING.
+ *
+ * @param[in] pid pid of the thread
+ *
+ * @return task ID of calling task on success and
+ * negative errno on failure.
+ *
+ * @internal
+ */
+int64_t psm_handle_stop_user_threads_request(pid_t u_pid)
+{
+	int retval = 0;
+	struct ve_task_struct *w_tsk = NULL;
+	struct ve_task_struct *tmp = NULL;
+	struct list_head *p, *n;
+
+	VEOS_TRACE("Entering");
+	VEOS_DEBUG("Handling stop user threads request for PID %d", u_pid);
+
+	w_tsk = find_ve_task_struct(u_pid);
+	if (w_tsk == NULL) {
+		VEOS_DEBUG("PID: %d not found.", u_pid);
+		retval = -ESRCH;
+		goto hndl_return;
+	}
+
+	if ((w_tsk->ve_task_worker_belongs == NULL) &&
+		(!w_tsk->ve_task_worker_belongs_chg)) {
+		VEOS_DEBUG("PID: %d is user thread.", u_pid);
+		retval = -EPERM;
+		goto hndl_return;
+	}
+
+	pthread_mutex_lock_unlock(
+		&w_tsk->p_ve_mm->thread_group_mm_lock,
+				LOCK, "Failed to acquire thread-group-mm-lock");
+	if (!thread_group_empty(w_tsk)) {
+		list_for_each_safe(p, n, &w_tsk->thread_group) {
+			tmp = list_entry(p, struct ve_task_struct, thread_group);
+			/* This function is always called from worker thread,
+			 * so all tmp is user threads.
+			 */
+			pthread_mutex_lock_unlock(&tmp->ve_task_lock, LOCK,
+				"Failed to acquire ve_task_lock");
+			if ((tmp->ve_task_state == RUNNING) &&
+				(tmp->ve_sched_state != VE_THREAD_STOPPED)) {
+				VEOS_DEBUG("pid %d change ve_sched_state"
+					" from STARTED to STOPPING.", tmp->pid);
+				tmp->ve_sched_state = VE_THREAD_STOPPING;
+			} else if (tmp->ve_task_state != RUNNING) {
+				VEOS_DEBUG("pid %d change ve_sched_state"
+						" to STOPPED", tmp->pid);
+				tmp->ve_sched_state = VE_THREAD_STOPPED;
+			}
+			pthread_mutex_lock_unlock(&tmp->ve_task_lock, UNLOCK,
+				"Failed to acquire ve_task_lock");
+		}
+	}
+	pthread_mutex_lock_unlock(
+		&w_tsk->p_ve_mm->thread_group_mm_lock,
+				UNLOCK, "Failed to acquire thread-group-mm-lock");
+
+hndl_return:
+	put_ve_task_struct(w_tsk);
+
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Set all the flag “ve_shed_state” of all threads
+ * except worker to VE_THREAD_STARTED.
+ *
+ * @param[in] pid pid of the thread
+ *
+ * @return task ID of calling task on success and
+ * negative errno on failure.
+ *
+ * @internal
+ */
+int64_t psm_handle_start_user_threads_request(pid_t u_pid)
+{
+	int retval = 0;
+	struct ve_task_struct *w_tsk = NULL;
+	struct ve_task_struct *tmp = NULL;
+	struct list_head *p, *n;
+
+	VEOS_TRACE("Entering");
+	VEOS_DEBUG("Handling start user threads request for PID %d", u_pid);
+
+	w_tsk = find_ve_task_struct(u_pid);
+	if (w_tsk == NULL) {
+		VEOS_DEBUG("PID: %d not found.", u_pid);
+		retval = -ESRCH;
+		goto hndl_return;
+	}
+
+	if ((w_tsk->ve_task_worker_belongs == NULL) &&
+		(!w_tsk->ve_task_worker_belongs_chg)) {
+		VEOS_DEBUG("PID: %d is user thread.", u_pid);
+		retval = -EPERM;
+		goto hndl_return;
+	}
+
+	pthread_mutex_lock_unlock(
+		&w_tsk->p_ve_mm->thread_group_mm_lock,
+				LOCK, "Failed to acquire thread-group-mm-lock");
+	if (!thread_group_empty(w_tsk)) {
+		list_for_each_safe(p, n, &w_tsk->thread_group) {
+			tmp = list_entry(p, struct ve_task_struct, thread_group);
+			/* This function is always called from worker thread,
+			 * so all tmp is user threads.
+			 */
+			pthread_mutex_lock_unlock(&tmp->ve_task_lock, LOCK,
+				"Failed to acquire ve_task_lock");
+			VEOS_DEBUG("pid %d change the state to STARTED", tmp->pid);
+			tmp->ve_sched_state = VE_THREAD_STARTED;
+			pthread_mutex_lock_unlock(&tmp->ve_task_lock, UNLOCK,
+				"Failed to acquire ve_task_lock");
+		}
+	}
+	pthread_mutex_lock_unlock(
+		&w_tsk->p_ve_mm->thread_group_mm_lock,
+				UNLOCK, "Failed to acquire thread-group-mm-lock");
+
+hndl_return:
+	put_ve_task_struct(w_tsk);
+
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Check all the flags “ve_sched_state” of all threads except worker
+ *
+ * @param[in] pid pid of the thread
+ *
+ * @return task ID of calling task on success and
+ * negative errno on failure.
+ *
+ * @internal
+ */
+int64_t psm_handle_get_user_threads_state_request(pid_t u_pid)
+{
+	int retval = 0;
+	struct ve_task_struct *tsk = NULL;
+	struct ve_task_struct *tmp = NULL;
+	struct list_head *p, *n;
+	int first_tsk_sched_state = -1;
+
+	VEOS_TRACE("Entering");
+	VEOS_DEBUG("Handling get user threads state request for PID %d", u_pid);
+
+	tsk = find_ve_task_struct(u_pid);
+	if (tsk == NULL) {
+		VEOS_DEBUG("PID: %d not found.", u_pid);
+		retval = -ESRCH;
+		goto hndl_return;
+	}
+
+	pthread_mutex_lock_unlock(
+		&tsk->p_ve_mm->thread_group_mm_lock,
+				LOCK, "Failed to acquire thread-group-mm-lock");
+
+	pthread_mutex_lock_unlock(&tsk->ve_task_lock, LOCK,
+		"Failed to acquire ve_task_lock");
+	if ((tsk->ve_task_worker_belongs == NULL) &&
+		(!tsk->ve_task_worker_belongs_chg)) {
+		if (tsk->ve_sched_state == VE_THREAD_STOPPING) {
+			retval = VE_THREAD_STOPPING;
+			pthread_mutex_lock_unlock(&tsk->ve_task_lock, UNLOCK,
+				"Failed to acquire ve_task_lock");
+			goto unlock_mutex;
+		} else
+			first_tsk_sched_state = tsk->ve_sched_state;
+	}
+	pthread_mutex_lock_unlock(&tsk->ve_task_lock, UNLOCK,
+		"Failed to acquire ve_task_lock");
+
+	if (!thread_group_empty(tsk)) {
+		list_for_each_safe(p, n, &tsk->thread_group) {
+			tmp = list_entry(p, struct ve_task_struct, thread_group);
+			/* if worker thread, skip this lap */
+			if ((tmp->ve_task_worker_belongs != NULL) ||
+				(tmp->ve_task_worker_belongs_chg))
+				continue;
+			pthread_mutex_lock_unlock(&tmp->ve_task_lock, LOCK,
+				"Failed to acquire ve_task_lock");
+			if (tmp->ve_sched_state == VE_THREAD_STOPPING) {
+				retval = VE_THREAD_STOPPING;
+				pthread_mutex_lock_unlock(&tmp->ve_task_lock, UNLOCK,
+					"Failed to acquire ve_task_lock");
+				goto unlock_mutex;
+			}
+			if (first_tsk_sched_state < 0)
+				first_tsk_sched_state =  tmp->ve_sched_state;
+			if (tmp->ve_sched_state != first_tsk_sched_state) {
+				retval = VE_THREAD_STOPPING;
+				pthread_mutex_lock_unlock(&tmp->ve_task_lock, UNLOCK,
+					"Failed to acquire ve_task_lock");
+				goto unlock_mutex;
+			}
+			pthread_mutex_lock_unlock(&tmp->ve_task_lock, UNLOCK,
+				"Failed to acquire ve_task_lock");
+		}
+	}
+	retval = first_tsk_sched_state;
+
+	if (retval == -1) {
+		VEOS_DEBUG("Unable to get the status of threads except worker");
+		retval = -ESRCH;
+	}
+unlock_mutex:
+	pthread_mutex_lock_unlock(
+		&tsk->p_ve_mm->thread_group_mm_lock,
+				UNLOCK, "Failed to acquire thread-group-mm-lock");
+hndl_return:
+	put_ve_task_struct(tsk);
+
 	VEOS_TRACE("Exiting");
 	return retval;
 }

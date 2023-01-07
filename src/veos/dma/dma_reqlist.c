@@ -1221,6 +1221,7 @@ void ve_dma_reqlist__cancel(ve_dma_req_hdl *req)
 			e->dst_block = NULL;
 		}
 	}
+	ve_dma__dec_ipc_sync_nolock(req);
 	req->comp = 1;
 	req->cancel = 1;
 }
@@ -1276,4 +1277,28 @@ void ve_dma__terminate_nolock(ve_dma_req_hdl *req)
 	if (hdl->should_stop == 0 && hdl->desc_num_used > 0)
 		ve_dma_hw_start(hdl->vedl_handle, hdl->control_regs);
 	pthread_cond_broadcast(&req->cond);
+}
+
+/**
+ * @brief Decrement IPC sync in a DMA request
+ *
+ * @param req DMA request handle
+ *
+ * Caller of this function needs to acquire DMA handle lock
+ * */
+void ve_dma__dec_ipc_sync_nolock(ve_dma_req_hdl *req)
+{
+	struct ve_ipc_sync *ipc_sync=req->ipc_sync;
+	if (ipc_sync) {
+                req->ipc_sync = NULL;
+                pthread_mutex_lock(&(ipc_sync->swap_exclusion_lock));
+                ipc_sync->handling_request--;
+                VE_DMA_DEBUG("ipc_sync(%p) : handling_request %d",
+                                ipc_sync, ipc_sync->handling_request);
+                if (ipc_sync->handling_request == 0)
+                        pthread_cond_signal(&(ipc_sync->handling_request_cond));
+                pthread_mutex_unlock(&(ipc_sync->swap_exclusion_lock));
+                ve_put_ipc_sync(ipc_sync);
+        }
+	return;
 }

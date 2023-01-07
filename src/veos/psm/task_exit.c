@@ -129,7 +129,7 @@ void psm_do_execve_wait(struct ve_task_struct *del_task)
 void psm_do_process_cleanup(struct ve_task_struct *group_leader,
 		struct ve_task_struct *current, int elf_type)
 {
-	struct list_head *p, *n, *prev;
+	struct list_head *p, *n;
 	struct ve_task_struct *tmp = NULL;
 	struct ve_sigqueue *pending_sig = NULL;
 
@@ -203,11 +203,12 @@ one:
 		}
 		if (!list_empty(&current->pending.list)) {
 			memcpy(&group_leader->pending.signal,
-				&current->pending.signal, sizeof(sigset_t));
-			group_leader->pending.list.next = current->pending.list.next;
-			prev = current->pending.list.prev;
-			current->pending.list.prev->next = &group_leader->pending.list;
-			group_leader->pending.list.prev = prev;
+					&current->pending.signal, sizeof(sigset_t));
+			list_for_each_safe(p, n, &current->pending.list) {
+				pending_sig = list_entry(p, struct ve_sigqueue, list);
+				list_move_tail(&pending_sig->list,
+						&group_leader->pending.list);
+			}
 			ve_init_sigpending(&current->pending);
 			VEOS_DEBUG("Task[%d] Pending signal updated",
 					group_leader->pid);
@@ -1157,50 +1158,58 @@ skip_wakup:
 	pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
 			"Failed to release tasklist lock");
 
+	if (leader_set_dead == false
+			&& group_leader->zombie_partial_cleanup == CLEANUP_NO)
+		goto release_del_lock;
+
 	/* As main thread is going to exit, release its resources
-	 * */
+	 *
+	 * Wait until any other worker thread releases the reference.
+	 * The reference could have taken when the TG was zombie
+	 */
+	pthread_mutex_lock_unlock(&group_leader->ref_lock, LOCK,
+			"Failed to acquire task reference lock");
+	VEOS_DEBUG("Acquired ref_lock, waiting for conditional signal");
+
+	group_leader->ref_count++;
+
+	VEOS_DEBUG("pid %d ref_count = %d",
+			group_leader->pid, group_leader->ref_count);
+	if (!(group_leader->ref_count == 1) &&
+			pthread_cond_wait(&group_leader->ref_lock_signal,
+				&group_leader->ref_lock)) {
+		veos_abort("pthread_cond_wait failed %s", strerror(errno));
+	}
+	group_leader->ref_count--;
+	pthread_mutex_lock_unlock(&group_leader->ref_lock, UNLOCK,
+			"Failed to release task reference lock");
+
+	delete_entries(group_leader);
+
 	if (leader_set_dead) {
-		/* Wait until any other worker thread releases the reference.
-		 * The reference could have taken when the TG was zombie
-		 */
-		pthread_mutex_lock_unlock(&group_leader->ref_lock, LOCK,
-				"Failed to acquire task reference lock");
-		VEOS_DEBUG("Acquired ref_lock, waiting for conditional signal");
-
-		group_leader->ref_count++;
-
-		VEOS_DEBUG("pid %d ref_count = %d",
-				group_leader->pid, group_leader->ref_count);
-		if (!(group_leader->ref_count == 1) &&
-				pthread_cond_wait(&group_leader->ref_lock_signal,
-					&group_leader->ref_lock)) {
-			veos_abort("pthread_cond_wait failed %s",
-					strerror(errno));
-		}
-		pthread_mutex_lock_unlock(&group_leader->ref_lock, UNLOCK,
-				"Failed to release task reference lock");
-
-		delete_entries(group_leader);
+		/* The thread group leader is completely deleted. */
 		retval = 0;
 		goto hndl_return;
-	} else if (group_leader->zombie_partial_cleanup == CLEANUP_NEEDED) {
-		VEOS_DEBUG("ZOMBIE pid %d going to be partially freed",
-							group_leader->pid);
-		delete_entries(group_leader);
-		VEOS_DEBUG("ZOMBIE pid %d partially freed. ref_count = %d",
-				group_leader->pid, group_leader->ref_count);
-		group_leader->zombie_partial_cleanup = CLEANUP_DONE;
-		if (group_leader->rpm_preserve_task == 1) {
-			VEOS_DEBUG("ZOMBIE pid %d was created by 'time' command"
-				" Wake up zombie cleanup thread", group_leader->pid);
-			pthread_mutex_lock_unlock(&VE_NODE(0)->ve_node_lock, LOCK,
-					"failed to acquire ve node lock");
-			ve_atomic_inc(&VE_NODE(0)->num_zombie_proc);
-			pthread_mutex_lock_unlock(&VE_NODE(0)->ve_node_lock, UNLOCK,
-					"failed to release ve node lock");
-			pthread_cond_signal(&VE_NODE(0)->zombie_cond);
-		}
 	}
+	/* It surely is a ZOMBIE task which has been partially cleaned up
+	 * If it is a time command created task, then wakeup the zombie
+	 * cleanup thread
+	 */
+
+	VEOS_DEBUG("ZOMBIE pid %d partially freed. ref_count = %d",
+			group_leader->pid, group_leader->ref_count);
+	group_leader->zombie_partial_cleanup = CLEANUP_DONE;
+	if (group_leader->rpm_preserve_task == 1) {
+		VEOS_DEBUG("ZOMBIE pid %d was created by 'time' command"
+			" Wake up zombie cleanup thread", group_leader->pid);
+		pthread_mutex_lock_unlock(&VE_NODE(0)->ve_node_lock, LOCK,
+				"failed to acquire ve node lock");
+		ve_atomic_inc(&VE_NODE(0)->num_zombie_proc);
+		pthread_mutex_lock_unlock(&VE_NODE(0)->ve_node_lock, UNLOCK,
+				"failed to release ve node lock");
+		pthread_cond_signal(&VE_NODE(0)->zombie_cond);
+	}
+release_del_lock:
 	pthread_mutex_lock_unlock(&(group_leader->sighand->del_lock), UNLOCK,
 				"Failed to release thread group delete lock");
 	retval = 0;

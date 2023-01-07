@@ -239,7 +239,8 @@ ve_dma_req_hdl *ve_dma_post_p_va(ve_dma_hdl *hdl, ve_dma_addrtype_t srctype,
 {
 	return ve_dma_post_p_va_with_opt(hdl,srctype,srcpid,srcaddr,
 					dsttype,dstpid,dstaddr,length,
-					VE_DMA_OPT_SYNC | VE_DMA_OPT_SYNC_API,-1);
+					VE_DMA_OPT_SYNC | VE_DMA_OPT_SYNC_API,
+					-1,NULL);
 }
 
 ve_dma_req_hdl *ve_dma_post_p_va_with_opt(ve_dma_hdl *hdl,
@@ -247,10 +248,12 @@ ve_dma_req_hdl *ve_dma_post_p_va_with_opt(ve_dma_hdl *hdl,
 				pid_t srcpid, uint64_t srcaddr,
                 		ve_dma_addrtype_t dsttype,
 				pid_t dstpid, uint64_t dstaddr, uint64_t length,
-				uint64_t opt, int vh_sock_fd)
+				uint64_t opt, int vh_sock_fd, 
+				struct ve_ipc_sync *ipc_sync)
 {
 	ve_dma_req_hdl *ret;
 	int64_t n_dma_req;
+	int err = 0;
 
 	VE_DMA_TRACE("called");
 	VE_DMA_DEBUG("DMA request is posted. "
@@ -262,45 +265,49 @@ ve_dma_req_hdl *ve_dma_post_p_va_with_opt(ve_dma_hdl *hdl,
 	/* parameter check */
 	if (!IS_ALIGNED(length, 8)) {
 		VE_DMA_ERROR("Unsupported transfer length (%lu bytes)", length);
-		errno = EINVAL;
-		return NULL;
+		err = EINVAL;
 	}
 	if (length > VE_DMA_MAX_LENGTH) {
 		VE_DMA_ERROR("Too large transfer length (0x%lx bytes)", length);
-		errno = EINVAL;
-		return NULL;
+		err = EINVAL;
 	}
 	if (!IS_ALIGNED(srcaddr, 8)) {
 		VE_DMA_ERROR("DMA does not support unaligned "
 			     "source address (0x%016lx)", srcaddr);
-		errno = EINVAL;
-		return NULL;
+		err = EINVAL;
 	}
 	if (!IS_ALIGNED(dstaddr, 8)) {
 		VE_DMA_ERROR("DMA does not support unaligned "
 			     "destination address (0x%016lx)", dstaddr);
-		errno = EINVAL;
-		return NULL;
+		err = EINVAL;
 	}
 	if (ve_dma_post__check_addr_type("Source", srctype) != 0) {
 		/* error message is output in ve_dma_post__check_addr_type(). */
-		errno = EINVAL;
-		return NULL;
+		err = EINVAL;
 	}
 	if (ve_dma_post__check_addr_type("Destination", dsttype) != 0) {
 		/* error message is output in ve_dma_post__check_addr_type(). */
-		errno = EINVAL;
-		return NULL;
+		err = EINVAL;
 	}
 
 	/*
 	 * create DMA request handle
 	 */
-	ret = malloc(sizeof(*ret));
-	if (ret == NULL) {
-		VE_DMA_ERROR("malloc for DMA request handle failed.");
+	if (!err) {
+		ret = malloc(sizeof(*ret));
+		if (ret == NULL) {
+			err = errno;
+			VE_DMA_ERROR("malloc for DMA request handle failed.");
+		}
+	}
+	/* Error check to create DMA request handle */
+	if (err) {
+		if (ipc_sync)
+			ve_put_ipc_sync(ipc_sync);
+		errno = err;
 		return NULL;
 	}
+
 	ret->engine = hdl;
 	pthread_cond_init(&ret->cond, NULL);
 	ret->cancel = 0;
@@ -317,23 +324,43 @@ ve_dma_req_hdl *ve_dma_post_p_va_with_opt(ve_dma_hdl *hdl,
 	ret->vh_sock_fd = 0;
 	ret->comp = 0;
 	ret->posting = 1;
+	ret->ipc_sync = ipc_sync;
 	INIT_LIST_HEAD(&ret->reqlist);
 	INIT_LIST_HEAD(&ret->ptrans_src);
 	INIT_LIST_HEAD(&ret->ptrans_dst);
 	INIT_LIST_HEAD(&ret->pin_waiting_list);
 
+	if (ipc_sync) {
+		pthread_mutex_lock(
+			&(ipc_sync->swap_exclusion_lock));
+		while (ipc_sync->swapping != 0) {
+			pthread_cond_wait(&(ipc_sync->swapping_cond),
+				&(ipc_sync->swap_exclusion_lock));
+		}
+		ipc_sync->handling_request++;
+		VE_DMA_DEBUG("ipc_sync(%p) : handling_request %d",
+				ipc_sync, ipc_sync->handling_request);
+		pthread_mutex_unlock(
+			&(ipc_sync->swap_exclusion_lock));
+	}
+
 	n_dma_req = ve_dma_reqlist_make(ret, srctype, srcpid, srcaddr, NULL, dsttype,
 					dstpid, dstaddr, NULL, length, opt, vh_sock_fd);
 	if (n_dma_req < 0) {
+		err = errno;
 		VE_DMA_ERROR("Error occured on making DMA reqlist entries. "
 			     "(srctype = %d, srcpid = %d, srcaddr = 0x%016lx, "
 			     "dsttype = %d, dstpid = %d, dstaddr = 0x%016lx, "
 			     "length = 0x%lx, opt = 0x%lx, vh_sock_fd = %d)",
 			     srctype, (int)srcpid, srcaddr,
 			     dsttype, (int)dstpid, dstaddr, length, opt, vh_sock_fd);
+		/* No need to acquire dma handle lock.
+		 * Request has already been canceled and other DMA threads can't operate. */
+		ve_dma__dec_ipc_sync_nolock(ret);
 		ve_dma_reqlist_free(ret);
 		pthread_cond_destroy(&ret->cond);
 		free(ret);
+		errno = err;
 		return NULL;
 	}
 	return ret;

@@ -172,6 +172,7 @@ fi
 @ve_os_launcher_confdir@/ve-ived.options
 @ve_os_launcher_confdir@/veos_timer.options
 %config(noreplace) @ve_os_launcher_confdir@/veswap.options
+%attr(0444,root,root) @prefix@/share/feature_list
 @ve_bindir@/*
 # GPLv2+
 %{_sbindir}/*

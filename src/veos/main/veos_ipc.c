@@ -45,7 +45,7 @@
 #include "veos.h"
 #include "veos_handler.h"
 #include "locking_handler.h"
-#include "ve_swap.h"
+#include "veos_ipc.h"
 #include "ve_list.h"
 
 int nr_thrds = 0;
@@ -814,3 +814,174 @@ hndl_return:
 	VEOS_TRACE("Exiting");
 	veos_abort("VEOS Main thread failure...");
 }
+
+/**
+ * @brief Return ve_ipc_sync which is contained in specefied ve_task_struct,
+ * after incrementing its reference counter.
+ *
+ * @param[in] tsk ve_task_struct which contains ve_ipc_sync.
+ *
+ * @return Pointer to ve_ipc_sync on success, NULL on Failure.
+ */
+struct ve_ipc_sync
+*ve_get_ipc_sync (struct ve_task_struct *tsk)
+{
+        struct ve_ipc_sync *ret_ptr = NULL;
+        struct ve_ipc_sync *tmp;
+        int prev;
+
+        VEOS_TRACE("In %s", __func__);
+
+        if (tsk == NULL) {
+                VEOS_DEBUG("Failed to get ipc_sync");
+                goto hndl_return;
+        }
+
+        tmp = tsk->ipc_sync;
+        VEOS_DEBUG("getting ipc_sync : %p", tmp);
+        if (tmp == NULL)
+                veos_abort("VEOS internal info(ipc_sync) is missing");
+
+        pthread_mutex_lock_unlock(&(tmp->ref_lock), LOCK,
+                                        "Failed to acquire ipc_sync ref lock");
+        if (tmp->ref_count < 0) {
+                VEOS_ERROR("Failed to get ipc_sync");
+                goto hndl_unlock;
+        }
+        prev = tmp->ref_count;
+        if (prev == INT_MAX) {
+                VEOS_ERROR("Error at ref_count of ipc_sync"
+                                                " : %s", strerror(ERANGE));
+                goto hndl_unlock;
+        }
+        tmp->ref_count++;
+        VEOS_DEBUG("Increment ipc_sync->ref_count, before %d, "
+                                        "after %d", prev, tmp->ref_count);
+
+        ret_ptr = tsk->ipc_sync;
+hndl_unlock:
+        pthread_mutex_lock_unlock(&(tmp->ref_lock), UNLOCK,
+                                        "Failed to release ipc_sync ref lock");
+
+hndl_return:
+        VEOS_TRACE("Out %s", __func__);
+        return ret_ptr;
+
+}
+
+/**
+ * @brief Decrement specified ve_ipc_sync's reference counter.
+ *
+ * @param[in] ipc_sync ve_ipc_sync by which reference counter is decremented.
+ *
+ * @return 0 on success, -1 on Failure.
+ */
+int
+ve_put_ipc_sync (struct ve_ipc_sync *ipc_sync)
+{
+        int prev;
+        int retval = -1;
+        bool deleting_flag = false;
+        VEOS_TRACE("In %s", __func__);
+
+        if (ipc_sync == NULL) {
+                VEOS_ERROR("Failed to put of ipc_sync");
+                goto hndl_return;
+        }
+
+        pthread_mutex_lock_unlock(&(ipc_sync->ref_lock), LOCK,
+                                        "Failed to acquire ipc_sync ref lock");
+        prev = ipc_sync->ref_count;
+        ipc_sync->ref_count--;
+        VEOS_DEBUG("Decrement ipc_sync->ref_count, before %d, "
+                                        "after %d", prev, ipc_sync->ref_count);
+        if (ipc_sync->ref_count == 0) {
+                VEOS_DEBUG("Deleting ve_ipc_sync(%p)", ipc_sync);
+                deleting_flag = true;
+        }
+        pthread_mutex_lock_unlock(&(ipc_sync->ref_lock), UNLOCK,
+                                        "Failed to release ipc_sync ref lock");
+
+        if (deleting_flag) {
+                VEOS_DEBUG("Freeing ipc_sync(%p)", ipc_sync);
+                pthread_cond_destroy(&(ipc_sync->handling_request_cond));
+                pthread_cond_destroy(&(ipc_sync->swapping_cond));
+                free(ipc_sync);
+        }
+
+        retval = 0;
+hndl_return:
+        VEOS_TRACE("Out %s", __func__);
+        return retval;
+}
+
+/**
+ * @brief Allocate struct ve_ipc_sync and initialize it.
+ *
+ * @return Pointer to allocated ve_ipc_sync on success, NULL on Failure.
+ */
+struct ve_ipc_sync
+*ve_alloc_ipc_sync(void)
+{
+        struct ve_ipc_sync *ret_ptr = NULL;
+        int ret;
+
+        VEOS_TRACE("In %s", __func__);
+
+        ret_ptr = (struct ve_ipc_sync *)malloc(sizeof(struct ve_ipc_sync));
+        if (ret_ptr == NULL) {
+                VEOS_ERROR("Failed to allocate ve_ipc_sync "
+                                                "due to %s", strerror(errno));
+                goto hndl_return;
+        }
+
+        /* Initial value '1' means reference from ve_task_struct.
+         * So, it will be decremented when ve_task_struct is freed.
+         */
+        ret_ptr->ref_count = 1;
+        ret_ptr->handling_request = 0;
+        ret_ptr->swapping = 0;
+
+        ret = pthread_mutex_init(&(ret_ptr->ref_lock), NULL);
+        if (ret != 0) {
+                VEOS_ERROR("Initialising ve_ipc_sync->ref_lock"
+                                                " due to %s", strerror(ret));
+                goto hndl_free_return;
+        }
+
+        ret = pthread_mutex_init(&(ret_ptr->swap_exclusion_lock), NULL);
+        if (ret != 0) {
+                VEOS_ERROR("Failed to init "
+                                "ve_ipc_sync->swap_exclusion_lock due to %s",
+                                strerror(ret));
+                goto hndl_free_return;
+        }
+
+        ret = pthread_cond_init(&(ret_ptr->handling_request_cond), NULL);
+        if (ret != 0) {
+                VEOS_ERROR("Failed to init "
+                                "ve_ipc_sync->handling_request_cond due to %s",
+                                strerror(ret));
+                goto hndl_free_return;
+        }
+
+        ret = pthread_cond_init(&(ret_ptr->swapping_cond), NULL);
+        if (ret != 0) {
+                VEOS_ERROR("Failed to init "
+                                        "ve_ipc_sync->swapping_cond due to %s",
+                                        strerror(ret));
+                goto hndl_free_return;
+        }
+
+        VEOS_DEBUG("ipc_sync allocated : %p", ret_ptr);
+        goto hndl_return;
+
+hndl_free_return:
+        free(ret_ptr);
+        ret_ptr = NULL;
+
+hndl_return:
+        VEOS_TRACE("Out %s", __func__);
+        return ret_ptr;
+}
+

@@ -20,4 +20,5 @@ libvepps_a_CPPFLAGS = \
 	-I$(srcdir)/../external \
 	-I$(srcdir)/../ived \
 	-I$(top_srcdir)/include \
-	-I$(top_srcdir)/lib/libveosprotoc
+	-I$(top_srcdir)/lib/libveosprotoc \
+	-I$(top_srcdir)/lib/libived

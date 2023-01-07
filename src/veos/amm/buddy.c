@@ -171,7 +171,7 @@ int __page_entry(struct buddy_mempool *mp, pgno_t pg_no, int pgmod, int order)
 	page->private_data = NULL;
 	page->owner = NULL;
 	page->buddy_order = order;
-	page->pci_count = 0;
+	page->pci_ns_count = 0;
 	page->swapped_info = NULL;
 
 	if (vnode_info->ve_pages[pg_no] != NULL) {

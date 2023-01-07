@@ -31,6 +31,7 @@
 #include "task_mgmt.h"
 #include "ve_hw.h"
 #include "locking_handler.h"
+#include "veos_ipc.h"
 
 extern log4c_category_t *cat_os_pps;
 
@@ -107,26 +108,15 @@ struct ve_swapped_physical {
 	int numa_node;    /* !< Numa node of Swapped-out page. */
 	void *private_data; /* !< Private data of Swapped-out VE page. */
 	uint64_t ref_cnt;
+	uint64_t remained_page_ref_count; /* !< Number of count which
+					   *    VEOS does not decrement during
+					   *    swap-out */
 };
 
 enum swap_progress {
 	NOT_SWAPPED, /* !< Not swap-out */
 	SWAPPING,    /* !< Swap-out gose on */
 	SWAPPED      /* !< Swap-out completes  */
-};
-
-/**
-  * This structure manages rwlock for exclusive control between IPC and
-  * Swap-out/in.
-  */
-struct ve_ipc_sync {
-	pthread_mutex_t ref_lock; /* Lock to protect ref_count and exit_status */
-	int ref_count;            /* Reference counter */
-	pthread_mutex_t swap_exclusion_lock; /* Lock to protect handling_request and swapping */
-	int handling_request;     /* The number of threads handling requests */
-	pthread_cond_t handling_request_cond; /* Condition variable to wait handling_request becomes 0 */
-	int swapping; /* The flag which is 1 while process is swapped by pps */
-	pthread_cond_t swapping_cond; /* Condition variable to wait swapping becomes 0 */
 };
 
 /**
@@ -158,12 +148,7 @@ void veos_operate_all_ve_task_lock(struct ve_task_struct *, lock_unlock_t);
 void veos_free_ppsbuf(void);
 bool is_process_veos_terminate(struct ve_task_struct *, char *);
 int veos_ve_swapin_req(pid_t *pids);
-struct ve_ipc_sync *ve_get_ipc_sync (struct ve_task_struct *);
-int ve_put_ipc_sync (struct ve_ipc_sync *);
-int ve_set_state_ipc_sync (struct ve_ipc_sync *);
-int ve_mark_ipc_sync(struct ve_task_struct *);
 int ve_unlock_swapped_proc_lock(struct ve_task_struct *);
-struct ve_ipc_sync *ve_alloc_ipc_sync(void);
 int is_ve_page_swappable(pgno_t pgno, struct ve_node_struct *vnode);
 int is_ve_page_swappable_core(uint64_t, uint64_t, uint64_t, pgno_t,
 						struct ve_task_struct *);
@@ -181,5 +166,9 @@ int64_t veos_pps_get_cns(struct ve_task_struct *, pid_t);
 int recv_pps_file_handler_comm(int, struct ve_swap_file_hdr_comm *);
 int send_pps_file_handler_comm(int, struct ve_swap_file_hdr_comm);
 int get_ve_node_num_from_sock_file(char *);
+int veos_swap_in_user_veshm_pciatb_re_attach(struct ve_task_struct *);
+void del_swapped_owned_veshm_list(struct ve_task_struct *);
+void del_swapped_attach_veshm_list(struct ve_task_struct *);
+int veos_get_pgmod_by_vehva(uint64_t);
 
 #endif

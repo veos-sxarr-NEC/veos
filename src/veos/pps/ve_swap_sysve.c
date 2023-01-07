@@ -133,7 +133,8 @@ veos_handle_get_mns(veos_thread_arg_t *pti)
 		p_retval = -ECANCELED;
 		goto hndl_responce;
 	}
-	requester = *(pid_t *)request->pseudo_msg.data;
+	requester = vedl_host_pid(VE_HANDLE(0), pti->cred.pid,
+		*(pid_t *)request->pseudo_msg.data);
 
 	tsk = find_ve_task_struct(requester);
 	if (tsk == NULL) {

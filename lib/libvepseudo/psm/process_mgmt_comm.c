@@ -3378,3 +3378,125 @@ hndl_return:
 	PSEUDO_TRACE("Exiting");
 	return retval;
 }
+int pseudo_psm_send_signal_mask(int veos_sock_fd, sigset_t ve_mask)
+{
+	PseudoVeosMessage ve_mask_req = PSEUDO_VEOS_MESSAGE__INIT;
+	ProtobufCBinaryData ve_mask_msg = {0};
+	void *buf = NULL;
+	ssize_t pseudo_msg_len = 0, msg_len = 0, retval = -1;
+	PSEUDO_TRACE("Entering");
+
+	if (veos_sock_fd < 0) {
+		PSEUDO_ERROR("Invalid(NULL) argument received");
+		PSEUDO_DEBUG("Invalid veos_sock_fd argument received");
+		goto malloc_error;
+	}
+
+	/* prepare request to be sent to PSM */
+	ve_mask_req.pseudo_veos_cmd_id = SIGNAL_MASK_REQ;
+
+	ve_mask_req.has_pseudo_pid = true;
+	ve_mask_req.pseudo_pid = syscall(SYS_gettid);
+
+	ve_mask_msg.data = (uint8_t *) &ve_mask;
+	ve_mask_msg.len = sizeof(sigset_t);
+
+	ve_mask_req.has_pseudo_msg = true;
+	ve_mask_req.pseudo_msg = ve_mask_msg;
+	/* Pack ve_mask_req before sending */
+	pseudo_msg_len = pseudo_veos_message__get_packed_size(&ve_mask_req);
+	buf = malloc(pseudo_msg_len);
+	if (NULL == buf) {
+		retval = -errno;
+		PSEUDO_ERROR("Failed to allocate memory for message buffer, "
+				"return value %d", -errno);
+		goto malloc_error;
+	}
+	memset(buf, '\0', pseudo_msg_len);
+
+	msg_len = pseudo_veos_message__pack(&ve_mask_req, buf);
+	if (msg_len != pseudo_msg_len) {
+		PSEUDO_ERROR("Packing message protocol buffer error");
+		PSEUDO_DEBUG("Expected length: %ld, Returned length: %ld",
+				pseudo_msg_len, msg_len);
+		fprintf(stderr, "Internal message protocol buffer error\n");
+		/* FATAL ERROR: abort current process */
+		pseudo_abort();
+	}
+
+	retval = pseudo_veos_send_cmd(veos_sock_fd, buf,
+			pseudo_msg_len);
+	if (retval < pseudo_msg_len) {
+		PSEUDO_ERROR("Failed to send request to VEOS");
+		PSEUDO_DEBUG("Expected bytes: %ld, Transferred bytes: %ld",
+				pseudo_msg_len, retval);
+		retval = -EFAULT;
+	}
+
+	free(buf);
+
+malloc_error:
+	PSEUDO_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Waits for acknowledgment of "SIGNAL_MASK_REQ" request from veos.
+ *
+ * This function will wait for the acknowledgment from PSM which will
+ * ensure that PSM has set the signal mask of pseudo process.
+ *
+ * @param[in] veos_sock_fd Descriptor used to communicate with PSM.
+ *
+ * @return Returns negative errno on failure and a positive value on success.
+ *
+ * @internal
+ * @author PSMG / MP-MT
+ */
+int64_t pseudo_psm_recv_signal_mask_ack(int veos_sock_fd)
+{
+	ssize_t retval = -1;
+	PseudoVeosMessage *ve_ack = NULL;
+	char buf[MAX_PROTO_MSG_SIZE] = {0};
+
+	PSEUDO_TRACE("Exiting");
+
+	if (veos_sock_fd < 0) {
+		PSEUDO_ERROR("Invalid(NULL) argument received");
+		PSEUDO_DEBUG("Invalid veos_sock_fd argument received");
+		retval = -EINVAL;
+		goto hndl_return;
+	}
+
+	retval = pseudo_veos_recv_cmd(veos_sock_fd, buf, MAX_PROTO_MSG_SIZE);
+	if (-1 == retval) {
+		PSEUDO_ERROR("Failed to receive set signal mask acknowledgment "
+				"from VEOS");
+		retval = -EFAULT;
+	}
+	/* Unpack the structure */
+	ve_ack = pseudo_veos_message__unpack(NULL, retval,
+			(const uint8_t *)(buf));
+	if (NULL == ve_ack) {
+		PSEUDO_ERROR("Unpacking message protocol buffer error");
+		fprintf(stderr, "Internal message protocol buffer error\n");
+		/* FATAL ERROR: abort current process */
+		pseudo_abort();
+	}
+
+	/* Check message for SIGNAL_MASK_REQ failure */
+	if (ve_ack->has_syscall_retval) {
+		if (-1 == ve_ack->syscall_retval) {
+			PSEUDO_ERROR("Received negative acknowledgement for "
+					"set signal mask, return value %ld",
+					ve_ack->syscall_retval);
+		} else
+			PSEUDO_DEBUG("PSEUDO received SIGNAL_MASK_REQ ACK");
+		retval = ve_ack->syscall_retval;
+	}
+	pseudo_veos_message__free_unpacked(ve_ack, NULL);
+
+hndl_return:
+	PSEUDO_TRACE("Exiting");
+	return retval;
+}

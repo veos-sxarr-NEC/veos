@@ -1344,6 +1344,7 @@ dir_t invalidate_vehva(vemva_t vaddr, void *pdt, jid_t jid)
 	atb_dir_t *pgd = NULL, *node_pgd = NULL;
 	atb_entry_t *pte, *node_pte = NULL;
 	struct ve_node_struct *vnode = VE_NODE(0);
+	int ret;
 
 	VEOS_TRACE("invoked");
 	VEOS_TRACE("vehva %lx for pdt %p",
@@ -1405,7 +1406,8 @@ dir_t invalidate_vehva(vemva_t vaddr, void *pdt, jid_t jid)
 			pb = pg_getpb(&node_pte[pgoff], pgmod);
 			vemaa = pbaddr(pb, pgmod);
 			VEOS_DEBUG("vemaa = 0x%lx", vemaa);
-			if (amm_put_page(vemaa)) {
+			ret = amm_put_page(vemaa);
+			if ((ret < 0) && (ret != -EBUSY)) {
 				dir_num = -EINVAL;
 				goto out;
 			}

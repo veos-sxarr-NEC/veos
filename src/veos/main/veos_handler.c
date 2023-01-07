@@ -94,6 +94,10 @@ struct veos_cmd_entry pseudo_veos_cmd[PSEUDO_VEOS_MAX_MSG_NUM] = {
 	{"CMD_GET_MNS", veos_handle_get_mns},
 	{"SET_NEXT_THREAD_WORKER", psm_handle_set_next_thread_worker_req},
 	{"TELL_RDMAOFFSET", veos_handle_set_rdmaoffset},
+	{"SIGNAL_MASK_REQ", psm_handle_set_signal_mask_req},
+	{"STOP_USER_THREADS", psm_handle_stop_user_threads_req},
+	{"START_USER_THREADS", psm_handle_start_user_threads_req},
+	{"GET_USER_THREADS_STATE", psm_handle_get_user_threads_state_req},
 };
 
 struct veos_vhve_cmd_entry vhve_veos_cmd[VHVE_VEOS_MAX_MSG_NUM] = {

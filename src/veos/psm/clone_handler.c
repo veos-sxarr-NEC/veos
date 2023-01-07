@@ -541,11 +541,14 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 		struct ve_task_struct *current)
 {
 	struct ve_task_struct *new_task = NULL;
+	struct ve_core_struct *p_ve_core = NULL;
+	reg_t regdata = 0;
 	int retval = -1, ret = -1;
 	int i = 0;
 
 	VEOS_TRACE("Entering");
 
+	p_ve_core = VE_CORE(current->node_id, current->core_id);
 	if (!fork_info) {
 		VEOS_ERROR("Invalid(NULL) argument received");
 		retval = -ENOMEM;
@@ -621,9 +624,23 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	new_task->is_crt_drv = false;
 	new_task->is_dlt_drv = false;
 
+	/* Save the parents's user context before copying the copy parent's
+	 * PMC data to child process. */
+	pthread_rwlock_lock_unlock
+		(&(current->p_ve_core->ve_core_lock), WRLOCK,
+		 "Failed to acquire core lock");
+	if (current->reg_dirty == true) {
+		psm_halt_ve_core(p_ve_core->node_num, p_ve_core->core_num,
+				&regdata, false);
+		psm_save_current_user_context(current);
+	}
+	pthread_rwlock_lock_unlock
+		(&(current->p_ve_core->ve_core_lock), UNLOCK,
+		 "Failed to release core lock");
+
 	/*copy parent's PMMR,PMC data to child process*/
 	for(i = 0; i < PMC_REG; i++)
-		new_task->initial_pmc_pmmr[i] = current->pmc_pmmr[i] ;
+		new_task->initial_pmc_pmmr[i] = current->p_ve_thread->PMC[i];
 
 	if (!(clone_flags & CLONE_THREAD)) {
 		VEOS_DEBUG("Setting private members in child to NULL");
@@ -745,6 +762,8 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	new_task->execed_proc = false;
 	new_task->cpu_lim_exceed = false;
 
+	new_task->ve_sched_state = VE_THREAD_STARTED;
+
 	if (clone_flags & CLONE_THREAD) {
 		/* Add an entry of this thread in the thread group
 		 * maintained by main thread
@@ -773,18 +792,6 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 					" lock");
 			goto free_mm_struct;
 		}
-
-		pthread_mutex_lock_unlock(&(current->ve_task_lock), LOCK,
-				"Failed to acquire ve_task lock [PID: %d]",
-				current->pid);
-		if (current->ve_task_state == STOP &&
-			current->sstatus == ACTIVE) {
-			new_task->ve_task_state = STOP;
-			new_task->sstatus = ACTIVE;
-		}
-		pthread_mutex_lock_unlock(&(current->ve_task_lock), UNLOCK,
-				"Failed to release ve_task lock [PID: %d]",
-				current->pid);
 
 		pthread_mutex_lock_unlock(&new_task->p_ve_mm->thread_group_mm_lock,
 				UNLOCK, "Failed to release thread-group-mm-lock");
@@ -1055,6 +1062,19 @@ int do_ve_fork(unsigned long clone_flags,
 		VEOS_DEBUG("Acquiring thread group lock");
 		pthread_mutex_lock_unlock(&new_task->p_ve_mm->thread_group_mm_lock,
 				LOCK, "Failed to acquire thread-group-mm-lock");
+		pthread_mutex_lock_unlock(&(current->ve_task_lock), LOCK,
+				"Failed to acquire ve_task lock [PID: %d]",
+				current->pid);
+		if (current->ve_task_state == STOP && current->sstatus == ACTIVE) {
+			new_task->ve_task_state = STOP;
+			new_task->sstatus = ACTIVE;
+		}
+		if (current->ve_sched_state != VE_THREAD_STARTED)
+			new_task->ve_sched_state = VE_THREAD_STOPPED;
+
+		pthread_mutex_lock_unlock(&(current->ve_task_lock), UNLOCK,
+				"Failed to release ve_task lock [PID: %d]",
+				current->pid);
 		list_add_tail(&new_task->thread_group,
 				&new_task->group_leader->thread_group);
 		pthread_mutex_lock_unlock(&new_task->p_ve_mm->thread_group_mm_lock,

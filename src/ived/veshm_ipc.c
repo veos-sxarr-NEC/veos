@@ -1225,6 +1225,21 @@ ived_veshm_close_common(struct veos_info *os_info,
 	 */
 
 	if ( isset_flag(req_mode_flag, IVED_VEOS_EXIT) ){
+		 /* If a VESHM closed and it was attached, the VESHM
+		  * should be linked to erase_veshm_list, and
+		  * is detached (and freed) in erase_veshm_info_batch().
+		  * So, this function can return here.
+		  */
+		if ((veshm_info->register_cnt_proc == 0)
+		    && (veshm_info->register_cnt_dev == 0)){
+			IVED_DEBUG(log4cat_veshm,
+				   "Already closed. veshm_info:%p", veshm_info);
+			*rpc_retval = 0;
+			*rpc_ret_refcnt = veshm_info->reference_cnt;
+			pthread_mutex_unlock(&veshm_info->veshm_lock);
+			retval = 0;
+			goto already_closed;
+		}
 		veshm_info->register_cnt_proc = 0;
 		veshm_info->register_cnt_dev = 0;
 	} else {
@@ -1286,6 +1301,7 @@ ived_veshm_close_common(struct veos_info *os_info,
 
 	retval = 0;
 
+already_closed:
 	IVED_DEBUG(log4cat_veshm, 
 		   "registration count:%d, reference count:%d",
 		   (int)*rpc_retval, *rpc_ret_refcnt);

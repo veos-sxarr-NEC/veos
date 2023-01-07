@@ -63,12 +63,17 @@
 #define REPLY_OK	0
 #define REPLY_NG	-ECANCELED
 #define LOCK_TIMEOUT	10	/* seconds */
+#define INVALID_PCI_ADDR	0xFFFFFFFFFFFFFFFFll
+#define INVALID_VEHVA		0xFFFFFFFFFFFFFFFFll
+#define INVALID_VESHM		0xFFFFFFFFFFFFFFFFll
 
 /**
  * @brief Common VESHM open function
  *
  * @param [in]     request_open	Structure for arguments of VESHM open
  * @param [out]    reply   	Reply message of VESHM (Need initialized)
+ * @param [in]     pg_mode 	page mode (used when VE_REQ_INVALID_PCI_ADDR
+ *                         	is specified to mode_flag
  *
  * @return 0 on succes, -1 and set errno on failure
  * @retval IVED_REQ_OK    Succeeded the request
@@ -77,13 +82,15 @@
  *
  */
 int 
-veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
+veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply,
+						int pg_mode)
 { 
 	int i;
 	int ret = 0;
 	int existing = 0;	/* 1 =  A memory exists in owned_veshm list */
 	int get_pciatb_ent = 0; /* 1 =  Get new PCIATB entries */
 	int renew_veshm = 0;	/* 1 =  Renew VESHM registration */
+	int req_invalid_pci = 0;	/* 1 =  Set an invalid pci address */
 	size_t pciatb_slot_num = 0;
 
 	struct owned_veshm_info *entry=NULL, *newent=NULL;
@@ -101,12 +108,13 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 	size_t   vemva_size;
 	int slot;
 	uint64_t *allocated_pci = NULL;
-	bool update_mns;
 
 	int ived_req_sock = -1;
 	RpcVeshmArg request = RPC_VESHM_ARG__INIT;
 	IvedReturn *ret_ived=NULL;
 	ProtobufCBinaryData uuid_data;
+
+	pgno_t pgno;
 
 	assert(request_open != NULL);
 	assert(reply != NULL);
@@ -137,7 +145,7 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 	/* invalid flag */
 	if ( isset_flag(stat_check_val,
 			~(VE_SHM_RO | VE_PCISYNC 
-			  | VE_REGISTER_PCI | VE_REGISTER_NONE))){
+			  | VE_REGISTER_PCI | VE_REGISTER_NONE | VE_SWAPPABLE))){
 		IVED_DEBUG(log4cat_veos_ived, 
 			   "VESHM registration: Invalid flags");
 		goto err_ret_invalid_arg;
@@ -163,6 +171,20 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 		goto err_ret_invalid_arg;
 	}
 
+	/* If VE_SWAPPABLE is specified. VE_REGISTER_PCI must be specified.*/
+	if ( isset_flag(stat_check_val, VE_SWAPPABLE)
+		&& !(isset_flag(stat_check_val, VE_REGISTER_PCI)) ){
+		IVED_DEBUG(log4cat_veos_ived,
+			"VESHM registration: Invalid flags");
+		goto err_ret_invalid_arg;
+	}
+
+	if ( isset_flag(request_open->mode_flag, VE_REQ_INVALID_PCI_ADDR) ){
+		IVED_DEBUG(log4cat_veos_ived,
+			"VE_REQ_INVALID_PCI_ADDR is set");
+		req_invalid_pci = 1;
+	}
+
 	/* syncnum check */
 	if ( isset_flag(stat_check_val, VE_PCISYNC)){
 		if (request_open->syncnum < 0 || request_open->syncnum > 3){
@@ -184,9 +206,15 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 		goto err_ret_invalid_arg;
 	}
 
-	vemva_pg_mode = veos_get_pgmode(VE_ADDR_VEMVA, 
-					request_open->pid_of_owner,
-					request_open->vemva);
+	if ( req_invalid_pci ){
+		IVED_DEBUG(log4cat_veos_ived,
+				"VE_REQ_INVALID_PCI_ADDR is set, page mode is %d", pg_mode);
+		vemva_pg_mode = pg_mode;
+	} else {
+		vemva_pg_mode = veos_get_pgmode(VE_ADDR_VEMVA,
+						request_open->pid_of_owner,
+						request_open->vemva);
+	}
 	if (vemva_pg_mode < 0){
 		IVED_DEBUG(log4cat_veos_ived, 
 			   "VESHM: Check of page size failed (err:%d)",
@@ -249,7 +277,33 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 					request_open->syncnum,
 					stat_check_val);
 
-	if ( entry != NULL ){
+		/* If the VE_REQ_INVALID_PCI_ADDR flag is set,
+		 * the entry that is registed an invalid PCI address,
+		 * that entry can be reused. */
+	if (( entry != NULL ) && ( req_invalid_pci )){
+		if (entry->paddr_array[0] != INVALID_VESHM){
+			set_flag(entry->status_flag, VESHM_MODE_INVALID);
+			entry = NULL;
+			renew_veshm = 1;
+		} else {
+			existing = 1;
+			allocated_pci = (uint64_t *)malloc
+				(sizeof(uint64_t) * entry->pciatb_entries);
+			if (allocated_pci == NULL){
+				IVED_CRIT(log4cat_veos_ived,
+					  "VESHM registration: Buffer allocation failed (PCI)");
+				reply->error  = -ENOMEM;
+				goto err_ret;
+			}
+			for (i = 0; i < entry->pciatb_entries-1; i++){
+				entry->pciatb_slot[i] = -1;
+				allocated_pci[i] = INVALID_PCI_ADDR;
+			}
+			entry->pciatb_slot[entry->pciatb_entries-1] = -1;
+			allocated_pci[entry->pciatb_entries-1] = -1;
+		}
+	}
+	if (( entry != NULL ) && ( !req_invalid_pci )){
 		ret = check_veshm_paddr(entry->paddr_array, 
 					entry->physical_pages,
 					entry->physical_pgsize,
@@ -269,7 +323,7 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 		}
 	}
 
-	if ( entry != NULL ){
+	if (( entry != NULL ) && ( !req_invalid_pci )){
 		/* Existing VESHM area */
 		existing = 1;
 		IVED_DEBUG(log4cat_veos_ived, "Entry exists");
@@ -286,7 +340,7 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 			}
 
 			/* Convert PCI slot to PCI address */
-			ret = conv_pcislot_to_pciaddr(entry->pciatb_entries-1, 
+			ret = conv_pcislot_to_pciaddr(entry->pciatb_entries-1,
 						      entry->pciatb_slot,
 						      allocated_pci);
 			if (ret != 0){
@@ -296,26 +350,28 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 			allocated_pci[entry->pciatb_entries-1] = -1;
 		}
 
-	} else {
+	} else if ( entry == NULL ) {
 
 		IVED_DEBUG(log4cat_veos_ived, "New entry");
 
-		/* Check memory page size and permission */
-		ret = check_mem_pgmode(request_open->pid_of_owner,
-				       request_open->vemva,
-				       request_open->size);
-		if (ret != 0){
-			reply->error  = -ENOMEM;
-			goto err_ret;
-		}
+		if ( !req_invalid_pci ){
+			/* Check memory page size and permission */
+			ret = check_mem_pgmode(request_open->pid_of_owner,
+					       request_open->vemva,
+					       request_open->size);
+			if (ret != 0){
+				reply->error  = -ENOMEM;
+				goto err_ret;
+			}
 
-		/* prot is PROT_READ or PROT_WRITE */
-		ret = check_mem_perm(request_open->pid_of_owner,
-				     request_open->vemva,
-				     request_open->size, PROT_WRITE);
-		if (ret != 0){
-			reply->error  = -EACCES;
-			goto err_ret;
+			/* prot is PROT_READ or PROT_WRITE */
+			ret = check_mem_perm(request_open->pid_of_owner,
+					     request_open->vemva,
+					     request_open->size, PROT_WRITE);
+			if (ret != 0){
+				reply->error  = -EACCES;
+				goto err_ret;
+			}
 		}
 
 		/* New VESHM area */
@@ -338,11 +394,12 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 		newent->pcisync_num	= request_open->syncnum;
 		newent->pciatb_slot	= NULL;
 		newent->pciatb_entries	= 0;
-		newent->status_flag       = stat_check_val;
+		newent->status_flag       = stat_check_val & ~VE_SWAPPABLE;
 		newent->paddr_array	= NULL;
 		newent->physical_pgsize = physical_pgsize;
 		newent->physical_pages  = (request_open->size + 
 					   (physical_pgsize - 1)) >> pg_shft;
+		newent->register_cnt_proc_swappable = 0;
 
 		newent->paddr_array = (uint64_t *)malloc
 			(sizeof(uint64_t) * newent->physical_pages);
@@ -353,19 +410,27 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 			goto err_ret_free_newent;
 		}
 
-		ret = create_veshm_paddr_array(request_open->pid_of_owner,
-					       newent->vemva,
-					       newent->size,
-					       newent->physical_pgsize,
-					       newent->paddr_array);
+		if (req_invalid_pci) {
+			/* If the VE_REQ_INVALID_PCI_ADDR flag is set,
+			 * set INVALID_VESHM to paddr_array. */
+			IVED_DEBUG(log4cat_veos_ived, "Set INVALID_VESHM to paddr_array");
+			for (i = 0; i < newent->physical_pages; i++) {
+				newent->paddr_array[i] = INVALID_VESHM;
+			}
+		} else {
+			ret = create_veshm_paddr_array(request_open->pid_of_owner,
+						       newent->vemva,
+						       newent->size,
+						       newent->physical_pgsize,
+						       newent->paddr_array);
 
-		if (ret < 0 || ret != newent->physical_pages){
-			IVED_DEBUG(log4cat_veos_ived, 
-				   "VESHM registration: Physical address check failed");
-			reply->error  = -ENOMEM;
-			goto err_ret_free_newent;
+			if (ret < 0 || ret != newent->physical_pages){
+				IVED_DEBUG(log4cat_veos_ived,
+					   "VESHM registration: Physical address check failed");
+				reply->error  = -ENOMEM;
+				goto err_ret_free_newent;
+			}
 		}
-
 		uuid_generate(newent->uuid_veshm);
 		uuid_copy(newent->uuid_proc, ived_resource->uuid_proc);
 		entry = newent;
@@ -374,7 +439,7 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 	}
 
 	if (existing == 0 
-	    && isset_flag(newent->status_flag, VE_REGISTER_PCI)){
+		&& isset_flag(newent->status_flag, VE_REGISTER_PCI)){
 
 		/* Get new PCIATB entries. */
 		start_vemva = request_open->vemva;
@@ -419,61 +484,67 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 			goto err_ret_free_newent;
 		}
 
-		veos_sync_r_bar01_bar3();
-
-		get_pciatb_ent = 1;
-		for (i = 0; i < entry->pciatb_entries-1 ; i++){
-			if (!((i + 1) < (entry->pciatb_entries -1)))
-				update_mns = true;
-			else
-				update_mns = false;
-			/* Request PCIATB entry one by one */
-			/* NOTE: This approach can be improved. */
-			slot = veos_alloc_pciatb
-				(request_open->pid_of_owner,
-				 start_vemva + pciatb_pagesize * i, 
-				 pciatb_pagesize, PROT_READ|PROT_WRITE, true,
-				 update_mns);
-			if (slot < 0){
+		if (req_invalid_pci){
+			/* If the VE_REQ_INVALID_PCI_ADDR flag is set,
+			 * set -1 to pciatb_slot, INVALID_PCI_ADDR to pci_address. */
+			for (i = 0; i < entry->pciatb_entries-1; i++){
 				entry->pciatb_slot[i] = -1;
-				IVED_ERROR(log4cat_veos_ived, 
-					   "VHSAA allocation failed.");
-				reply->error  = -ENOMEM;
-				veos_sync_r_bar2();
-				goto err_ret_free_pciatb;
+				allocated_pci[i] = INVALID_PCI_ADDR;
 			}
+			entry->pciatb_slot[entry->pciatb_entries-1] = -1;
+			allocated_pci[entry->pciatb_entries-1] = -1;
+		} else {
+			veos_sync_r_bar01_bar3();
 
-			entry->pciatb_slot[i] = slot;
-
-			if ( isset_flag(stat_check_val, VE_PCISYNC)){
-				ret = veos_set_pciatb_pgdesc
+			get_pciatb_ent = 1;
+			for (i = 0; i < entry->pciatb_entries-1 ; i++){
+				/* Request PCIATB entry one by one */
+				/* NOTE: This approach can be improved. */
+				slot = veos_alloc_pciatb
 					(request_open->pid_of_owner,
-					 request_open->syncnum, slot, 1);
-				if (ret != 0){
-					/* PCI allocation succeeded, so
-					 * index is i+1 */
-					entry->pciatb_slot[i+1] = -1;
-					IVED_ERROR(log4cat_veos_ived, 
+					 start_vemva + pciatb_pagesize * i,
+					 pciatb_pagesize, PROT_READ|PROT_WRITE, true);
+				if (slot < 0){
+					entry->pciatb_slot[i] = -1;
+					IVED_ERROR(log4cat_veos_ived,
 						   "VHSAA allocation failed.");
 					reply->error  = -ENOMEM;
 					veos_sync_r_bar2();
 					goto err_ret_free_pciatb;
 				}
+
+				entry->pciatb_slot[i] = slot;
+
+				if ( isset_flag(stat_check_val, VE_PCISYNC)){
+					ret = veos_set_pciatb_pgdesc
+						(request_open->pid_of_owner,
+						 request_open->syncnum, slot, 1);
+					if (ret != 0){
+						/* PCI allocation succeeded, so
+						 * index is i+1 */
+						entry->pciatb_slot[i+1] = -1;
+						IVED_ERROR(log4cat_veos_ived,
+							   "VHSAA allocation failed.");
+						reply->error  = -ENOMEM;
+						veos_sync_r_bar2();
+						goto err_ret_free_pciatb;
+					}
+				}
 			}
-		}
-		entry->pciatb_slot[entry->pciatb_entries-1] = -1;
+			entry->pciatb_slot[entry->pciatb_entries-1] = -1;
 
-		veos_sync_r_bar2();
+			veos_sync_r_bar2();
 
-		/* Create PCI address for IVED */
-		ret = conv_pcislot_to_pciaddr(entry->pciatb_entries-1, 
-					      entry->pciatb_slot,
-					      allocated_pci);
-		if (ret != 0){
-			reply->error  = -ECANCELED;
-			goto err_ret_free_pciatb;
+			/* Create PCI address for IVED */
+			ret = conv_pcislot_to_pciaddr(entry->pciatb_entries-1,
+						      entry->pciatb_slot,
+						      allocated_pci);
+			if (ret != 0){
+				reply->error  = -ECANCELED;
+				goto err_ret_free_pciatb;
+			}
+			allocated_pci[entry->pciatb_entries-1] = -1;
 		}
-		allocated_pci[entry->pciatb_entries-1] = -1;
 	}
 
 	/* Inform the registration to IVED. */
@@ -532,6 +603,29 @@ veos_veshm_open_common(RpcVeshmSubOpen *request_open, IvedReturn *reply)
 		reply->error = ret_ived->error;
 		goto err_ret_ipc_failed;
 	}
+
+	if (isset_flag(request_open->mode_flag, VE_SWAPPABLE)) {
+		if ( existing == 1 )
+			entry->register_cnt_proc_swappable++;
+		else
+			newent->register_cnt_proc_swappable++;
+	}
+
+	/* If registered to PCIATB with out VE_SWAPPABLE,
+	 * increment pci_ns_count
+	 */
+
+	if ((!isset_flag(request_open->mode_flag, VE_SWAPPABLE))
+		&& (entry->pciatb_entries != 0)) {
+		for (i = 0; i < entry->physical_pages; i++) {
+			if (entry->paddr_array[i] == INVALID_VESHM)
+				continue;
+			pgno = pfnum(entry->paddr_array[i], PG_2M);
+			veos_operate_pci_ns_count(pgno, 1);
+		}
+	}
+	/* Update MNSM*/
+	veos_update_mns(tsk);
 
 	if ( existing == 0 ){
 		/* related counters */
@@ -594,7 +688,7 @@ err_ret_free_pciatb:
 			IVED_TRACE(log4cat_veos_ived,"Release PCIATB [%d] %d", 
 				   i, entry->pciatb_slot[i]);
 			if (veos_delete_pciatb((uint64_t)entry->pciatb_slot[i], 
-					       (size_t)pciatb_pagesize) < 0){
+					(size_t)pciatb_pagesize) < 0){
 				IVED_ERROR(log4cat_veos_ived,
 					   "Release PCIATB failed: slot %d", 
 					   entry->pciatb_slot[i]);
@@ -660,33 +754,58 @@ conv_modeflag_prot(uint64_t mode_flag)
  * @param [in]    entries	DMAATB entries
  * @param [in]    pci_pgsize	PCIATB page size
  * @param [in]    permission	Access permission set to DMAATB
+ * @param [in]    vehva		The VEHVA that which want to be used.
+ *							If invalid value (all "f"), reserve a new VEHVA.
  *
- * @return VEHVA on success, -errno on failure
+ * @return VEHVA on success, -errno or -1 on failure
  */
 static uint64_t 
 get_dmaatb_for_attaching(int user_pid, uint64_t *target_addr, size_t entries,
-			 uint64_t pci_pgsize, int permission)
+			 uint64_t pci_pgsize, int permission, int addr_flag, uint64_t vehva)
 {
 	uint64_t attached_addr = -1;
 	uint8_t vehva_type = 0;
+	int pgmod;
 
-	/* Check address type */
-	if ( pci_pgsize == PGSIZE_64M ){
-		vehva_type = VEHVA_VESHM | VEHVA_64MB;
-	} else if ( pci_pgsize == PGSIZE_2M ){
-		vehva_type = VEHVA_VESHM | VEHVA_2MB;
-	} else {
-		IVED_DEBUG(log4cat_veos_ived, "Invalid PCI pagesize");
+	if ( target_addr == NULL ) {
+		IVED_DEBUG(log4cat_veos_ived, "Argument is NULL");
 		return (-EINVAL);
 	}
 
 	target_addr[entries-1] = (uint64_t) NULL;
 
-	attached_addr = veos_alloc_dmaatb_entry_for_aa
-		(user_pid, target_addr, permission, VE_ADDR_VHSAA, vehva_type);
+	if ( vehva != INVALID_VEHVA ) {
+		IVED_DEBUG(log4cat_veos_ived, "vehva is not invalid");
+		/* Check address type */
+		pgmod = veos_get_pgmod_by_vehva(vehva);
+		if ( pgmod == PG_HP ){
+			vehva_type = VEHVA_VESHM | VEHVA_64MB;
+		} else if ( pgmod == PG_2M ){
+			vehva_type = VEHVA_VESHM | VEHVA_2MB;
+		} else {
+			IVED_DEBUG(log4cat_veos_ived, "Invalid pagesize");
+			return (-EINVAL);
+		}
+		attached_addr = veos_alloc_dmaatb_entry_by_vehva
+			(user_pid, target_addr, permission, addr_flag, vehva_type, vehva);
+	} else {
+		/* Check address type */
+		if ( pci_pgsize == PGSIZE_64M ){
+			vehva_type = VEHVA_VESHM | VEHVA_64MB;
+		} else if ( pci_pgsize == PGSIZE_2M ){
+			vehva_type = VEHVA_VESHM | VEHVA_2MB;
+		} else {
+			IVED_DEBUG(log4cat_veos_ived, "Invalid PCI pagesize");
+			return (-EINVAL);
+		}
+		attached_addr = veos_alloc_dmaatb_entry_for_aa
+			(user_pid, target_addr, permission, addr_flag, vehva_type);
+	}
 
+	IVED_DEBUG(log4cat_veos_ived, "Get VEHVA(0x%lx) for_attaching", attached_addr);
 	return (attached_addr);
 }
+
 
 /**
  * @brief Send a cancel request of attaching.
@@ -844,6 +963,7 @@ veos_veshm_attach_mem_local(struct attaching_veshm_info *entry,
 	newent->pcisync_num     = -1;
 	newent->mode_flag       = req_mode_flag & 
 		(VESHM_MODE_SYNC | VESHM_MODE_PCIATB | VESHM_MODE_RO) ;
+	newent->req_mode_flag   = req_mode_flag;
 	newent->vemva		= -1;
 	newent->ref_cnt_vemva   = 0;
 	newent->vehva		= -1;
@@ -882,6 +1002,8 @@ err_ret:
  *
  * @param [in]    request_attach Request data
  * @param [in]    reply		 Reply message (Initialized)
+ * @param [in]    vehva		 The VEHVA that which want to be used.
+ *							 If invalid value (all "f"), reserve a new VEHVA.
  *
  * @return 0 on succes, Not 0 and set errno on failure
  * @retval IVED_REQ_OK    Succeeded the request
@@ -889,7 +1011,8 @@ err_ret:
  * @retval IVED_FUNC_ERR  Failed in this function
  */
 int 
-veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
+veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply,
+		uint64_t req_vehva)
 {
 	int ret = 0;
 	struct attaching_veshm_info *ret_entry;
@@ -920,6 +1043,11 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 	int veshm_paddr_chk_err  = 0;   /* 1: Paddr check is failed 
 					   or paddr is changed */
 	int user_ived_locked = 0;	/* 1: Acquired user ived_resource_lock */
+
+	int i = 0;
+	int addr_flag = VE_ADDR_VHSAA;
+	uint64_t *target_addr_dummy = NULL;
+	int no_owner_info = 0;
 
 	RpcVeshmArg request = RPC_VESHM_ARG__INIT;
 	IvedReturn *ret_ived=NULL;
@@ -961,7 +1089,8 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 	if ( isset_flag(stat_check_val,
 			~(VE_MEM_LOCAL | VE_PCISYNC | VE_SHM_RO 
 			  | VE_REGISTER_NONE  | VE_REGISTER_PCI 
-			  | VE_REGISTER_VEMVA | VE_REGISTER_VEHVA))){
+			  | VE_REGISTER_VEMVA | VE_REGISTER_VEHVA
+			  | VE_SWAPPABLE))){
 		IVED_DEBUG(log4cat_veos_ived, 
 			   "VESHM attaching: Invalid flags");
 		goto err_ret_invalid_arg;
@@ -978,6 +1107,14 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 	if (ret != 1){
 		IVED_DEBUG(log4cat_veos_ived, 
 			   "VESHM attaching: Invalid flags");
+		goto err_ret_invalid_arg;
+	}
+
+	/* If VE_SWAPPABLE is specified. VE_REGISTER_PCI must be specified.*/
+	if ( isset_flag(stat_check_val, VE_SWAPPABLE)
+		&& !(isset_flag(stat_check_val, VE_REGISTER_PCI)) ){
+		IVED_DEBUG(log4cat_veos_ived,
+			"VESHM registration: Invalid flags");
 		goto err_ret_invalid_arg;
 	}
 
@@ -1128,7 +1265,7 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 		entry = pickup_attaching_veshm(user_ived_resource, 
 					       req_owner_pid, 
 					       req_owner_vemva, req_size,
-					       req_syncnum, req_mode_flag);
+					       req_syncnum, req_mode_flag, req_vehva);
 
 		ret_entry = veos_veshm_attach_mem_local
 			(entry, reply, req_user_pid, req_owner_pid,
@@ -1153,6 +1290,18 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 		/* Not reach here */
 	}
 
+	/*
+	 * If VESHM_MODE_INVALID is set and requested by PPS,
+	 * it is considered that there is no owner information.
+	 */
+	if ((isset_flag(req_mode_flag, VESHM_MODE_INVALID))
+		&& (isset_flag(stat_check_val, VE_SWAPPABLE))
+		&& (isset_flag(req_mode_flag, VE_REQ_PPS))) {
+			IVED_DEBUG(log4cat_veos_ived,
+				"VESHM_MODE_INVALID is set and requested by PPS");
+		no_owner_info = 1;
+	}
+
 	/* Send an attach request to IVED (For VE_REGISTER_*) */
 
 	/* Ask an address, a node of the target VESHM, 
@@ -1172,36 +1321,52 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 	user_ived_locked = 0;
 	pthread_rwlock_unlock(&user_ived_resource->ived_resource_lock);
 
-	/* Create socket to IVED */
-	ived_req_sock = ived_create_soc(ived_sock_file);
-	if (ived_req_sock < 0) {
-		IVED_ERROR(log4cat_veos_ived, 
-			   "Fail to create socket with IVED.");
-		reply->error = -ECANCELED;
-		goto err_ret;
+	if (!no_owner_info) {
+		/* Create socket to IVED */
+		ived_req_sock = ived_create_soc(ived_sock_file);
+		if (ived_req_sock < 0) {
+			IVED_ERROR(log4cat_veos_ived,
+				   "Fail to create socket with IVED.");
+			reply->error = -ECANCELED;
+			goto err_ret;
+		}
+		ret = ived_exchange_veshm_msg(ived_req_sock,
+					      &request, &ret_ived);
+		/* Even if ived_exchange_veshm_msg failed, this function doesn't
+		 * send a cancel request. If an attching request in IVED succeeded,
+		 * the data will be delete when a process terminates. */
+		if (ret != 0){
+			IVED_ERROR(log4cat_veos_ived,
+				"IPC (VESHM attach) failed in VEOS (%d)", ret);
+			reply->error = -ECANCELED;
+			goto err_ret;
+		}
+		if (ret_ived->retval == IVED_REQ_NG){
+			reply->error = ret_ived->error;
+			if (ret_ived->error == -ECANCELED)
+				IVED_ERROR(log4cat_veos_ived,
+					"IPC (VESHM attach) failed. err:%d", -(reply->error));
+			else
+				IVED_DEBUG(log4cat_veos_ived,
+					"IPC (VESHM attach) failed. err:%d", -(reply->error));
+			/* If the owner information does not exist in IVED,
+			 * ved->error is -EINVAL
+			 * If the owner pid does not exist,
+			 * ved->error is -ESRCH
+			 */
+			if (((ret_ived->error == -EINVAL) || (ret_ived->error == -ESRCH)
+				|| (isset_flag(req_mode_flag, VESHM_MODE_INVALID)))
+				&& (isset_flag(stat_check_val, VE_SWAPPABLE))
+				&& (isset_flag(req_mode_flag, VE_REQ_PPS))) {
+				IVED_DEBUG(log4cat_veos_ived,
+					"owner information does not exist in IVED");
+				no_owner_info = 1;
+			}
+			if (!no_owner_info)
+				goto err_ret;
+		}
 	}
-	ret = ived_exchange_veshm_msg(ived_req_sock, 
-				      &request, &ret_ived);
-	/* Even if ived_exchange_veshm_msg failed, this function doesn't 
-	 * send a cancel request. If an attching request in IVED succeeded,
-	 * the data will be delete when a process terminates. */
-	if (ret != 0){
-		IVED_ERROR(log4cat_veos_ived, "IPC (VESHM attach) failed in VEOS (%d)",
-			   ret);
-		reply->error = -ECANCELED;
-		goto err_ret;
-	}
-	if (ret_ived->retval == IVED_REQ_NG){
-		reply->error = ret_ived->error;
-		if (ret_ived->error == -ECANCELED)
-			IVED_ERROR(log4cat_veos_ived, "IPC (VESHM attach) failed. err:%d", 
-				   -(reply->error));
-		else
-			IVED_DEBUG(log4cat_veos_ived, "IPC (VESHM attach) failed. err:%d", 
-				   -(reply->error));
-		goto err_ret;
-	}
-	if (ret_ived->veshm_ret == NULL){
+	if ((!no_owner_info) && (ret_ived->veshm_ret == NULL)) {
 		IVED_CRIT(log4cat_veos_ived, 
 			  "IPC (VESHM attach) is corrupted.");
 		assert(ret_ived->veshm_ret != NULL);
@@ -1209,23 +1374,52 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 		goto err_ret_cancel_req;
 	}
 
+	if (!no_owner_info) {
+		/* Store uuid_veshm, uuid_proc of owner */
+		uuid_copy(received_uuid_veshm,
+			  ret_ived->veshm_ret->uuid_veshm.data);
+		uuid_copy(received_uuid_proc,
+			  ret_ived->veshm_ret->uuid_proc.data);
+		dump_uuid("attach proc", received_uuid_proc);
+		dump_uuid("attach veshm", received_uuid_veshm);
 
-	/* Store uuid_veshm, uuid_proc of owner */
-	uuid_copy(received_uuid_veshm, 
-		  ret_ived->veshm_ret->uuid_veshm.data);
-	uuid_copy(received_uuid_proc, 
-		  ret_ived->veshm_ret->uuid_proc.data);
-	dump_uuid("attach proc", received_uuid_proc);
-	dump_uuid("attach veshm", received_uuid_veshm);
+		/* If a target VESHM exists on a remote node,
+		 * members (address and pagesize) hold VHSAA
+		 * and its page size.
+		 * If a target VESHM exists on a local node,
+		 * pci_address is NULL, n_pci_address is 0, pagesize is -1. */
+		target_addr = ret_ived->veshm_ret->pci_address;
+		n_pci_address = ret_ived->veshm_ret->n_pci_address;
+		pgsize = ret_ived->veshm_ret->pagesize;
+	} else {
+		/* Generate unique id to create a new attaching info for
+		 * invalid addresses */
+		uuid_generate(received_uuid_veshm);
+		uuid_generate(received_uuid_proc);
+		/* (request_attach->size - 1)/pgsz +1 = number of pages = PCIATB slots,
+		 * ret_ived->veshm_ret->n_pci_address = owner entry->pciatb_entries,
+		 * owner entry->pciatb_entries =  PCIATB slots + 1,
+		 * So, it needs +2
+		 */
+		n_pci_address =
+			(request_attach->size - 1)
+			/ pgmod_to_pgsz(veos_get_pgmod_by_vehva(req_vehva)) + 2;
+		target_addr_dummy = (uint64_t *)malloc
+			(sizeof(uint64_t) * n_pci_address);
+		for (i = 0; i < n_pci_address; i++) {
+			target_addr_dummy[i] = INVALID_PCI_ADDR;
+		}
+		target_addr = target_addr_dummy;
+		/* Set the flag that owner information does not exist in IVED */
+		set_flag(req_mode_flag, VE_REQ_NON_OWNER_INFO);
+	}
 
-	/* If a target VESHM exists on a remote node, 
-	 * members (address and pagesize) hold VHSAA 
-	 * and its page size. 
-	 * If a target VESHM exists on a local node,
-	 * pci_address is NULL, n_pci_address is 0, pagesize is -1. */
-	target_addr = ret_ived->veshm_ret->pci_address;
-	n_pci_address = ret_ived->veshm_ret->n_pci_address; 
-	pgsize = ret_ived->veshm_ret->pagesize;
+	for (i = 0; i < n_pci_address-1; i++) {
+		if (target_addr[i] == INVALID_PCI_ADDR) {
+			addr_flag = VE_ADDR_VERAA;
+			break;
+		}
+	}
 
 	/* ------------ requested to IVED ---------------- */
 
@@ -1266,7 +1460,8 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 		if (veshm_entry == NULL){
 			IVED_DEBUG(log4cat_veos_ived, 
 				   "Target VESHM is not found");
-			veshm_paddr_chk_err = 1;
+			if (!isset_flag(req_mode_flag, VE_REQ_PPS))
+				veshm_paddr_chk_err = 1;
 		} else {
 			dump_uuid("VESHM paddr check: veshm", 
 				  veshm_entry->uuid_veshm);
@@ -1294,12 +1489,12 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 	 * in this process. */
 	entry = pickup_attaching_veshm(user_ived_resource, req_owner_pid, 
 				       req_owner_vemva, req_size,
-				       req_syncnum, req_mode_flag);
+				       req_syncnum, req_mode_flag, req_vehva);
 
 	/* Check VESHM renewal by uuid */
 	if (entry != NULL){
-		if (uuid_compare(entry->uuid_veshm, received_uuid_veshm)
-		    == 0){
+		if ((uuid_compare(entry->uuid_veshm, received_uuid_veshm)
+		    == 0) || (no_owner_info)) {
 			/* VESHM is not renewal */
 			renewed_veshm = 0;
 		} else {
@@ -1400,8 +1595,9 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 		newent->target_vemva	= req_owner_vemva;
 		newent->size		= req_size;
 		newent->pcisync_num     = req_syncnum;
-		newent->mode_flag       = req_mode_flag & 
-			(VESHM_MODE_SYNC | VESHM_MODE_PCIATB | VESHM_MODE_RO) ;
+		newent->req_mode_flag   = req_mode_flag;
+		newent->mode_flag       = req_mode_flag &
+			(VESHM_MODE_SYNC | VESHM_MODE_PCIATB | VESHM_MODE_RO);
 		newent->vemva		= -1;
 		newent->ref_cnt_vemva   = 0;
 		newent->vehva		= -1;
@@ -1425,14 +1621,24 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 		 * when VE_REGISTER_VEHVA is specified.
 		 */
 		/* Create DMAATB image and update */
+		if ( isset_flag(req_mode_flag, VE_REQ_PPS) ) {
+			IVED_DEBUG(log4cat_veos_ived, "Re-attach from PPS, VEHVA is 0x%lx",
+				req_vehva);
+		}
+
 		attached_addr = get_dmaatb_for_attaching
-				(req_user_pid, target_addr, n_pci_address,
-				 pgsize, perm);
+			(req_user_pid, target_addr, n_pci_address,
+			 pgsize, perm, addr_flag, req_vehva);
 		if (attached_addr < 0){
-			IVED_ERROR(log4cat_veos_ived, 
+			IVED_ERROR(log4cat_veos_ived,
 					   "VEHVA allocation failed");
 			reply->error = -ENOMEM;
 			goto err_ret_free_info;
+		}
+		if (isset_flag(req_mode_flag, VE_REQ_PPS) &&
+			(attached_addr != req_vehva)) {
+			veos_abort("VEHVA before swap-out:0x%lx, VEHVA after swap-in:0x%lx",
+				req_vehva, attached_addr);
 		}
 		entry->ref_cnt_vehva++; /* = 1 */
 		entry->vehva = attached_addr;
@@ -1458,11 +1664,12 @@ veos_veshm_attach_common(RpcVeshmSubAttach *request_attach, IvedReturn *reply)
 	/* attach_veshm_num is equal to the number of linked 
 	 * attaching_veshm_info data. */
 	user_ived_resource->attach_veshm_num++;
+	IVED_DEBUG(log4cat_veos_ived, "Add info to attaching list");
 	list_add(&entry->list, &user_ived_resource->attach_veshm_list);
 
 ret_success_mem_local:
 	dump_attach_veshm(entry);
-	IVED_TRACE(log4cat_veos_ived, "Add a data to the attaching list.");
+	IVED_TRACE(log4cat_veos_ived, "Added a data to the attaching list.");
 
 ret_existing:
 	reply->retval = IVED_REQ_OK;
@@ -1487,6 +1694,9 @@ ret_existing:
 	if (owner_tsk != NULL)
 		put_ve_task_struct(owner_tsk);
 	put_ve_task_struct(user_tsk);
+	if (target_addr_dummy != NULL)
+		free(target_addr_dummy);
+
 	IVED_DEBUG(log4cat_veos_ived, "rpc_ret:%"PRId64", rpc_err:%d", 
 		   reply->retval, reply->error);
 	return(IVED_REQ_OK); 
@@ -1497,6 +1707,8 @@ err_ret_free_info:
 	/* Don't use entry for check instead of newent */
 	if (newent != NULL)
 		free(newent);
+	if (target_addr_dummy != NULL)
+		free(target_addr_dummy);
 
 err_ret_cancel_req:
 	/* NOTE: For err_ret_cancel_req, need entry and renewed_veshm */
@@ -1627,6 +1839,7 @@ veos_veshm_detach_common(RpcVeshmSubDetach *request_detach, IvedReturn *reply)
 {
 	int ret = 0;
 	uint64_t req_mode_flag = 0;
+	uint64_t attaching_req_mode_flag = 0;
 	struct ve_task_struct *user_tsk = NULL;
 	struct ived_shared_resource_data *user_ived_resource = NULL;
 	struct attaching_veshm_info *attaching_info = NULL;
@@ -1709,6 +1922,8 @@ veos_veshm_detach_common(RpcVeshmSubDetach *request_detach, IvedReturn *reply)
 		goto err_ret_put_task;
 	}
 
+	attaching_req_mode_flag = attaching_info->req_mode_flag;
+
 	veshm_size = attaching_info->size;
 
 	dump_uuid("Detach veshm", attaching_info->uuid_veshm);
@@ -1723,9 +1938,9 @@ veos_veshm_detach_common(RpcVeshmSubDetach *request_detach, IvedReturn *reply)
 				  "Fix reference count (VEHVA) to 1");
 		}
 
+		IVED_DEBUG(log4cat_veos_ived, "VEHVA reference cnt: %d",
+			attaching_info->ref_cnt_vehva);
 		if (attaching_info->ref_cnt_vehva > 1){
-			IVED_DEBUG(log4cat_veos_ived, "VEHVA reference cnt: %d",
-				   attaching_info->ref_cnt_vehva);
 			attaching_info->ref_cnt_vehva--;
 			pthread_rwlock_unlock
 				(&user_ived_resource->ived_resource_lock);
@@ -1734,11 +1949,11 @@ veos_veshm_detach_common(RpcVeshmSubDetach *request_detach, IvedReturn *reply)
 			IVED_DEBUG(log4cat_veos_ived, "Free VEHVA");
 
 			ret = veos_free_dmaatb_entry(request_detach->user_pid,
-						     attaching_info->vehva,
-						     attaching_info->size);
+					     attaching_info->vehva,
+					     attaching_info->size);
 			if (ret != 0){
 				reply->error  = -ECANCELED;
-				IVED_ERROR(log4cat_veos_ived, 
+				IVED_ERROR(log4cat_veos_ived,
 					   "Releasing VEHVA failed");
 			}
 			attaching_info->vehva = UNUSED;
@@ -1795,18 +2010,24 @@ veos_veshm_detach_common(RpcVeshmSubDetach *request_detach, IvedReturn *reply)
 			/* If this request is the last one for the VESHM area,
 			 * a data in IVED should be released. */
 
-			ret = veos_veshm_detach_ipc(detach_uuid_proc, 
-						    detach_uuid_veshm,
-						    request_detach, reply);
+			if ( ! isset_flag(attaching_req_mode_flag,
+				VE_REQ_NON_OWNER_INFO)) {
+				IVED_DEBUG(log4cat_veos_ived,
+					"Release a data in IVED");
+				ret = veos_veshm_detach_ipc(detach_uuid_proc,
+							    detach_uuid_veshm,
+							    request_detach, reply);
 
-			if (ret == IVED_RPC_ERR ){
-				reply->error = -ECANCELED;
-				goto err_ret_ipc_failed;
+				if (ret == IVED_RPC_ERR ){
+					reply->error = -ECANCELED;
+					IVED_DEBUG(log4cat_veos_ived, "reply->error = -ECANCELED");
+					goto err_ret_ipc_failed;
 
-			} else if ((ret == IVED_RPC_ERR_SEND)
-				   || (ret == IVED_RPC_ERR_RECV)){
-				IVED_WARN(log4cat_veos_ived, 
-					  "Sending a request to IVED failed.");
+				} else if ((ret == IVED_RPC_ERR_SEND)
+					   || (ret == IVED_RPC_ERR_RECV)){
+					IVED_WARN(log4cat_veos_ived,
+						  "Sending a request to IVED failed.");
+				}
 			}
 
 			/* Even if a request failed, this function 
@@ -2011,6 +2232,7 @@ veos_veshm_close_common(RpcVeshmSubClose *request_close, IvedReturn *reply,
 
 	int64_t pciatb_pagesize;
 	uuid_t req_uuid_veshm;
+	pgno_t pgno;
 
 	IVED_TRACE(log4cat_veos_ived, "PASS");
 
@@ -2177,6 +2399,12 @@ veos_veshm_close_common(RpcVeshmSubClose *request_close, IvedReturn *reply,
 
 	dump_own_veshm(entry);
 
+	if (isset_flag(request_close->mode_flag, VE_SWAPPABLE)
+		&& (entry->register_cnt_proc_swappable == 0)) {
+		reply->error  = -EINVAL;
+		goto err_ret;
+	}
+
 	ret = veos_veshm_close_ipc(entry, request_close, reply);
 	if (ret < 0){
 		if (ret == IVED_RPC_ERR_RECV){
@@ -2192,8 +2420,23 @@ veos_veshm_close_common(RpcVeshmSubClose *request_close, IvedReturn *reply,
 				  "A memory used for specified VESHM is not released.");
 		}
 		goto err_ret;
-	} 
+	}
+ 
+	if ((reply->retval >= 0) && (entry->pciatb_entries != 0)){
+		if (!isset_flag(request_close->mode_flag, VE_SWAPPABLE)) {
+			for (i = 0; i < entry->physical_pages; i++) {
+				if (entry->paddr_array[i] == INVALID_VESHM)
+					continue;
+				pgno = pfnum(entry->paddr_array[i], PG_2M);
+				veos_operate_pci_ns_count(pgno, -1);
+			}
+		}
+	}
 
+	if ((reply->retval >= 0)
+		&& (isset_flag(request_close->mode_flag, VE_SWAPPABLE))) {
+		entry->register_cnt_proc_swappable--;
+	}
 	if (reply->retval == 0){
 		/* = sum of registration counters */
 
@@ -2208,12 +2451,18 @@ veos_veshm_close_common(RpcVeshmSubClose *request_close, IvedReturn *reply,
 
 			for (i=0; i < entry->pciatb_entries-1 ; i++){
 				ret = veos_delete_pciatb
-					(entry->pciatb_slot[i], 
+					(entry->pciatb_slot[i],
 					 pciatb_pagesize);
 				if (ret != 0){
+					if (ret == -EBUSY) {
+						reply->error = -NO_PPS_BUFF;
+						reply->retval = IVED_REQ_NG;
+						IVED_ERROR(log4cat_veos_ived, "No enough PPS buffer");
+						goto err_ret_nolock;
+					}
 					IVED_ERROR(log4cat_veos_ived, 
-						   "Releasing PCI adress failed. (slot:%d)",
-						   entry->pciatb_slot[i]);
+							"Releasing PCI adress failed. (slot:%d)",
+							entry->pciatb_slot[i]);
 				}
 			}
 			veos_sync_r_bar2();
@@ -2246,7 +2495,6 @@ veos_veshm_close_common(RpcVeshmSubClose *request_close, IvedReturn *reply,
 
 	if (tsk != NULL && terminating_tsk == NULL)
 		put_ve_task_struct(tsk);
-
 
 	IVED_DEBUG(log4cat_veos_ived, "VESHM close: Sum of references = %d", 
 		   (int)reply->retval);
@@ -2282,7 +2530,7 @@ err_ret_nolock:
  * @return 0 on succes, Not 0 and set errno on failure
  */
 int
-veos_veshm_erase_area(size_t n_pci_address, uint64_t *pci_address)
+veos_veshm_erase_area(size_t n_pci_address, uint64_t *pci_address, uint64_t mode_flg)
 {
 	int i;
 	int ret = 0;
@@ -2300,6 +2548,7 @@ veos_veshm_erase_area(size_t n_pci_address, uint64_t *pci_address)
 		IVED_CRIT(log4cat_veos_ived, "Current node data is invalid.");
 		goto err_ret;
 	}
+
 	pciatb_pagesize = (int64_t)ived_pci_pgsize_flag2byte
 		(current_node->pciattr);
 	pciatb_pg_shift = (current_node->pciattr == PGMODE_FLAG_64M) ?
@@ -2310,6 +2559,9 @@ veos_veshm_erase_area(size_t n_pci_address, uint64_t *pci_address)
 	veos_sync_r_bar01_bar3();
 	for (i=0; i < n_pci_address-1 ; i++){
 		/* The last value of pci_address[] is -1. */
+
+		if (pci_address[i] == INVALID_PCI_ADDR)
+			continue;
 
 		pciatb_slot = ((int64_t)pci_address[i] - bar01_addr)
 			>> pciatb_pg_shift;
@@ -2327,6 +2579,7 @@ veos_veshm_erase_area(size_t n_pci_address, uint64_t *pci_address)
 	veos_sync_r_bar2();
 
 	IVED_DEBUG(log4cat_veos_ived, "Erasing VESHM succeeded.");
+
 	return(IVED_REQ_OK); 
 
 err_ret:
@@ -2334,3 +2587,4 @@ err_ret:
 	return (ERR_RET);
 
 }
+

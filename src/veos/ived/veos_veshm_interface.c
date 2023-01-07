@@ -57,6 +57,7 @@
 #define REPLY_NG	-ECANCELED
 
 #define LOCK_TIMEOUT 10      /* seconds */
+#define INVALID_VEHVA	0xFFFFFFFFFFFFFFFFll
 
 /**
  * @brief VESHM open for VE program
@@ -73,6 +74,8 @@ veos_veshm_open(veos_thread_arg_t *pti, struct veshm_args *subcmd,
 {
 	int ret = -1;
 	int rpc_retval = -ECANCELED;
+	int open_2_steps = 0;
+	uint64_t mode_flag_ro = 0;
 
 	RpcVeshmSubOpen request_open = RPC_VESHM_SUB_OPEN__INIT;
 
@@ -102,17 +105,43 @@ veos_veshm_open(veos_thread_arg_t *pti, struct veshm_args *subcmd,
 		rpc_retval = -EINVAL;
 		goto err_ret;
 	}
+
+	/* For MPI, when mode_flag is VE_REGISTER_PCI | VE_SWAPPABLE,
+	 * set open_2_steps = 1, invoke veos_veshm_open_common() 2 times,
+	 * 1st, with VE_REGISTER_PCI | VE_SWAPPABLE,
+	 * 2nd, with VE_REGISTER_NONE
+	 */
+	if (isset_flag(request_open.mode_flag, VE_REGISTER_PCI)
+		&& isset_flag(request_open.mode_flag, VE_SWAPPABLE)) {
+		open_2_steps = 1;
+
+		if (isset_flag(request_open.mode_flag, VE_SHM_RO))
+			mode_flag_ro = mode_flag_ro | VE_SHM_RO;
+	}
+
 	set_flag(request_open.mode_flag, VE_REQ_PROC);
 
 	reply.veshm_ret = &veshm_ret;
 
-	ret = veos_veshm_open_common(&request_open, &reply);
+	ret = veos_veshm_open_common(&request_open, &reply, 0);
 	if (ret != 0){
 		/* Function failed or IVED returns an error. */
 		rpc_retval = reply.error;
 		ret = -1;
 	} else {
 		rpc_retval = reply.retval;
+	}
+
+	if((ret == 0) && (open_2_steps == 1)) {
+		request_open.mode_flag = mode_flag_ro | VE_REGISTER_NONE | VE_REQ_PROC;
+		ret = veos_veshm_open_common(&request_open, &reply, 0);
+		if (ret != 0){
+			/* Function failed or IVED returns an error. */
+			rpc_retval = reply.error;
+			ret = -1;
+		} else {
+			rpc_retval = reply.retval;
+		}
 	}
 
 err_ret:
@@ -187,7 +216,7 @@ veshm_open_internal(int uid, int pid, uint64_t vemva, uint64_t size,
 
 	reply.veshm_ret = &veshm_ret;
 
-	ret = veos_veshm_open_common(&request_open, &reply);
+	ret = veos_veshm_open_common(&request_open, &reply, 0);
 
 	if (ret != 0){
 		errno = -reply.error;
@@ -219,6 +248,7 @@ veos_veshm_attach(veos_thread_arg_t *pti, struct veshm_args *subcmd,
 {
 	int ret;
 	uint64_t rpc_retval = -ECANCELED;
+	uint64_t mode_flag_ro = 0;
 
 	/* To IVED */
 	RpcVeshmSubAttach request_attach = RPC_VESHM_SUB_ATTACH__INIT;
@@ -263,6 +293,21 @@ veos_veshm_attach(veos_thread_arg_t *pti, struct veshm_args *subcmd,
 		rpc_retval = -EINVAL;
 		goto err_ret;
 	}
+
+	/* For MPI, when mode_flag is
+	 * VE_REGISTER_PCI | VE_SWAPPABLE | VE_REGISTER_VEMVA
+	 * change mode_flag to VE_REGISTER_NONE | VE_REGISTER_VEMVA
+	 */
+	if (isset_flag(request_attach.mode_flag, VE_REGISTER_PCI)
+			&& isset_flag(request_attach.mode_flag, VE_SWAPPABLE)
+			&& isset_flag(request_attach.mode_flag, VE_REGISTER_VEMVA)) {
+		if (isset_flag(request_attach.mode_flag, VE_SHM_RO))
+			mode_flag_ro = mode_flag_ro | VE_SHM_RO;
+
+		request_attach.mode_flag = mode_flag_ro
+			| VE_REGISTER_NONE | VE_REGISTER_VEMVA;
+	}
+
 	set_flag(request_attach.mode_flag, VE_REQ_PROC);
 
 	reply.veshm_ret = &veshm_ret;
@@ -272,7 +317,7 @@ veos_veshm_attach(veos_thread_arg_t *pti, struct veshm_args *subcmd,
 		   subcmd->arg.args_veshm_sub_attach.owner_pid,
 		   request_attach.owner_pid);
 
-	ret = veos_veshm_attach_common(&request_attach, &reply);
+	ret = veos_veshm_attach_common(&request_attach, &reply, INVALID_VEHVA);
 	if (ret != 0){
 		/* Function failed or IVED returns an error. */
 		rpc_retval = (uint64_t)reply.error;
@@ -375,7 +420,11 @@ veos_veshm_close(veos_thread_arg_t *pti, struct veshm_args *subcmd,
 {
 	int ret = -1;
 	int rpc_retval = -ECANCELED;
+	int ret_2 = -1;
+	int rpc_retval_2 = -ECANCELED;
 	ProtobufCBinaryData uuid_data1;
+	int close_2_steps = 0;
+	uint64_t mode_flag_ro = 0;
 
 	RpcVeshmSubClose request_close = RPC_VESHM_SUB_CLOSE__INIT;
 	IvedReturn reply = IVED_RETURN__INIT;
@@ -408,9 +457,29 @@ veos_veshm_close(veos_thread_arg_t *pti, struct veshm_args *subcmd,
 	}
 	if ( isset_flag(request_close.mode_flag,
 			~(VE_SHM_RO | VE_PCISYNC 
-			  | VE_REGISTER_PCI | VE_REGISTER_NONE))){
+			  | VE_REGISTER_PCI | VE_REGISTER_NONE | VE_SWAPPABLE))){
 		rpc_retval = -EINVAL;
 		goto err_ret;
+	}
+
+	/* If VE_SWAPPABLE is specified. VE_REGISTER_PCI must be specified.*/
+	if ( isset_flag(request_close.mode_flag, VE_SWAPPABLE)
+		&& !(isset_flag(request_close.mode_flag, VE_REGISTER_PCI)) ){
+		rpc_retval = -EINVAL;
+		goto err_ret;
+	}
+
+	/* For MPI, when mode_flag is VE_REGISTER_PCI | VE_SWAPPABLE,
+	 * set close_2_steps = 1, invoke veos_veshm_close_common() 2 times,
+	 * 1st, with VE_REGISTER_PCI | VE_SWAPPABLE,
+	 * 2nd, with VE_REGISTER_NONE
+	 */
+	if (isset_flag(request_close.mode_flag, VE_SWAPPABLE)
+		&& (isset_flag(request_close.mode_flag, VE_REGISTER_PCI)) ){
+		close_2_steps = 1;
+
+		if (isset_flag(request_close.mode_flag, VE_SHM_RO))
+			mode_flag_ro = mode_flag_ro | VE_SHM_RO;
 	}
 
 	set_flag(request_close.mode_flag, VE_REQ_PROC);
@@ -428,6 +497,22 @@ veos_veshm_close(veos_thread_arg_t *pti, struct veshm_args *subcmd,
 		rpc_retval = 0;
 	}
 
+	if (close_2_steps == 1) {
+		request_close.has_uuid_veshm  = 1;
+		request_close.uuid_veshm      = uuid_data1;
+		request_close.mode_flag = mode_flag_ro | VE_REGISTER_NONE | VE_REQ_PROC;
+		ret_2 = veos_veshm_close_common(&request_close, &reply, NULL, NULL);
+		if (ret_2 != 0){
+			rpc_retval_2 = reply.error;
+			ret_2 = -1;
+			if (ret == 0){
+				ret = ret_2;
+				rpc_retval = rpc_retval_2;
+			}
+		} else {
+			rpc_retval_2 = 0;
+		}
+	}
 err_ret:
 	if (pti != NULL)
 		veos_ived_reply(rpc_retval, NULL, pti);

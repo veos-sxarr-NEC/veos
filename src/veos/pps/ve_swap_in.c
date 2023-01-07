@@ -28,6 +28,11 @@
 #include <sys/mman.h>
 #include <log4c.h>
 #include <pthread.h>
+
+#include "ived_ipc.h"
+#include "ived.pb-c.h"
+#include "veos_veshm_ipc.h"
+
 #include "velayout.h"
 #include "ve_swap.h"
 #include "ve_list.h"
@@ -41,6 +46,9 @@
 #include "buddy.h"
 #include "dma.h"
 #include "ve_shm.h"
+#include "veos_veshm_core.h"
+#include "ived_common.h"
+#include "vehva_mgmt.h"
 
 extern void dump_process_atb(struct ve_task_struct *);
 
@@ -274,8 +282,12 @@ veos_restore_registered_memory(struct ve_task_struct *group_leader,
 		if (offset != -1) {
  			PPS_DEBUG(cat_os_pps, "swap in from file, offset is %ld",
 									offset);
+			pthread_mutex_lock_unlock(&vnode->pps_file_buffer_lock, LOCK,
+					"Fail to acquire pps file buffer lock");
 			retval = veos_pps_do_restore_file_content(page_start,
 				pgsz, vnode->pps_file_transfer_buffer, offset);
+			pthread_mutex_lock_unlock(&vnode->pps_file_buffer_lock, UNLOCK,
+					"Fail to release pps file buffer lock");
 		} else {
 			PPS_DEBUG(cat_os_pps, "swap in from PPS buffer");
 			retval = veos_pps_do_restore_memory_content(page_start,
@@ -312,7 +324,12 @@ veos_restore_registered_memory(struct ve_task_struct *group_leader,
 		is_new_mem_alloc = true;
 	}
 	/* Increment ref_cnt of VE page */
-	__sync_fetch_and_add(&vnode->ve_pages[pno]->ref_count, 1);
+	if (VE_PAGE(vnode, pno)->swapped_info->remained_page_ref_count > 0) {
+		PPS_DEBUG(cat_os_pps, "Not increment ref_count");
+		VE_PAGE(vnode, pno)->swapped_info->remained_page_ref_count--;
+	} else{
+		__sync_fetch_and_add(&vnode->ve_pages[pno]->ref_count, 1);
+	}
 	VE_PAGE(vnode, pno)->swapped_info->ref_cnt--;
 	if (VE_PAGE(vnode, pno)->swapped_info->ref_cnt == 0) {
 		free(VE_PAGE(vnode, pno)->swapped_info);
@@ -435,7 +452,7 @@ cleanup_allocate_dirs(uint64_t new_allocate_dirs)
 		pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, LOCK,
 					"Failed to acquire node dmaatb lock");
 		ps_clrdir(&(vnode->dmaatb.dir[dir]));
-		ps_invalid(&(vnode->dmaatb.dir[dir]));;
+		ps_invalid(&(vnode->dmaatb.dir[dir]));
 		for (ent = 0; ent < DMAATB_ENTRY_MAX_SIZE; ent++) {
 			pg_unsetro(&(vnode->dmaatb.entry[dir][ent]));
 			pg_unsetido(&(vnode->dmaatb.entry[dir][ent]));
@@ -756,6 +773,398 @@ hndl_return:
 }
 
 /**
+ * @brief Return page mode from VEHVA.
+ *
+ * @param[in] vehva Adress of VEHVA
+ *
+ * @retval pgmod on success
+ * @retval -EINVAL on Failure
+ * */
+int
+veos_get_pgmod_by_vehva(uint64_t vehva)
+{
+	int pgmod = 0;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	if ((vehva >= VEHVA_4K_START) &&
+			(vehva <= VEHVA_4K_END)) {
+		PPS_DEBUG(cat_os_pps, "VEHVA_4K Region");
+		pgmod = PG_4K;
+	} else if ((vehva >= VEHVA_2M_START) &&
+			(vehva <= VEHVA_2M_END)) {
+		PPS_DEBUG(cat_os_pps, "VEHVA_2M Region");
+		pgmod = PG_2M;
+	} else if ((vehva >= VEHVA_64M_START) &&
+			(vehva <= VEHVA_64M_END)) {
+		PPS_DEBUG(cat_os_pps, "VEHVA_64M Region");
+		pgmod = PG_HP;
+	} else {
+		pgmod = -EINVAL;
+		PPS_DEBUG(cat_os_pps, "Inval Region");
+	}
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return pgmod;
+}
+
+/**
+ * @brief Re-open VESHM.
+ *
+ * @param[in] tsk ve_task_struct of Swapping-in process
+ *
+ * @retval 0 on success
+ * @retval -1 on Failure.
+ * @retval -PPS_INTER_TERM on Process termination or VEOS termination Interrupt,
+ * */
+static int
+veos_swap_in_open_veshm(struct ve_task_struct *tsk)
+{
+	struct ived_shared_resource_data *resource;
+	struct owned_veshm_info *entry_copy = NULL;
+	struct list_head *list_p, *list_n;
+	int vemva_pg_mode = 0;
+	int retval = -1;
+	int ret = -1;
+	int i;
+	int failed = 0;
+
+	RpcVeshmSubOpen request_open = RPC_VESHM_SUB_OPEN__INIT;
+
+	IvedReturn reply = IVED_RETURN__INIT;
+	RpcVeshmReturn veshm_ret = RPC_VESHM_RETURN__INIT;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	if (tsk == NULL){
+		PPS_ERROR(cat_os_pps, "Argument is NULL");
+		goto hndl_return;
+	}
+
+	resource = tsk->ived_resource;
+	pthread_rwlock_wrlock(&resource->ived_resource_lock);
+	list_p = resource->swapped_owned_veshm_list.next;
+	/* Loop swapped VESHM owned information*/
+	list_for_each_safe(list_p, list_n, &resource->swapped_owned_veshm_list) {
+		/* Check veos and process */
+		if (is_process_veos_terminate(tsk->group_leader, "Swap-in")) {
+			retval = -PPS_INTER_TERM;
+			pthread_rwlock_unlock(&resource->ived_resource_lock);
+			goto hndl_return;
+		}
+
+		/* Get owned VESHM information */
+		entry_copy = list_entry(list_p, struct owned_veshm_info, list);
+
+		if (isset_flag(entry_copy->status_flag, VESHM_MODE_INVALID)) {
+			PPS_DEBUG(cat_os_pps, " VESHM_MODE_INVALID is set, skip it");
+			list_del(list_p);
+			free(entry_copy);
+			continue;
+		}
+
+		/* Make an open request */
+		request_open.uid	 = tsk->uid;
+		/* tsk->tgid is the process id */
+		request_open.pid_of_owner	 = tsk->tgid;
+		request_open.vemva	 = entry_copy->vemva;
+		request_open.size	 = entry_copy->size;
+		request_open.syncnum	 = entry_copy->pcisync_num;
+		request_open.mode_flag	 =
+			entry_copy->status_flag & ~(VESHM_MODE_INVALID | VESHM_MODE_CLOSE);
+
+		pthread_rwlock_unlock(&resource->ived_resource_lock);
+
+		set_flag(request_open.mode_flag, VE_REQ_PROC);
+		set_flag(request_open.mode_flag, VE_SWAPPABLE);
+		reply.veshm_ret = &veshm_ret;
+		vemva_pg_mode = pgsz_to_pgmod(entry_copy->physical_pgsize);
+		for (i = entry_copy->register_cnt_proc_swappable; i > 0; i--) {
+			PPS_DEBUG(cat_os_pps, "Invoke do veos_veshm_open_common to"
+			" re-open VESHM %dth in %d",
+			i, entry_copy->register_cnt_proc_swappable);
+			ret = veos_veshm_open_common(&request_open, &reply, vemva_pg_mode);
+			PPS_DEBUG(cat_os_pps,
+				"ret:%d, reply.ret_val:%"PRIx64", reply.error:%d",
+				ret, reply.retval, reply.error);
+			if ((ret != 0) || (reply.error != 0)) {
+				PPS_ERROR(cat_os_pps, "Re-open VESHM is failed");
+				failed = 1;
+				break;
+			}
+		}
+		pthread_rwlock_wrlock(&resource->ived_resource_lock);
+		list_del(list_p);
+		free(entry_copy);
+	}
+	pthread_rwlock_unlock(&resource->ived_resource_lock);
+	if (!failed)
+		retval = 0;
+
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return retval;
+}
+
+/**
+ * @brief Reserve a dmaatb dir when swap-in.
+ * @note Re-attach VESHM when SIGCONT.
+ * @param[in] tsk ve_task_struct of Swapping-in process
+ * @param[in] vehva requested vehva
+ * @param[in] pgmod DMA mode
+ *
+ * @retval 0 on success
+ * @retval -1 on Failure.
+ * @retval -PPS_INTER_TERM on Process termination or VEOS termination Interrupt.
+ * @retval -PPS_ALLOC_RETRY on Retry due to lack of VE memory.
+ * */
+static int
+veos_reserve_dmaatb_dir(struct ve_task_struct *tsk, uint64_t vehva, int pgmod)
+{
+	int new_dir;
+	int retval = -1;
+	int ret = -1;
+	struct ve_node_struct *vnode = VE_NODE(0);
+	uint64_t ps;
+	uint64_t new_allocate_dirs = 0;
+	dmaatb_reg_t new_process_soft_copy;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	PPS_DEBUG(cat_os_pps, "Reserve dmaatb dir for vehva: %#lx (pgmod: %d)", vehva, pgmod);
+
+	if (tsk == NULL){
+		PPS_ERROR(cat_os_pps, "Argument is NULL");
+		goto hndl_return;
+	}
+
+	invalidate_dmaatb(&new_process_soft_copy);
+	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock,
+				LOCK, "Failed to acquire thread-group-mm-lock");
+	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, LOCK,
+				"Failed to acquire node dmaatb lock");
+	/* If dir are not changed, same dir is allocated. */
+	retval = get_new_dimatb_dir(vehva, tsk);
+	if (retval < 0) {
+		/* In thias case, get_new_dimatb_dir() Released
+		 * dmaatb_node_lock and thread_group_mm_lock */
+		cleanup_allocate_dirs(new_allocate_dirs);
+		goto hndl_return;
+	}
+	new_dir = retval;
+	if (!ps_isvalid(&(vnode->dmaatb.dir[new_dir]))) {
+		ps = psnum(vehva, pgmod);
+		PPS_DEBUG(cat_os_pps,
+			"validate dmaatb dir, new_dir:%d, ps:%ld, tsk->jid:%d, pgmod:%d",
+			new_dir, ps, tsk->jid, pgmod);
+		validate_dmapgd(&new_process_soft_copy, new_dir, ps, tsk->jid, pgmod);
+		memcpy(&(tsk->p_ve_mm->dmaatb.dir[new_dir]),
+			&(new_process_soft_copy.dir[new_dir]), sizeof(uint64_t));
+	}
+
+	PPS_DEBUG(cat_os_pps, "new_dir %d is allocated", new_dir);
+
+	ret = sync_node_dmaatb_dir(vehva, tsk->p_ve_mm, new_dir, tsk->jid);
+	if (ret != new_dir) {
+		PPS_ERROR(cat_os_pps,
+		"Failed to sync DMAATB dir %d between process %d(%d) and node due "
+		"to %s", new_dir, tsk->pid, tsk->jid, strerror(-ret));
+		veos_abort("Failed to sync DMAATB soft copy");
+	}
+	/* if this function fails, veos aborts. */
+	psm_sync_hw_regs(tsk, _DMAATB, true, new_dir, 1);
+
+	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
+					"Failed to release node dmaatb lock");
+	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, UNLOCK,
+				"Failed to release thread-group-mm-lock");
+
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return retval;
+}
+
+/**
+ * @brief Invoke veos_reserve_dmaatb_dir() to reserve a dmaatb dir.
+ *
+ * @param[in] tsk ve_task_struct of Swapping-in process
+ *
+ * @retval 0 on success
+ * @retval -1 on Failure.
+ * @retval -PPS_INTER_TERM on Process termination or VEOS termination Interrupt.
+ * @retval -PPS_ALLOC_RETRY on Retry due to lack of VE memory.
+ * */
+static int
+veos_swap_in_user_veshm(struct ve_task_struct *tsk)
+{
+	struct ived_shared_resource_data *resource;
+	struct attaching_veshm_info *entry_copy=NULL;
+	struct list_head *list_p, *list_n;
+	struct ve_task_struct *group_leader = NULL;
+	int retval = -1;
+	uint64_t vehva, vehva_new_dir;
+	int pgmod;
+	size_t pgsz, dma_dir_max_size;
+	int new_dir = -1;
+	int i;
+	int count = 0;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	if (tsk == NULL){
+		PPS_ERROR(cat_os_pps, "Argument is NULL");
+		goto hndl_return;
+	}
+	group_leader = tsk->group_leader;
+	resource = tsk->ived_resource;
+
+	pthread_rwlock_wrlock(&resource->ived_resource_lock);
+	list_p = resource->swapped_attach_veshm_list.next;
+	/* Loop VESHM attach information*/
+	list_for_each_safe(list_p, list_n, &resource->swapped_attach_veshm_list) {
+		if (is_process_veos_terminate(group_leader, "Swap-in")) {
+			retval = -PPS_INTER_TERM;
+			PPS_DEBUG(cat_os_pps, "PPS INTER TERM");
+			goto hndl_free_return;
+		}
+
+		/* get VESHM attach information */
+		entry_copy = list_entry(list_p, struct attaching_veshm_info, list);
+		/* reserve dmaatb dir for re-attach */
+		vehva = entry_copy->vehva;
+		pgmod = veos_get_pgmod_by_vehva(vehva);
+
+		pgsz = (size_t)pgmod_to_pgsz(pgmod);
+		PPS_DEBUG(cat_os_pps, "vehva: %#lx, pgsz: %ld, pgmod : %d", vehva, pgsz, pgmod);
+		dma_dir_max_size = pgsz * DMAATB_ENTRY_MAX_SIZE;
+		PPS_DEBUG(cat_os_pps, "Total size of one DMAATB dir: %ld",
+			dma_dir_max_size);
+		count = (entry_copy->size -1) / dma_dir_max_size + 1;
+		vehva_new_dir = vehva;
+		for (i = 0; i < count; i++) {
+			if (i > 0) {
+				vehva_new_dir = ALIGN(vehva + (dma_dir_max_size * i),
+									dma_dir_max_size);
+			}
+			new_dir = veos_reserve_dmaatb_dir(tsk, vehva_new_dir, pgmod);
+			PPS_DEBUG(cat_os_pps, "reserved dmaatb dir: %d for vehva: %#lx", new_dir, vehva_new_dir);
+			if (new_dir < 0) {
+				retval = new_dir;
+				PPS_DEBUG(cat_os_pps, "Failed to reserve dmaatb dir");
+				goto hndl_free_return;
+			}
+		}
+	}
+	retval = 0;
+
+hndl_free_return:
+	pthread_rwlock_unlock(&resource->ived_resource_lock);
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return retval;
+}
+
+/**
+ * @brief Re-attach VESHM.
+ *
+ * @param[in] tsk ve_task_struct of Swapping-in process
+ *
+ * @retval 0 on success
+ * @retval -1 on Failure.
+ * */
+int veos_swap_in_user_veshm_pciatb_re_attach(struct ve_task_struct *tsk)
+{
+	struct ived_shared_resource_data *resource;
+	struct attaching_veshm_info *entry_copy=NULL;
+	struct list_head *list_p, *list_n;
+	uint64_t invalid_veshm_flag = 0;
+	int retval = -1;
+	int ret = -1;
+	int i = 0;
+	int failed = 0;
+
+	RpcVeshmSubAttach request_attach = RPC_VESHM_SUB_ATTACH__INIT;
+	IvedReturn reply = IVED_RETURN__INIT;
+	RpcVeshmReturn veshm_ret = RPC_VESHM_RETURN__INIT;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	if (tsk == NULL){
+		PPS_ERROR(cat_os_pps, "Argument is NULL");
+		goto hndl_return;
+	}
+	resource = tsk->ived_resource;
+	pthread_mutex_lock_unlock(&resource->re_attach_veshm_lock, LOCK,
+			"Failed to acquire re-attach veshm lock");
+	pthread_rwlock_wrlock(&resource->ived_resource_lock);
+	if (list_empty(&resource->swapped_attach_veshm_list)) {
+		PPS_DEBUG(cat_os_pps, "List is empty");
+		/* It is not a swapped-out user process of VESHM */
+		pthread_rwlock_unlock(&resource->ived_resource_lock);
+		pthread_mutex_lock_unlock(&resource->re_attach_veshm_lock, UNLOCK,
+				"Failed to release re-attach veshm lock");
+		retval = 0;
+		goto hndl_return;
+	}
+
+	list_p = resource->swapped_attach_veshm_list.next;
+	/* Loop swapped-out VESHM attach information*/
+	list_for_each_safe(list_p, list_n, &resource->swapped_attach_veshm_list) {
+
+		/* Get VESHM attach information */
+		entry_copy = list_entry(list_p, struct attaching_veshm_info, list);
+
+		/* Re-attach veshm */
+
+		invalid_veshm_flag  = entry_copy->mode_flag & VESHM_MODE_INVALID;
+
+		request_attach.user_uid		 = tsk->uid;
+		/* tsk->tgid is the process id */
+		request_attach.user_pid		 = tsk->tgid;
+		request_attach.user_vemva	 = entry_copy->vemva;
+		request_attach.owner_pid	 = entry_copy->target_pid;
+		request_attach.vemva		 = entry_copy->target_vemva;
+		request_attach.size			 = entry_copy->size;
+		request_attach.syncnum		 = entry_copy->pcisync_num;
+		request_attach.mode_flag	 =
+			(entry_copy->req_mode_flag & ~VE_REQ_NON_OWNER_INFO)
+			| invalid_veshm_flag;
+
+		set_flag(request_attach.mode_flag, VE_REQ_PPS);
+		set_flag(request_attach.mode_flag, VE_REQ_PROC);
+
+		reply.veshm_ret = &veshm_ret;
+
+		list_del(list_p);
+		pthread_rwlock_unlock(&resource->ived_resource_lock);
+
+		for (i = entry_copy->ref_cnt_vehva; i > 0 ; i--) {
+			PPS_DEBUG(cat_os_pps, "Invoke %dth veos_veshm_attach_common()", i);
+			ret = veos_veshm_attach_common(&request_attach, &reply,
+				entry_copy->vehva);
+			if ((ret != 0) || (reply.error != 0)) {
+				PPS_ERROR(cat_os_pps, "Re-attach VESHM is failed");
+				failed = 1;
+				break;
+			}
+		}
+		pthread_rwlock_wrlock(&resource->ived_resource_lock);
+		free(entry_copy);
+	}
+
+	if (!failed)
+		retval = 0;
+
+	pthread_rwlock_unlock(&resource->ived_resource_lock);
+	pthread_mutex_lock_unlock(&resource->re_attach_veshm_lock, UNLOCK,
+			"Failed to release re-attach veshm lock");
+
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return retval;
+}
+
+
+/**
  * @brief This function handles a Swap-in request.
  *
  * @param[in] tsk Pointer to the task structure which is corresponding to
@@ -824,6 +1233,28 @@ ve_do_swapin(struct ve_task_struct *tsk)
 	veos_veshm_update_is_swap_out(tsk, false);
 
 	dump_process_atb(tsk);
+
+	/* Re-open VESHM */
+	ret = veos_swap_in_open_veshm(tsk);
+	if (ret == -PPS_INTER_TERM) {
+		goto hndl_return;
+	} else if  (ret != 0) {
+		PPS_ERROR(cat_os_pps, "Failed to re-open VESHM, kill %d",
+			tsk->group_leader->pid);
+		goto hndl_return;
+	}
+
+	/* Re-servate dmaatb dir for VESHM */
+	ret = veos_swap_in_user_veshm(tsk);
+	if (ret == -PPS_INTER_TERM) {
+		goto hndl_return;
+	} else if (ret == -PPS_ALLOC_RETRY) {
+		goto hndl_retry;
+	} else if  (ret != 0) {
+		PPS_ERROR(cat_os_pps, "Failed to re-servate dmaatb dir for VESHM,"
+			" kill %d", tsk->group_leader->pid);
+		goto hndl_return;
+	}
 
 	/* Change sub-status */
 	pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock),

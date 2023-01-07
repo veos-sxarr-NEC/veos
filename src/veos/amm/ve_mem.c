@@ -3100,7 +3100,7 @@ int amm_do_mmap_handling(struct ve_mm_struct *mm, size_t pgsz, flag_t flags,
 				pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
 					LOCK, "Failed to get ve page lock");
 				if (is_ve_page_swappable_core(
-					VE_PAGE(vnode, map[start])->pci_count,
+					VE_PAGE(vnode, map[start])->pci_ns_count,
 					flags, perm, map[start],
 					VE_PAGE(vnode, map[start])->owner))
 					mdesc->ns_pages++;
@@ -3144,7 +3144,7 @@ int amm_do_mmap_handling(struct ve_mm_struct *mm, size_t pgsz, flag_t flags,
 				pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
 						LOCK, "Failed to get ve page lock");
 				if (is_ve_page_swappable_core(
-					VE_PAGE(vnode, map[start])->pci_count,
+					VE_PAGE(vnode, map[start])->pci_ns_count,
 					flags, perm, map[start],
 					VE_PAGE(vnode, map[start])->owner))
 					mdesc->ns_pages++;
@@ -3334,15 +3334,18 @@ func_return:
 	return ret;
 }
 
-
 /**
-* @brief This function will decrease ref count.
+* @brief This function will decrease ref count without getting lock.
 *
 * @param[in] pgaddr VE physical address of page whose ref count is to be decrease.
 * @param[in] is_amm True if this function is invoked by AMM functions
 * @return return 0 on success and negative of errno on failure.
+* @retval -EINVAL Page specified by pb has not been allocated
+* @retval -EINVAL Page specified by pb has invalid ref_count or dma_ref_count
+* @retval  NO_PPS_BUFF Swap-out was not performed due to lack of PPS Buffer
+* @retval -EBUSY Swap-out was not performed due to other reasons
 */
-int amm_do_put_page(vemaa_t pb, bool is_amm)
+int amm_do_put_page_no_lock(vemaa_t pb, bool is_amm)
 {
 	pgno_t pgnum = 0;
 	/*
@@ -3355,10 +3358,6 @@ int amm_do_put_page(vemaa_t pb, bool is_amm)
 	int pps_ret;
 
 	VEOS_TRACE("invoked");
-
-	/*Get lock on ve_node_struct*/
-	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
-			"Fail to acquire ve page lock");
 
 	pgnum = pfnum(pb, PG_2M);
 	page = vnode->ve_pages[pgnum];
@@ -3392,11 +3391,17 @@ int amm_do_put_page(vemaa_t pb, bool is_amm)
 		}
 
 		/* PPS Swap-out procedure */
-		if ((page->swapped_info != NULL) &&
-			((page->ref_count == 1) &&
-				(page->dma_ref_count == 0))) {
+		if ((page->swapped_info != NULL) && (page->ref_count == 1)) {
+			if (page->dma_ref_count != 0) {
+				ret = -EBUSY; /* Don't free memory */
+				page->swapped_info->remained_page_ref_count++;
+				VEOS_DEBUG("Not decrement ref_cnt of Page %ld", pgnum);
+				goto func_return;
+			}
 			pps_ret = veos_pps_save_memory_content(pgnum);
 			if (pps_ret != 0) {
+				page->swapped_info->remained_page_ref_count++;
+				VEOS_DEBUG("Not Decrement ref_cnt of Page %ld", pgnum);
 				if (pps_ret == NO_PPS_BUFF)
 					ret = NO_PPS_BUFF;
 				else
@@ -3441,21 +3446,44 @@ int amm_do_put_page(vemaa_t pb, bool is_amm)
 		VEOS_DEBUG("VE page %ld dma refcnt after dec is %ld",
 			pgnum, page->dma_ref_count);
 	}
-		
+
 	/*if ref count page is zero then free that page*/
 	if ((0 == page->ref_count) &&
 		!(page->flag & PG_SHM) &&
 		(0 == page->dma_ref_count))
 		veos_free_page(pgnum);
 
-	/*Release lock from ve_node_struct*/
 func_return:
-	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
-			"Fail to release ve page lock");
 	VEOS_TRACE("returned");
 	return ret;
 }
 
+/**
+* @brief This function will decrease ref count.
+*
+* @param[in] pgaddr VE physical address of page whose ref count is to be decrease.
+* @param[in] is_amm True if this function is invoked by AMM functions
+* @return return 0 on success and negative of errno on failure.
+* @retval -EINVAL Page specified by pb has not been allocated
+* @retval -EINVAL Page specified by pb has invalid ref_count or dma_ref_count
+* @retval  NO_PPS_BUFF Swap-out was not performed due to lack of PPS Buffer
+* @retval -EBUSY Swap-out was not performed due to other reasons
+*/
+int amm_do_put_page(vemaa_t pb, bool is_amm)
+{
+	int retval;
+	struct ve_node_struct *vnode = VE_NODE(0);
+
+	/*Get lock on ve_node_struct*/
+	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
+			"Fail to acquire ve page lock");
+	retval = amm_do_put_page_no_lock(pb, is_amm);
+	/*Release lock from ve_node_struct*/
+	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
+			"Fail to release ve page lock");
+
+	return retval;
+}
 
 /**
 * @brief This function will increase the ref count of pages associated with DMA tranfer.
@@ -3525,6 +3553,9 @@ int veos_put_page(vemaa_t pb)
  * @param[in] pb VE physical address of page whose ref count to be decrease.
  *
  * @return on success return 0 and negative of errno on failure.
+ * @retval -EBUSY Swap-out was not performed
+ * @retval -EINVAL Page specified by pb has not been allocated
+ * @retval -EINVAL Page specified by pb has invalid ref_count or dma_ref_count
  */
 int amm_put_page(vemaa_t pb)
 {
@@ -6043,11 +6074,11 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 			pb = pbaddr(pgno, PG_2M);
 			/*Decreament the ref count*/
 			ret = amm_put_page(pb);
-			if (0 > ret) {
+			if ((0 > ret) && (ret != -EBUSY)) {
 				VEOS_DEBUG("Error (%s) while releasing"
 						"VE page address 0x%lx",
 						strerror(-ret), pb);
-				goto err_exit;
+				continue;
 			}
 
 			for (index = 0; index < vnode->numa_count; index++)
@@ -6155,7 +6186,6 @@ int __amm_del_mm_struct(struct ve_task_struct *tsk)
 	mm->auxv_addr = 0;
 	mm->auxv_size = 0;
 	mm->mns = 0;
-err_exit:
 	free(mm->vehva_header.bmap_4k);
 	free(mm->vehva_header.bmap_64m);
 	free(mm->vehva_header.bmap_2m);
@@ -6365,4 +6395,109 @@ int amm_free_private_data(void *private_data, uint64_t flag, uint64_t perm)
 
 	VEOS_DEBUG("do not free private_data");
 	return 1;
+}
+
+/**
+* @brief This function will operate pci_ns_count.
+* @param[in] page number of ve page
+* @param[in] operation Operation such as increment or decrement or other
+*/
+void veos_operate_pci_ns_count(pgno_t pgno, int operation)
+{
+	VEOS_TRACE("invoked");
+
+	int old_pci_ns_count = -1;
+	struct mmap_desc *mmap_d = NULL;
+	struct ve_page *page = NULL;
+	struct ve_node_struct *vnode = VE_NODE(0);
+
+	page = VE_PAGE(vnode, pgno);
+	if (page == NULL) {
+		VEOS_DEBUG("ve_page is NULL");
+		goto hndl_end;
+	}
+
+	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
+			"Fail to get ve page lock");
+	if (is_ve_page_swappable_core(0, page->flag,
+			page->perm, pgno,  page->owner) != 0) {
+		VEOS_DEBUG("page is non-swappable memory, "
+				"no need to operate pci_ns_count");
+		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
+			"Fail to release ve page lock");
+		goto hndl_end;
+	}
+
+	if (page->private_data == NULL) {
+		VEOS_DEBUG("private_data is NULL, "
+				"no need to operate pci_ns_count");
+		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
+		"Fail to release ve page lock");
+		goto hndl_end;
+	}
+
+	if (!MMAP_DESC(page->flag, page->perm)) {
+		VEOS_DEBUG("MMAP_DESC check is false, "
+				"no need to operate pci_ns_count");
+		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
+			"Fail to release ve page lock");
+		goto hndl_end;
+	}
+
+	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
+			"Fail to release ve page lock");
+
+	mmap_d = (struct mmap_desc *)(page->private_data);
+	old_pci_ns_count = page->pci_ns_count;
+	page->pci_ns_count = page->pci_ns_count + operation;
+
+	VEOS_DEBUG("pci_ns_count is %ld, old pci_ns_count is %d",
+		page->pci_ns_count, old_pci_ns_count);
+
+	pthread_mutex_lock_unlock(&mmap_d->mmap_desc_lock, LOCK,
+			"Fail to get mmap desc lock");
+
+	VEOS_DEBUG("before operation, ns_pages is %ld", mmap_d->ns_pages);
+
+	if ((page->pci_ns_count == 1) && (old_pci_ns_count == 0))
+		mmap_d->ns_pages++;
+	if ((page->pci_ns_count == 0) && (old_pci_ns_count == 1))
+		mmap_d->ns_pages--;
+
+	VEOS_DEBUG("after operation, ns_pages is %ld", mmap_d->ns_pages);
+
+	pthread_mutex_lock_unlock(&mmap_d->mmap_desc_lock, UNLOCK,
+			"Fail to release mmap desc lock");
+
+hndl_end:
+	VEOS_TRACE("returned");
+}
+
+/**
+* @brief This function will update Max NSM size.
+* @param[in] tsk process ve task struct.
+*/
+void veos_update_mns(struct ve_task_struct *tsk)
+{
+	uint64_t uss_ns = 0, pss_ns = 0;
+
+	if (tsk == NULL) {
+		VEOS_DEBUG("ve_task is NULL");
+		goto hndl_end;
+	}
+
+	pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock), LOCK,
+				"Failed to acquire mm-thread-group-lock");
+
+	get_uss(tsk->p_ve_mm, &uss_ns);
+	get_pss(tsk->p_ve_mm, &pss_ns);
+	if (tsk->p_ve_mm->mns < (uss_ns + pss_ns))
+		tsk->p_ve_mm->mns = (uss_ns + pss_ns);
+	VEOS_DEBUG("mns : %ld byte\n", tsk->p_ve_mm->mns);
+
+	pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock), UNLOCK,
+				"Failed to release mm-thread-group-lock");
+
+hndl_end:
+	VEOS_TRACE("returned");
 }

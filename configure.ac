@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([veos], [2.13.0])
+AC_INIT([veos], [2.14.1])
 AC_CONFIG_SRCDIR([lib/libvepseudo/psm/exception.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([./build-aux])
@@ -53,6 +53,12 @@ AC_ARG_WITH(ve-os-launcher-confdir, [AS_HELP_STRING([--with-ve-os-launcher-confd
 	    [ve_os_launcher_confdir=${with_ve_os_launcher_confdir}],
 	    [ve_os_launcher_confdir=${sysconfdir}/ve-os-launcher.d])
 AC_SUBST(ve_os_launcher_confdir)
+AC_ARG_WITH(feature_listdir, [AS_HELP_STRING([--with-feature_listdir],
+	    [List of features
+	    [prefix/share]])],
+	    [feature_listdir=${with_feature_listdir}],
+	    [feature_listdir=${prefix}/share])
+AC_SUBST(feature_listdir)
 AC_ARG_WITH(binfmtdir, [AS_HELP_STRING([--with-binfmtdir],
 	    [Specify binfmt configuration file directory for VE program 
 	    [/usr/lib/binfmt.d]])],

@@ -43,4 +43,5 @@ void ve_dma_reqlist__cancel(ve_dma_req_hdl *);
 ve_dma_req_hdl *ve_dma_reqlist_entry_to_req_hdl(ve_dma_reqlist_entry *);
 ve_dma_req_hdl *ve_dma_waiting_list_head_to_req_hdl(const struct list_head *);
 void ve_dma__terminate_nolock(ve_dma_req_hdl *);
+void ve_dma__dec_ipc_sync_nolock(ve_dma_req_hdl *);
 #endif

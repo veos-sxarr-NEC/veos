@@ -38,6 +38,9 @@ int ve_sys_unmap_dmades(veos_handle *, uint64_t );
 int ve_sys_get_veos_pid(veos_handle *);
 int64_t ve_sys_get_mns(veos_handle *, uint64_t);
 int ve_sys_set_next_thread_worker(veos_handle *);
+int ve_sys_stop_user_threads(veos_handle *);
+int ve_sys_start_user_threads(veos_handle *);
+int ve_sys_get_user_threads_state(veos_handle *);
 int ve_request_veos(veos_handle *, enum pseudo_veos_msg_id,
 				ProtobufCBinaryData *, PseudoVeosMessage **);
 int ve_sys_get_ve_product_name(veos_handle *, char *, size_t);

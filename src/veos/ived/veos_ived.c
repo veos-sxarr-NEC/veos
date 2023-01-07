@@ -44,6 +44,7 @@
 #include "veos_veshm_ipc.h"
 #include "veos_veshm.h"
 #include "veos_vhshm.h"
+#include "ve_swap.h"
 
 #define LOCK_TIMEOUT 10      /* seconds */
 
@@ -274,7 +275,11 @@ execute_req_from_ived()
 					  request_veshm->detach_arg->
 					  uuid_veshm.data);
 
-				/* NOTE: Send ack to IVED before 
+				veos_veshm_erase_area
+					(request_veshm->detach_arg->n_pci_address,
+					 request_veshm->detach_arg->pci_address,
+					 request_veshm->detach_arg->mode_flag);
+				/* NOTE: Send ack to IVED after
 				 * veos_veshm_erase_area. IVED doesn't care 
 				 * a result of the function.
 				 * VEOS and IVED can ignore a result of 
@@ -282,9 +287,6 @@ execute_req_from_ived()
 				 * them.
 				 */
 				ived_send_int64(ived_socket_fd, IVED_REQ_OK, 0);
-				veos_veshm_erase_area
-					(request_veshm->detach_arg->n_pci_address,
-					 request_veshm->detach_arg->pci_address);
 				break;
 			default:
 				invalid_cmd = 1;
@@ -612,8 +614,17 @@ veos_init_ived_proc_property(struct ve_task_struct *tsk)
 		goto err_ret;
 	}
 
+	if (pthread_mutex_init(&newdata->re_attach_veshm_lock,
+				NULL) != 0){
+		IVED_CRIT(log4cat_veos_ived,
+			  "Initialize re-attach veshm lock failed.");
+		goto err_ret;
+	}
+
 	INIT_LIST_HEAD(&newdata->owned_veshm_list);
 	INIT_LIST_HEAD(&newdata->attach_veshm_list);
+	INIT_LIST_HEAD(&newdata->swapped_owned_veshm_list);
+	INIT_LIST_HEAD(&newdata->swapped_attach_veshm_list);
 	newdata->owned_veshm_num    = 0;
 	newdata->attach_veshm_num   = 0;
 	newdata->pid		    = tsk->pid;
@@ -625,6 +636,7 @@ veos_init_ived_proc_property(struct ve_task_struct *tsk)
 	if (ret != 0) {
 		pthread_rwlock_destroy(&newdata->ived_resource_lock);
 		pthread_mutex_destroy(&newdata->proc_cr_lock);
+		pthread_mutex_destroy(&newdata->re_attach_veshm_lock);
 		goto err_ret;
 	}
 
@@ -633,6 +645,7 @@ veos_init_ived_proc_property(struct ve_task_struct *tsk)
 	if (ret < 0){
 		pthread_rwlock_destroy(&newdata->ived_resource_lock);
 		pthread_mutex_destroy(&newdata->proc_cr_lock);
+		pthread_mutex_destroy(&newdata->re_attach_veshm_lock);
 		pthread_mutex_destroy(
 				&newdata->veos_vhshm_res_head.veos_vhshm_lock);
 		goto err_ret;
@@ -685,6 +698,12 @@ veos_clean_ived_proc_property(struct ve_task_struct *tsk)
 
 	ived_resource = tsk->ived_resource;
 
+	/* Free and delete
+	* swapped_owned_veshm_list and swapped_attach_veshm_list
+	 */
+	del_swapped_owned_veshm_list(tsk);
+	del_swapped_attach_veshm_list(tsk);
+
 	/* Try to clear all VESHM area. Some VESHM which is used by other
 	 * VESHM user processes are not cleared. 
 	 * Attaching VESHM info are freed forcibly. Information of attaching
@@ -716,6 +735,7 @@ veos_clean_ived_proc_property(struct ve_task_struct *tsk)
 
 	pthread_rwlock_destroy(&ived_resource->ived_resource_lock);
 	pthread_mutex_destroy(&ived_resource->proc_cr_lock);
+	pthread_mutex_destroy(&ived_resource->re_attach_veshm_lock);
 	free(ived_resource);
 	tsk->ived_resource = NULL;
 

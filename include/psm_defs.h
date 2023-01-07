@@ -1,4 +1,4 @@
-/* Copyright (C) 2017-2018 by NEC Corporation
+/* Copyright (C) 2022 by NEC Corporation
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -18,38 +18,21 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  */
-
 /**
- * @file   veshm_defs.h
- * @brief  Header file for VESHM 
+ * @file   psm_defs.h
+ * @brief  Header file for PSM
  */
 
-#ifndef _IVED_VESHM_H
-#define _IVED_VESHM_H
+#ifndef _PSM_DEFS_H
+#define _PSM_DEFS_H
 
-enum VESHM_mode_flag {
-	VE_SHM_RO		= 0x0000000000000001LL, 
-	VE_PCISYNC		= 0x0000000000000002LL,
-	VE_REGISTER_PCI		= 0x0000000000000004LL,
-	VE_SWAPPABLE		= 0x0000000000000020LL,
-};
-
-enum VESHM_additional_mode_flag {
-	VE_REGISTER_NONE	= 0x0000000000001000LL,	/* IPC */
-	VE_REGISTER_VEMVA	= 0x0000000000002000LL, /* IPC */
-	VE_REGISTER_VEHVA	= 0x0000000000004000LL, /* IPC */
-	VE_MEM_LOCAL		= 0x0000000000008000LL, /* IPC */
-};
-
-/* RPC sub commands for VESHM */
-enum VESHM_command {
-	VESHM_OPEN	= 0x30,
-	VESHM_ATTACH,
-	VESHM_DETACH,
-	VESHM_CLOSE,
-
-	VESHM_PGSIZE	= 0x36,
-	VESHM_CHECK_PARTIAL,
+/**
+ * @brief VE process scheduling state
+ */
+enum VE_SCHED_STATE {
+	VE_THREAD_STARTED = 0,
+	VE_THREAD_STOPPING,
+	VE_THREAD_STOPPED
 };
 
 #endif

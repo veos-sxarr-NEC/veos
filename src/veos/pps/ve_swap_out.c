@@ -27,6 +27,11 @@
 #include <sys/mman.h>
 #include <log4c.h>
 #include <pthread.h>
+
+#include "ived_ipc.h"
+#include "ived.pb-c.h"
+#include "veos_veshm_ipc.h"
+
 #include "velayout.h"
 #include "ve_swap.h"
 #include "ve_list.h"
@@ -40,6 +45,10 @@
 #include "buddy.h"
 #include "dma.h"
 #include "ve_shm.h"
+#include "veos_veshm_core.h"
+#include "ived_common.h"
+
+#define INVALID_VESHM		0xFFFFFFFFFFFFFFFFll
 
 /**
  * @brief Return current non-swappable memory size of a specified process.
@@ -155,76 +164,6 @@ hndl_return:
 }
 
 /**
- * @brief Allocate struct ve_ipc_sync and initialize it.
- *
- * @return Pointer to allocated ve_ipc_sync on success, NULL on Failure.
- */
-struct ve_ipc_sync
-*ve_alloc_ipc_sync(void)
-{
-	struct ve_ipc_sync *ret_ptr = NULL;
-	int ret;
-
-	PPS_TRACE(cat_os_pps, "In %s", __func__);
-
-	ret_ptr = (struct ve_ipc_sync *)malloc(sizeof(struct ve_ipc_sync));
-	if (ret_ptr == NULL) {
-		PPS_ERROR(cat_os_pps, "Failed to allocate ve_ipc_sync "
-						"due to %s", strerror(errno));
-		goto hndl_return;
-	}
-
-	/* Initial value '1' means reference from ve_task_struct.
-	 * So, it will be decremented when ve_task_struct is freed.
-	 */
-	ret_ptr->ref_count = 1;
-	ret_ptr->handling_request = 0;
-	ret_ptr->swapping = 0;
-
-	ret = pthread_mutex_init(&(ret_ptr->ref_lock), NULL);
-	if (ret != 0) {
-		PPS_ERROR(cat_os_pps, "Initialising ve_ipc_sync->ref_lock"
-						" due to %s", strerror(ret));
-		goto hndl_free_return;
-	}
-
-	ret = pthread_mutex_init(&(ret_ptr->swap_exclusion_lock), NULL);
-	if (ret != 0) {
-		PPS_ERROR(cat_os_pps, "Failed to init "
-				"ve_ipc_sync->swap_exclusion_lock due to %s",
-				strerror(ret));
-		goto hndl_free_return;
-	}
-
-	ret = pthread_cond_init(&(ret_ptr->handling_request_cond), NULL);
-	if (ret != 0) {
-		PPS_ERROR(cat_os_pps, "Failed to init "
-				"ve_ipc_sync->handling_request_cond due to %s",
-				strerror(ret));
-		goto hndl_free_return;
-	}
-
-	ret = pthread_cond_init(&(ret_ptr->swapping_cond), NULL);
-	if (ret != 0) {
-		PPS_ERROR(cat_os_pps, "Failed to init "
-					"ve_ipc_sync->swapping_cond due to %s",
-					strerror(ret));
-		goto hndl_free_return;
-	}
-
-	PPS_DEBUG(cat_os_pps, "ipc_sync allocated : %p", ret_ptr);
-	goto hndl_return;
-
-hndl_free_return:
-	free(ret_ptr);
-	ret_ptr = NULL;
-
-hndl_return:
-	PPS_TRACE(cat_os_pps, "Out %s", __func__);
-	return ret_ptr;
-}
-
-/**
  * @brief Set 0 to ve_ipc_sync->swapping, if its process is going to be deleted.
  *
  * @param[in] tsk ve_task_struct of process which is going to be deleted.
@@ -267,107 +206,6 @@ ve_unlock_swapped_proc_lock(struct ve_task_struct *tsk)
 	/* Decrement a ref_cnt because this is kept up until finishing Swap-in.
 	 */
 	ve_put_ipc_sync(ipc_sync);
-
-	retval = 0;
-hndl_return:
-	PPS_TRACE(cat_os_pps, "Out %s", __func__);
-	return retval;
-}
-
-/**
- * @brief Return ve_ipc_sync which is contained in specefied ve_task_struct,
- * after incrementing its reference counter.
- *
- * @param[in] tsk ve_task_struct which contains ve_ipc_sync.
- *
- * @return Pointer to ve_ipc_sync on success, NULL on Failure.
- */
-struct ve_ipc_sync
-*ve_get_ipc_sync (struct ve_task_struct *tsk)
-{
-	struct ve_ipc_sync *ret_ptr = NULL;
-	struct ve_ipc_sync *tmp;
-	int prev;
-
-	PPS_TRACE(cat_os_pps, "In %s", __func__);
-
-	if (tsk == NULL) {
-		PPS_DEBUG(cat_os_pps, "Failed to get ipc_sync");
-		goto hndl_return;
-	}
-
-	tmp = tsk->ipc_sync;
-	PPS_DEBUG(cat_os_pps, "getting ipc_sync : %p", tmp);
-	if (tmp == NULL)
-		veos_abort("VEOS internal info(ipc_sync) is missing");
-
-	pthread_mutex_lock_unlock(&(tmp->ref_lock), LOCK,
-					"Failed to acquire ipc_sync ref lock");
-	if (tmp->ref_count < 0) {
-		PPS_ERROR(cat_os_pps, "Failed to get ipc_sync");
-		goto hndl_unlock;
-	}
-	prev = tmp->ref_count;
-	if (prev == INT_MAX) {
-		PPS_ERROR(cat_os_pps, "Error at ref_count of ipc_sync"
-						" : %s", strerror(ERANGE));
-		goto hndl_unlock;
-	}
-	tmp->ref_count++;
-	PPS_DEBUG(cat_os_pps, "Increment ipc_sync->ref_count, before %d, "
-					"after %d", prev, tmp->ref_count);
-
-	ret_ptr = tsk->ipc_sync;
-hndl_unlock:
-	pthread_mutex_lock_unlock(&(tmp->ref_lock), UNLOCK,
-					"Failed to release ipc_sync ref lock");
-
-hndl_return:
-	PPS_TRACE(cat_os_pps, "Out %s", __func__);
-	return ret_ptr;
-
-}
-
-/**
- * @brief Decrement specified ve_ipc_sync's reference counter.
- *
- * @param[in] ipc_sync ve_ipc_sync by which reference counter is decremented.
- *
- * @return 0 on success, -1 on Failure.
- */
-int
-ve_put_ipc_sync (struct ve_ipc_sync *ipc_sync)
-{
-	int prev;
-	int retval = -1;
-	bool deleting_flag = false;
-	PPS_TRACE(cat_os_pps, "In %s", __func__);
-
-	if (ipc_sync == NULL) {
-		PPS_ERROR(cat_os_pps,
-				"Failed to put of ipc_sync");
-		goto hndl_return;
-	}
-
-	pthread_mutex_lock_unlock(&(ipc_sync->ref_lock), LOCK,
-					"Failed to acquire ipc_sync ref lock");
-	prev = ipc_sync->ref_count;
-	ipc_sync->ref_count--;
-	PPS_DEBUG(cat_os_pps, "Decrement ipc_sync->ref_count, before %d, "
-					"after %d", prev, ipc_sync->ref_count);
-	if (ipc_sync->ref_count == 0) {
-		PPS_DEBUG(cat_os_pps, "Deleting ve_ipc_sync(%p)", ipc_sync);
-		deleting_flag = true;
-	}
-	pthread_mutex_lock_unlock(&(ipc_sync->ref_lock), UNLOCK,
-					"Failed to release ipc_sync ref lock");
-
-	if (deleting_flag) {
-		PPS_DEBUG(cat_os_pps, "Freeing ipc_sync(%p)", ipc_sync);
-		pthread_cond_destroy(&(ipc_sync->handling_request_cond));
-		pthread_cond_destroy(&(ipc_sync->swapping_cond));
-		free(ipc_sync);
-	}
 
 	retval = 0;
 hndl_return:
@@ -503,6 +341,102 @@ hndl_return:
 	return retval;
 }
 
+
+/**
+ * @brief Delete and free information about Swapped-out VESHM owned list
+ *
+ * @param[in] tsk ve_task_struct of exited process.
+ */
+void
+del_swapped_owned_veshm_list(struct ve_task_struct *tsk)
+{
+	struct ived_shared_resource_data *resource;
+	struct owned_veshm_info *entry_copy = NULL;
+	struct list_head *list_p, *list_n;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	if (tsk == NULL){
+		PPS_ERROR(cat_os_pps, "Argument is NULL");
+		goto hndl_return;
+	}
+
+	if (tsk->group_leader != tsk){
+		PPS_ERROR(cat_os_pps, "Not group leader");
+		goto hndl_return;
+	}
+
+	resource = tsk->ived_resource;
+	if (resource == NULL){
+		PPS_ERROR(cat_os_pps, "ived_resource is NULL");
+		goto hndl_return;
+	}
+
+	pthread_rwlock_wrlock(&resource->ived_resource_lock);
+	list_p = resource->swapped_owned_veshm_list.next;
+	/* Loop swapped VESHM owned information*/
+	list_for_each_safe(list_p, list_n, &resource->swapped_owned_veshm_list) {
+		entry_copy = list_entry(list_p, struct owned_veshm_info, list);
+		if (entry_copy == NULL){
+			PPS_ERROR(cat_os_pps, "entry_copy of swapped_owned_veshm_list is NULL");
+			continue;
+		}
+		list_del(&entry_copy->list);
+		free(entry_copy);
+	}
+	pthread_rwlock_unlock(&resource->ived_resource_lock);
+
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+}
+
+/**
+ * @brief Delete and free information about Swapped-out veshm attach list
+ *
+ * @param[in] tsk ve_task_struct of exited process.
+ */
+void
+del_swapped_attach_veshm_list(struct ve_task_struct *tsk)
+{
+	struct ived_shared_resource_data *resource;
+	struct attaching_veshm_info *entry_copy=NULL;
+	struct list_head *list_p, *list_n;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	if (tsk == NULL){
+		PPS_ERROR(cat_os_pps, "Argument is NULL");
+		goto hndl_return;
+	}
+
+	if (tsk->group_leader != tsk){
+		PPS_ERROR(cat_os_pps, "Not group leader");
+		goto hndl_return;
+	}
+
+	resource = tsk->ived_resource;
+	if (resource == NULL){
+		PPS_ERROR(cat_os_pps, "ived_resource is NULL");
+		goto hndl_return;
+	}
+	pthread_rwlock_wrlock(&resource->ived_resource_lock);
+	list_p = resource->swapped_attach_veshm_list.next;
+	/* Loop swapped VESHM attached information*/
+	list_for_each_safe(list_p, list_n, &resource->swapped_attach_veshm_list) {
+		entry_copy = list_entry(list_p, struct attaching_veshm_info, list);
+		if (entry_copy == NULL){
+			PPS_ERROR(cat_os_pps, "entry_copy of swapped_attach_veshm_list is NULL");
+			continue;
+		}
+		list_del(&entry_copy->list);
+		free(entry_copy);
+	}
+	pthread_rwlock_unlock(&resource->ived_resource_lock);
+
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+}
+
 /**
  * @brief Delete information about Swapped-out ATB, DMAATB and VE page
  * corresponding to exited process.
@@ -569,6 +503,10 @@ del_swapped_pages(struct ve_task_struct *tsk)
 			}
 		} else {
 			VE_PAGE(vnode, pno)->swapped_info = NULL;
+			for ( ; vrt->phy->remained_page_ref_count > 0;
+					vrt->phy->remained_page_ref_count--) {
+				amm_do_put_page_no_lock(pno * PAGE_SIZE_2MB, true);
+			}
 		}
 		free(vrt->phy);
 		pthread_mutex_lock_unlock(&(vnode->ve_pages_node_lock),
@@ -691,6 +629,7 @@ allocate_swap_info(pgno_t pgno, struct ve_node_struct *vnode,
 		phy->numa_node = -1;
 		phy->ref_cnt = 0;
 		phy->private_data = NULL;
+		phy->remained_page_ref_count = 0;
 		page->swapped_info = phy;
 	}
 
@@ -738,9 +677,12 @@ is_ve_page_swappable(pgno_t pgno, struct ve_node_struct *vnode)
 	int retval = -1;
 	struct ve_page *page = VE_PAGE(vnode, pgno);
 
+	if (page == NULL)
+		return retval;
+
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
 	retval = is_ve_page_swappable_core(
-		page->pci_count, page->flag, page->perm, pgno, page->owner);
+		page->pci_ns_count, page->flag, page->perm, pgno, page->owner);
 	PPS_TRACE(cat_os_pps, "Out %s", __func__);
 	return retval;
 }
@@ -750,7 +692,7 @@ is_ve_page_swappable(pgno_t pgno, struct ve_node_struct *vnode)
  * @brief Check whether specified VE page is capable of Swap-out or not.
  *        This function can be used in memory allocation procedure.
  *
- * @param[in] pci_count Number indicates how many times page was registered with pciatb.
+ * @param[in] pci_ns_count Number indicates how many times page was registered with pciatb.
  * @param[in] flag Flag of VE page.
  * @param[in] perm Permission of VE page.
  * @param[in] pgno VE page number.
@@ -762,22 +704,17 @@ is_ve_page_swappable(pgno_t pgno, struct ve_node_struct *vnode)
  * @note Acquire ve_page_node_lock before invoking this. */
 int
 is_ve_page_swappable_core(
-		uint64_t pci_count, uint64_t flag,
+		uint64_t pci_ns_count, uint64_t flag,
 		uint64_t perm, pgno_t pgno, struct ve_task_struct *owner)
 {
 	int retval = -1;
 
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
-
 	assert(pthread_mutex_trylock(&(VE_NODE(0)->ve_pages_node_lock))
 								== EBUSY);
 
 	PPS_DEBUG(cat_os_pps, "pgno : %ld, flag : 0x%lx, perm : %ld",
 							pgno, flag, perm);
-	if (pci_count > 0) {
-		PPS_DEBUG(cat_os_pps, "%ld is registerer with PCIATB", pgno);
-		goto hndl_return;
-	}
 
 	if (flag & MAP_VDSO) {
 		PPS_DEBUG(cat_os_pps, "%ld is VDSO", pgno);
@@ -799,6 +736,12 @@ is_ve_page_swappable_core(
 		PPS_DEBUG(cat_os_pps,
 			"%ld is not anonymous or read-only fileback memory",
 			pgno);
+		goto hndl_return;
+	}
+
+	if (pci_ns_count > 0) {
+		PPS_DEBUG(cat_os_pps, "%ld is registered with PCIATB and without"
+			" VESWAPPABLE", pgno);
 		goto hndl_return;
 	}
 
@@ -897,6 +840,8 @@ veos_do_swap_out_dmaatb(struct ve_task_struct *tsk, int dir, int ent,
 		pthread_mutex_lock_unlock(&(vnode->ve_pages_node_lock),
 				LOCK, "Failed to lock ve_pages_node_lock");
 		VE_PAGE(vnode, pgno)->swapped_info->ref_cnt--;
+		if ((ret == NO_PPS_BUFF) || (ret == -EBUSY))
+			VE_PAGE(vnode, pgno)->swapped_info->remained_page_ref_count--;
 		if (VE_PAGE(vnode, pgno)->swapped_info->ref_cnt == 0) {
 			free(VE_PAGE(vnode, pgno)->swapped_info);
 			VE_PAGE(vnode, pgno)->swapped_info = NULL;
@@ -1792,8 +1737,12 @@ veos_pps_save_memory_content(pgno_t pgnum)
 	if (!is_to_file) {
 		ret = veos_pps_do_save_memory_content(page_start, pgsz, swap_to);
 	} else {
+		pthread_mutex_lock_unlock(&vnode->pps_file_buffer_lock, LOCK,
+							"Fail to acquire pps file buffer lock");
 		ret = veos_pps_do_save_file_content(page_start, pgsz,
 			vnode->pps_file_transfer_buffer, (off_t)swap_to);
+		pthread_mutex_lock_unlock(&vnode->pps_file_buffer_lock, UNLOCK,
+							"Fail to release pps file buffer lock");
 	}
 	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
 						"Fail to acquire ve page lock");
@@ -1938,6 +1887,8 @@ veos_do_swap_out_atb(struct ve_task_struct *group_leader, int dir, int ent,
 		pthread_mutex_lock_unlock(&(vnode->ve_pages_node_lock),
 				LOCK, "Failed to acquire ve_pages_node_lock");
 		VE_PAGE(vnode, pgno)->swapped_info->ref_cnt--;
+		if ((ret == NO_PPS_BUFF) || (ret == -EBUSY))
+			VE_PAGE(vnode, pgno)->swapped_info->remained_page_ref_count--;
 		if (VE_PAGE(vnode, pgno)->swapped_info->ref_cnt == 0) {
 			free(VE_PAGE(vnode, pgno)->swapped_info);
 			VE_PAGE(vnode, pgno)->swapped_info = NULL;
@@ -2029,6 +1980,337 @@ hndl_return:
 	return retval;
 }
 
+
+/**
+ * @brief Check a VESHM owner information is need copy or not.
+ *
+ * @param[in] veshm VESHM owner information struct.
+ *
+ * @retval 0 on not need copy
+ * @retval 1 on need copy
+ */
+static int
+is_need_copy_owned_info(struct owned_veshm_info *veshm)
+{
+	int i;
+	int ret = 0;
+	pgno_t pgno;
+	struct ve_node_struct *vnode = VE_NODE(0);
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	PPS_DEBUG(cat_os_pps, "veshm->pciatb_entries: %d", veshm->pciatb_entries);
+	if ((veshm->pciatb_entries != 0)
+		&& (veshm->register_cnt_proc_swappable > 0)) {
+		PPS_DEBUG(cat_os_pps, "veshm->physical_pages: %ld", veshm->physical_pages);
+		pthread_mutex_lock_unlock(&(vnode->ve_pages_node_lock),
+				LOCK, "Failed to acquire ve_pages_node_lock");
+		for (i = 0; i < veshm->physical_pages; i++) {
+			if (veshm->paddr_array[i] == INVALID_VESHM) {
+				break;
+			}
+			pgno = pfnum((veshm->paddr_array[i]), PG_2M);
+			PPS_DEBUG(cat_os_pps, "pgno: %ld", pgno);
+			if ((is_ve_page_swappable(pgno, vnode) == 0)) {
+				PPS_DEBUG(cat_os_pps, "Get swappable page");
+				ret = 1;
+				break;
+			}
+		}
+		pthread_mutex_lock_unlock(&(vnode->ve_pages_node_lock),
+				UNLOCK, "Failed to release ve_pages_node_lock");
+	}
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return ret;
+}
+
+/**
+ * @brief Close VESHMs when swap-out
+ *
+ * @param[in] tsk of Swapping-out process
+ *
+ * @retval 0 on Success,
+ * @retval SWAPIN_INTER on Swap-in Interrupts,
+ * @retval TERM_INTER on Process termination or VEOS termination Interrupt,
+ * @retval NO_PPS_BUFF on PPS buffer or PPS file is full
+ * @retval -1 on Failure
+ */
+static int
+veos_swap_out_close_veshm(struct ve_task_struct *tsk)
+{
+	struct ived_shared_resource_data *resource;
+	struct owned_veshm_info *entry = NULL, *entry_copy=NULL;
+	struct list_head *list_p, *list_n;
+	struct ve_task_struct *group_leader = NULL;
+	int retval = -1;
+	int ret = -1;
+	int unlocked = 0;
+	int i;
+	int close_cnt = 0;
+	RpcVeshmSubClose request_close;
+	IvedReturn reply;
+	RpcVeshmReturn veshm_ret;
+	ProtobufCBinaryData uuid1, uuid2;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+	if (tsk == NULL){
+		PPS_ERROR(cat_os_pps, "Argument is NULL");
+		goto hndl_return;
+	}
+	group_leader = tsk->group_leader;
+	resource = tsk->ived_resource;
+
+	list_p = resource->owned_veshm_list.next;
+	/* loop VESHM owned information */
+	pthread_rwlock_wrlock(&resource->ived_resource_lock);
+	list_for_each_safe(list_p, list_n, &resource->owned_veshm_list) {
+		PPS_DEBUG(cat_os_pps, "Pickup a member of owned_veshm_list ");
+		veos_operate_all_ve_task_lock(group_leader, LOCK);
+		ret = veos_check_swapin_interruption(group_leader);
+		veos_operate_all_ve_task_lock(group_leader, UNLOCK);
+		if (ret == PPS_INTER_SWAPIN) {
+			retval = PPS_INTER_SWAPIN;
+			PPS_DEBUG(cat_os_pps, "PPS INTER SWAPIN");
+			pthread_rwlock_unlock(&resource->ived_resource_lock);
+			goto hndl_return;
+		} else if (ret != 0) {
+			kill(group_leader->pid, SIGKILL);
+			pthread_rwlock_unlock(&resource->ived_resource_lock);
+			goto hndl_return;
+		}
+
+		if (is_process_veos_terminate(group_leader, "Swap-out")) {
+			retval = PPS_INTER_TERM;
+			PPS_DEBUG(cat_os_pps, "PPS INTER TERM");
+			pthread_rwlock_unlock(&resource->ived_resource_lock);
+			goto hndl_return;
+		}
+		/* get owned VESHM information */
+		PPS_DEBUG(cat_os_pps, "Get an owned VESHM information");
+		entry = list_entry(list_p, struct owned_veshm_info, list);
+		if (is_need_copy_owned_info(entry)) {
+			if (isset_flag(entry->status_flag, IVED_PROC_EXIT)) {
+				continue;
+			}
+
+			PPS_DEBUG(cat_os_pps, "Copy owned_veshm_info");
+			/* copy owned_veshm_info */
+			entry_copy = (struct owned_veshm_info *)malloc
+				(sizeof (struct owned_veshm_info));
+			if (entry_copy == NULL) {
+				PPS_ERROR(cat_os_pps, "Failed to create owned_veshm_info"
+					" entory");
+				pthread_rwlock_unlock(&resource->ived_resource_lock);
+				goto hndl_return;
+			}
+
+			memcpy(entry_copy, entry, sizeof (struct owned_veshm_info));
+			/* We don't know whether all the close processes are successful
+			 * at here, so set register_cnt_proc_swappable to 0 */
+			close_cnt = entry_copy->register_cnt_proc_swappable;
+			entry_copy->register_cnt_proc_swappable = 0;
+			entry_copy->pciatb_slot = NULL;
+			entry_copy->paddr_array = NULL;
+
+			/* close veshm */
+			PPS_DEBUG(cat_os_pps, "Make an info for closing VESHM");
+			rpc_veshm_sub_close__init(&request_close);
+			ived_return__init(&reply);
+			rpc_veshm_return__init(&veshm_ret);
+			reply.veshm_ret = &veshm_ret;
+
+			request_close.owner_pid = resource->pid;
+			set_flag(request_close.mode_flag, VE_SWAPPABLE); 
+			set_flag(request_close.mode_flag, VE_REQ_PROC);
+
+			uuid1.len                     = sizeof(uuid_t);
+			uuid1.data                   = (uint8_t *)entry_copy->uuid_veshm;
+			request_close.has_uuid_veshm = 1;
+			request_close.uuid_veshm     = uuid1;
+
+			uuid2.len                     = sizeof(uuid_t);
+			uuid2.data                   = (uint8_t *)entry_copy->uuid_proc;
+			request_close.has_uuid_proc  = 1;
+			request_close.uuid_proc      = uuid2;
+
+			pthread_rwlock_unlock(&resource->ived_resource_lock);
+			unlocked = 1;
+
+			dump_uuid("close all proc", entry_copy->uuid_proc);
+			dump_uuid("close all veshm", entry_copy->uuid_veshm);
+
+			for (i = close_cnt; i > 0; i--) {
+				PPS_DEBUG(cat_os_pps, "Invoke do veos_veshm_close_common to"
+					" close VESHM %dth in %d",
+					i, entry->register_cnt_proc_swappable);
+				ret = veos_veshm_close_common(&request_close, &reply, NULL, NULL);
+				PPS_DEBUG(cat_os_pps,
+					"ret:%d, reply.ret_val:%"PRIx64", reply.error:%d",
+					ret, reply.retval, reply.error);
+				if (reply.error == -NO_PPS_BUFF) {
+					retval = NO_PPS_BUFF;
+					PPS_DEBUG(cat_os_pps, "PPS NO_PPS_BUFF");
+					break;
+				} else if ((ret != 0) || (reply.error != 0)) {
+					PPS_ERROR(cat_os_pps, "Close VESHM is failed, "
+						"errno=%d", reply.error);
+					break;
+				} else {
+					entry_copy->register_cnt_proc_swappable++;
+				}
+			}
+			/* And add to list */
+			PPS_DEBUG(cat_os_pps, "Add to swapped_owned_veshm_list");
+			pthread_rwlock_wrlock(&resource->ived_resource_lock);
+			unlocked = 0;
+			list_add(&entry_copy->list, &resource->swapped_owned_veshm_list);
+		}
+		if (unlocked) {
+			pthread_rwlock_wrlock(&resource->ived_resource_lock);
+			unlocked = 0;
+		}
+	}
+	if (!unlocked)
+		pthread_rwlock_unlock(&resource->ived_resource_lock);
+	retval = 0;
+
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return retval;
+}
+
+/**
+ * @brief Detach VESHMs when swap-out
+ *
+ * @param[in] tsk of Swapping-out process
+ *
+ * @retval 0 on Success,
+ * @retval SWAPIN_INTER on Swap-in Interrupts,
+ * @retval TERM_INTER on Process termination or VEOS termination Interrupt,
+ * @retval -1 on Failure
+ */
+static int
+veos_swap_out_detach_veshm(struct ve_task_struct *tsk)
+{
+	struct ived_shared_resource_data *resource;
+	struct attaching_veshm_info *entry = NULL, *entry_copy=NULL;
+	struct list_head *list_p, *list_n;
+	struct ve_task_struct *group_leader = NULL;
+	int retval = -1;
+	int ret = -1;
+	int unlocked = 0;
+	int i = 0;
+
+	RpcVeshmSubDetach request_detach = RPC_VESHM_SUB_DETACH__INIT;
+	IvedReturn reply = IVED_RETURN__INIT;
+	RpcVeshmReturn veshm_ret = RPC_VESHM_RETURN__INIT;
+
+	PPS_TRACE(cat_os_pps, "In %s", __func__);
+
+	if (tsk == NULL){
+		PPS_ERROR(cat_os_pps, "Argument is NULL");
+		goto hndl_return;
+	}
+	group_leader = tsk->group_leader;
+	resource = tsk->ived_resource;
+
+	list_p = resource->attach_veshm_list.next;
+	/* loop VESHM attach information*/
+	pthread_rwlock_wrlock(&resource->ived_resource_lock);
+	list_for_each_safe(list_p, list_n, &resource->attach_veshm_list) {
+		PPS_DEBUG(cat_os_pps, "Pickup a member of attach_veshm_list");
+		veos_operate_all_ve_task_lock(group_leader, LOCK);
+		ret = veos_check_swapin_interruption(group_leader);
+		veos_operate_all_ve_task_lock(group_leader, UNLOCK);
+		if (ret == PPS_INTER_SWAPIN) {
+			retval = PPS_INTER_SWAPIN;
+			PPS_DEBUG(cat_os_pps, "PPS INTER SWAPIN");
+			pthread_rwlock_unlock(&resource->ived_resource_lock);
+			goto hndl_return;
+		} else if (ret != 0) {
+			kill(group_leader->pid, SIGKILL);
+			pthread_rwlock_unlock(&resource->ived_resource_lock);
+			goto hndl_return;
+		}
+
+		if (is_process_veos_terminate(group_leader, "Swap-out")) {
+			retval = PPS_INTER_TERM;
+			PPS_DEBUG(cat_os_pps, "PPS INTER TERM");
+			pthread_rwlock_unlock(&resource->ived_resource_lock);
+			goto hndl_return;
+		}
+		/* Get a VESHM attach information */
+		PPS_DEBUG(cat_os_pps, "Get a VESHM attach information");
+		entry = list_entry(list_p, struct attaching_veshm_info, list);
+		if (isset_flag(entry->req_mode_flag, VE_SWAPPABLE) &&
+				(isset_flag(entry->req_mode_flag, VE_REGISTER_VEHVA))) {
+			PPS_DEBUG(cat_os_pps, "VE_SWAPPABLE is set");
+			/* Copy attaching_veshm_info */
+			PPS_DEBUG(cat_os_pps, "Copy attaching_veshm_info");
+			entry_copy = (struct attaching_veshm_info *)malloc
+				(sizeof (struct attaching_veshm_info));
+			if (entry_copy == NULL) {
+				PPS_ERROR(cat_os_pps, "Failed to create attaching_veshm_info"
+					" entory");
+				pthread_rwlock_unlock(&resource->ived_resource_lock);
+				goto hndl_return;
+			}
+			memcpy(entry_copy, entry, sizeof (struct attaching_veshm_info));
+			/* We don't know whether all the detach processes are successful
+			 * at here, so set ref_cnt_vehva to 0 */
+			entry_copy->ref_cnt_vehva = 0;
+			/* Detach VESHM */
+			PPS_DEBUG(cat_os_pps, "Make an info for detaching VESHM");
+			ived_return__init(&reply);
+			rpc_veshm_return__init(&veshm_ret);
+			reply.veshm_ret = &veshm_ret;
+
+			request_detach.user_uid   = tsk->uid;
+			request_detach.user_pid   = tsk->tgid;
+			request_detach.address    = entry->vehva;
+			request_detach.mode_flag  = entry->req_mode_flag &
+				(VE_REGISTER_VEHVA | VE_REGISTER_VEMVA | VE_MEM_LOCAL);
+
+			pthread_rwlock_unlock(&resource->ived_resource_lock);
+			unlocked = 1;
+
+			set_flag(request_detach.mode_flag, VE_REQ_PROC);
+
+			PPS_DEBUG(cat_os_pps, "Do veos_veshm_detach_common to detach"
+				" VESHM");
+			for (i = entry->ref_cnt_vehva; i > 0 ; i--) {
+				ret = veos_veshm_detach_common(&request_detach, &reply);
+				PPS_DEBUG(cat_os_pps, "ret:%d, reply.ret_val:%"PRIx64"",
+					ret, reply.retval);
+				if ((ret != 0) || (reply.error != 0)) {
+					PPS_ERROR(cat_os_pps, "Detach VESHM is failed, "
+						"errno=%d", reply.error);
+					break;
+				} else {
+					entry_copy->ref_cnt_vehva++;
+				}
+			}
+			/* And add to list */
+			PPS_DEBUG(cat_os_pps, "Add info to swapped_attach_veshm_list");
+			pthread_rwlock_wrlock(&resource->ived_resource_lock);
+			unlocked = 0;
+			list_add(&entry_copy->list, &resource->swapped_attach_veshm_list);
+		}
+		if (unlocked) {
+			pthread_rwlock_wrlock(&resource->ived_resource_lock);
+			unlocked = 0;
+		}
+	}
+	if (!unlocked)
+		pthread_rwlock_unlock(&resource->ived_resource_lock);
+
+	retval = 0;
+
+hndl_return:
+	PPS_TRACE(cat_os_pps, "Out %s", __func__);
+	return retval;
+}
+
 /**
  * @brief Swap out the ATB and DMAATB of specified process.
  *
@@ -2047,6 +2329,9 @@ ve_do_swapout(struct ve_task_struct *tsk)
 	int ret;
 	struct ve_node_struct *vnode = VE_NODE(0);
 	struct ve_task_struct *group_leader = tsk->group_leader;
+	int dma_size = 8;
+	ve_dma_status_t dmast = 0;
+	int already_swapped_out = 0;
 
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
 
@@ -2062,8 +2347,9 @@ ve_do_swapout(struct ve_task_struct *tsk)
 	pthread_mutex_lock_unlock(&(vnode->pps_file_lock), UNLOCK,
 					"Failed to release pps_file_lock");
 
-	veos_veshm_update_is_swap_out(tsk, true);
-	veos_veshm_test_paddr_array_all(tsk);
+	already_swapped_out = veos_veshm_update_is_swap_out(tsk, true);
+	if (!already_swapped_out)
+		veos_veshm_test_paddr_array_all(tsk);
 
 	ret = veos_stop_udma(tsk);
 	if (ret != 0) {
@@ -2076,6 +2362,30 @@ ve_do_swapout(struct ve_task_struct *tsk)
 		kill(group_leader->pid, SIGKILL);
 		goto hndl_return;
 	} else {
+		/* Copy 8 byte from ve zero page to ve zero page.
+		 * To prevent the "posted write" from overtaking the "read".
+		 */
+		dmast = ve_dma_xfer_p_va(vnode->dh, VE_DMA_VEMAA, 0,
+					vnode->zeroed_page_address,VE_DMA_VEMAA, 0,
+					(vnode->zeroed_page_address + dma_size), dma_size);
+		if (dmast != VE_DMA_STATUS_OK) {
+			PPS_WARN(cat_os_pps, "Failed to copy ve zero page due to %d",
+						dmast);
+		}
+
+		ret = veos_swap_out_detach_veshm(tsk);
+		if (ret == PPS_INTER_SWAPIN) {
+			/* Swap-in Interrupts */
+			goto hndl_swapin;
+		} else if (ret == PPS_INTER_TERM) {
+			/* Process termination or VEOS termination Interrupt */
+			goto hndl_return;
+		} else if (ret != 0) {
+			PPS_ERROR(cat_os_pps, "Detach VESHM failed due to internal errnor");
+			/* Even if detach VESHM is failed, swap-out is successful,
+			 * because the memory has not been corrupted */
+		}
+
 		ret = veos_swap_out_dmaatb(tsk);
 		if (ret == PPS_INTER_SWAPIN) {
 			/* Swap-in Interrupts */
@@ -2126,6 +2436,22 @@ ve_do_swapout(struct ve_task_struct *tsk)
 		PPS_ERROR(cat_os_pps, "Swap-out 2MB memory failed due to"
 							" internal errnor");
 		goto hndl_return;
+	}
+
+	ret = veos_swap_out_close_veshm(tsk);
+	if (ret == PPS_INTER_SWAPIN) {
+		/* Swap-in Interrupts */
+		goto hndl_swapin;
+	} else if (ret == PPS_INTER_TERM) {
+		/* Process termination or VEOS termination Interrupt */
+		goto hndl_return;
+	} else if (ret == NO_PPS_BUFF) {
+		/* PPS buffer or PPS file is full */
+		goto hndl_no_pps_buff;
+	} else if (ret != 0) {
+		PPS_ERROR(cat_os_pps, "Close VESHM failed due to internal errnor");
+		/* Even if close VESHM is failed, swap-out is successful,
+		 * because the memory has not been corrupted */
 	}
 
 hndl_swapin:

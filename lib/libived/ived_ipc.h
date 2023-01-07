@@ -79,8 +79,11 @@ enum system_mode_flag {
 	/* specified by veos */
 	VE_REQ_PROC		= 0x0000000100000000LL, /* Request by VE process */
 	VE_REQ_DEV		= 0x0000000400000000LL, /* Request by IB */
+	VE_REQ_PPS		= 0x0000000800000000LL, /* Request by PPS */
 	VESHM_MODE_INVALID	= 0x0000001000000000LL, /* Invalidated VESHM */
 	VE_MEM_RENEW		= 0x0000002000000000LL, /* IPC req. VESHM renewal*/
+	VE_REQ_INVALID_PCI_ADDR	= 0x0000004000000000LL, /* Invalidated PCI address */
+	VE_REQ_NON_OWNER_INFO	= 0x0000008000000000LL, /* Owner info is non-existent */
 	/* MACRO_FOR_CR		= 0x0000XX0000000000LL, */
 	IVED_PROC_EXIT		= 0x0001000000000000LL, /* Process exit */
 	IVED_VEOS_EXIT		= 0x0002000000000000LL, /* VEOS exit */

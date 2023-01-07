@@ -30,16 +30,17 @@
 #define __VEOS_VESHM_IPC_H
 
 #include <uuid/uuid.h>
+#include <mm_type.h>
 #include "ived.pb-c.h"
 
 struct owned_veshm_info;
 struct ve_task_struct;
 
-int veos_veshm_open_common(RpcVeshmSubOpen *, IvedReturn *);
-int veos_veshm_attach_common(RpcVeshmSubAttach *, IvedReturn *);
+int veos_veshm_open_common(RpcVeshmSubOpen *, IvedReturn *, int);
+int veos_veshm_attach_common(RpcVeshmSubAttach *, IvedReturn *, uint64_t);
 int veos_veshm_detach_common(RpcVeshmSubDetach *, IvedReturn *);
 int veos_veshm_close_common(RpcVeshmSubClose *, IvedReturn *, 
 			    struct ve_task_struct *, struct owned_veshm_info *);
-int veos_veshm_erase_area(size_t, uint64_t *);
+int veos_veshm_erase_area(size_t, uint64_t *, uint64_t);
 
 #endif

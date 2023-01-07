@@ -36,6 +36,8 @@ LIBVEPSEUDO_1.0 {
     ve_recv_data_tid;
     ve_init_vemmr;
     ve_init_rvr;
+    pseudo_psm_send_signal_mask;
+    pseudo_psm_recv_signal_mask_ack;
   local:
     *;
 };

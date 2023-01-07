@@ -71,7 +71,7 @@ extern int delete_owned_veshm_info(struct list_head *, int *,
 
 extern struct attaching_veshm_info *
 pickup_attaching_veshm(struct ived_shared_resource_data *, int, uint64_t, 
-		       uint64_t, int, uint64_t);
+		       uint64_t, int, uint64_t, uint64_t);
 extern struct attaching_veshm_info *
 pickup_attaching_veshm_kind(struct ived_shared_resource_data *, 
 			    uint64_t, uint64_t);

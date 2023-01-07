@@ -1131,14 +1131,16 @@ int main(int argc, char *argv[])
 			veos_request_termination(0, NULL, NULL);
 		}
 	}
-	retval = pthread_create(&veos_zombie_cleaner_thread, &attr,
+	if (retval == 0) {
+		retval = pthread_create(&veos_zombie_cleaner_thread, &attr,
 			(void *)&veos_zombie_cleanup_thread, NULL);
-	if (retval != 0) {
-		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
-			"Faild to create veos_zombie_cleanup_thread: %s",
-			strerror(retval));
-		retval = 1;
-		veos_request_termination(0, NULL, NULL);
+		if (retval != 0) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
+				"Faild to create veos_zombie_cleanup_thread: %s",
+				strerror(retval));
+			retval = 1;
+			veos_request_termination(0, NULL, NULL);
+		}
 	}
 	/* Wait to change terminate_flag value from 0 to 1. */
 	sem_wait(&terminate_sem);

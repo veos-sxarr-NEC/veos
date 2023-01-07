@@ -29,6 +29,7 @@
 #include "veos_handler.h"
 #include "velayout.h"
 #include "ptrace_req.h"
+#include "veos_ipc.h"
 
 /* hash entry of dma_req_hdl_list to store ve_dma_req_hdl */
 struct vhve_dma_hashent_t {
@@ -165,6 +166,7 @@ int veos_handle_vhve_dma_req(veos_vhve_thread_arg_t *pti)
 	struct ve_task_struct *tsk = NULL;
 	struct vhve_result ack = { VHVE_RESULT, 0, 0 };
 	vhve_dma_hashent *hash_ent = NULL;
+	struct ve_ipc_sync *ipc_sync;
 
 	VEOS_TRACE("Entering");
 
@@ -243,16 +245,21 @@ int veos_handle_vhve_dma_req(veos_vhve_thread_arg_t *pti)
 		}
 	}
 
+	/* ipc_sync will be put in DMA Manager */
+	ipc_sync = ve_get_ipc_sync(tsk);
+
 	if (args->is_write) {
 		hdl = ve_dma_post_p_va_with_opt(dh, VE_DMA_VHVA,
 				pti->cred.pid, args->srcaddr,
 				VE_DMA_VEMVA, args->vepid, args->dstaddr,
-				args->size, args->opt, pti->socket_descriptor);
+				args->size, args->opt, pti->socket_descriptor,
+				ipc_sync);
 	} else {
 		hdl = ve_dma_post_p_va_with_opt(dh, VE_DMA_VEMVA,
 				args->vepid, args->srcaddr,
 				VE_DMA_VHVA, pti->cred.pid, args->dstaddr,
-				args->size, args->opt, pti->socket_descriptor);
+				args->size, args->opt, pti->socket_descriptor,
+				ipc_sync);
 	}
 	if (!hdl) {
 		ack.ret = -EFAULT;

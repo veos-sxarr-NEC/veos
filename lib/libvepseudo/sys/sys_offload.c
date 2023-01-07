@@ -2649,6 +2649,7 @@ ret_t ve_poll(int syscall_num, char *syscall_name, veos_handle *handle)
 	nfds_t nfds = 0;
 	uint64_t args[3] = {0};
 	sigset_t signal_mask = { {0} };
+	struct rlimit rlim = {0};
 
 	PSEUDO_TRACE("Entering");
 	/* get arguments */
@@ -2661,8 +2662,14 @@ ret_t ve_poll(int syscall_num, char *syscall_name, veos_handle *handle)
 		goto hndl_return;
 	}
 
+	retval = getrlimit(RLIMIT_NOFILE, &rlim);
+	if (retval == -1) {
+		PSEUDO_DEBUG("Failed to get RLIMIT_NOFILE resource limit");
+		retval = -EFAULT;
+		goto hndl_return;
+	}
 	nfds = args[1];
-	if (nfds > RLIMIT_NOFILE || 0 > (int)nfds){
+	if (0 > (int)nfds || (int)nfds > rlim.rlim_cur) {
 		retval = -EINVAL;
 		goto hndl_return;
 	}
@@ -2687,10 +2694,6 @@ ret_t ve_poll(int syscall_num, char *syscall_name, veos_handle *handle)
 			goto hndl_return1;
 		}
 	}
-	PSEUDO_DEBUG("fds[0].fd = %d", fds[0].fd);
-	PSEUDO_DEBUG("fds[0].events=%d", fds[0].events);
-	PSEUDO_DEBUG("fds[1].fd=%d", fds[1].fd);
-	PSEUDO_DEBUG("fds[1].events=%d", fds[1].events);
 
 	/* unblock all signals except the one actualy blocked by VE process */
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
@@ -13088,33 +13091,32 @@ ret_t ve_pselect6(int syscall_num, char *syscall_name, veos_handle *handle)
 		}
 	}
 
-	if (NULL != (void *)args[5]) {
-		if (0 > ve_recv_data(handle, args[5],
-					sizeof(mask),
-					(uint64_t *)(mask))) {
-			PSEUDO_ERROR("failed to receive data"
-					" from VE memory");
-			PSEUDO_DEBUG("Failed(%s) to receive"
-					" %s argument[5]",
-					strerror(errno), SYSCALL_NAME);
+	/* if the signal mask argument is NULL, no need to update
+	 * task's signal mask in veos */
+	if (NULL == (void *)args[5]) {
+		pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+		goto skip_sigprocmask_req;
+	}
+	if (0 > ve_recv_data(handle, args[5],
+				sizeof(mask), (uint64_t *)(mask))) {
+		PSEUDO_ERROR("failed to receive data from VE memory");
+		PSEUDO_DEBUG("Failed(%s) to receive %s argument[5]",
+						strerror(errno), SYSCALL_NAME);
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+	if (NULL != (void *)mask[0]) {
+		/* receive value of sigmask */
+		if (0 > ve_recv_data(handle, mask[0],
+				sizeof(sigset_t), &sigmask)) {
+			PSEUDO_ERROR("failed to receive data from VE memory");
+			PSEUDO_DEBUG("Failed (%s) to receive sigmask value",
+							strerror(errno));
 			retval = -EFAULT;
 			goto hndl_return;
 		}
-		if (NULL != (void *)mask[0]) {
-			/* receive value of sigmask */
-			if (0 > ve_recv_data(handle, mask[0],
-					sizeof(sigset_t), &sigmask)) {
-				PSEUDO_ERROR("failed to receive data"
-					" from VE memory");
-				PSEUDO_DEBUG("Failed (%s) to receive"
-					"sigmask value",
-					strerror(errno));
-				retval = -EFAULT;
-				goto hndl_return;
-			}
-			sigdelset(&sigmask, SIGCONT);
-			mask[0] = (long)&sigmask;
-		}
+		sigdelset(&sigmask, SIGCONT);
+		mask[0] = (long)&sigmask;
 	}
 
 	memset(&ve_mask, 0, sizeof(struct ve_signal_mask));
@@ -13144,11 +13146,11 @@ ret_t ve_pselect6(int syscall_num, char *syscall_name, veos_handle *handle)
 		retval = -EFAULT;
 		goto hndl_return;
 	}
-
-	/* unblock all signals except the one actualy blocked by VE process */
+skip_sigprocmask_req:
+	/* unblock all signals except the one actualy blocked by VE process
+	 * Here the signal mask provided by user for pselect() will be used*/
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
 	sigfillset(&signal_mask);
-	pthread_sigmask(SIG_SETMASK, &sigmask, NULL);
 
 	/* call VH system call */
 	retval = syscall(syscall_num, args[0], args[1] ? &rfds : NULL,
@@ -13212,9 +13214,13 @@ ret_t ve_pselect6(int syscall_num, char *syscall_name, veos_handle *handle)
 		}
 	}
 
-	PSEUDO_DEBUG("%s syscall returned with %d",
-			SYSCALL_NAME, (int)retval);
+	PSEUDO_DEBUG("%s syscall returned with %d", SYSCALL_NAME, (int)retval);
 restore_sigmask:
+	/* if the signal mask argument is NULL, no need to restore task's
+	 * signal mask in veos because it's not updated before syscall */
+	if (NULL == (void *)args[5])
+		goto hndl_return;
+
 	/* Communicate with veos to restore signal mask
 	 * */
 	memcpy(&ve_mask.newset, &ve_mask.oldset, sizeof(sigset_t));
@@ -13318,19 +13324,23 @@ ret_t ve_ppoll(int syscall_num, char *syscall_name, veos_handle *handle)
 		}
 	}
 
-	if (args[3]) {
-		if (0 > ve_recv_data(handle, args[3],
-					sizeof(sigset_t), &mask)) {
-			PSEUDO_ERROR("failed to receive data"
-					" from VE memory");
-			PSEUDO_DEBUG("Failed (%s) to receive"
-					" %s argument[3]",
-					strerror(errno), SYSCALL_NAME);
-			retval = -EFAULT;
-			goto hndl_return;
-		}
-		sigdelset(&mask, SIGCONT);
+	/* if the signal mask argument is NULL, no need to update
+	 * task's signal mask in veos */
+	if (NULL == (void *)args[3]) {
+		pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+		goto skip_sigprocmask_req;
 	}
+	if (0 > ve_recv_data(handle, args[3],
+				sizeof(sigset_t), &mask)) {
+		PSEUDO_ERROR("failed to receive data"
+				" from VE memory");
+		PSEUDO_DEBUG("Failed (%s) to receive"
+				" %s argument[3]",
+				strerror(errno), SYSCALL_NAME);
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+	sigdelset(&mask, SIGCONT);
 
 	/* Communicate with veos to set new signal mask
 	 * and get the old signal mask.
@@ -13358,10 +13368,10 @@ ret_t ve_ppoll(int syscall_num, char *syscall_name, veos_handle *handle)
 		retval = -EFAULT;
 		goto hndl_return;
 	}
+skip_sigprocmask_req:
 	/* unblock all signals except the one actualy blocked by VE process */
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
 	sigfillset(&signal_mask);
-	pthread_sigmask(SIG_SETMASK, &mask, NULL);
 
 	/* call VH system call */
 	retval = syscall(syscall_num, pfd, args[1], args[2] ? &tms : NULL,
@@ -13400,10 +13410,13 @@ ret_t ve_ppoll(int syscall_num, char *syscall_name, veos_handle *handle)
 		}
 	}
 
-	PSEUDO_DEBUG("%s syscall returned with %d",
-			SYSCALL_NAME, (int)retval);
-
+	PSEUDO_DEBUG("%s syscall returned with %d", SYSCALL_NAME, (int)retval);
 restore_sigmask:
+	/* if the signal mask argument is NULL, no need to restore task's
+	 * signal mask in veos because it's not updated before syscall */
+	if (NULL == (void *)args[3])
+		goto hndl_return;
+
 	/* Communicate with veos to restore signal mask
 	 * */
 	memcpy(&ve_mask.newset, &ve_mask.oldset, sizeof(sigset_t));
@@ -13944,20 +13957,22 @@ ret_t ve_epoll_pwait(int syscall_num, char *syscall_name, veos_handle *handle)
 		memset(ve_event, '\0', maxevents * sizeof(struct epoll_event));
 	}
 
-	if (args[4]) {
-		/* receive sigmask data */
-		if (0 > ve_recv_data(handle, (uint64_t)args[4],
-					args[5], (void *)&sigmask)) {
-			PSEUDO_ERROR("failed to receive data"
-					" from VE memory");
-			PSEUDO_DEBUG("Failed (%s) to receive"
-					" sigmask from ve",
-					strerror(errno));
-			retval = -EFAULT;
-			goto hndl_return;
-		}
-		sigdelset(&sigmask, SIGCONT);
+	/* if the signal mask argument is NULL, no need to update
+	 * task's signal mask in veos */
+	if (NULL == (void *)args[4]) {
+		pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+		goto skip_sigprocmask_req;
 	}
+	/* receive sigmask data */
+	if (0 > ve_recv_data(handle, (uint64_t)args[4],
+				sizeof(sigset_t), (void *)&sigmask)) {
+		PSEUDO_ERROR("failed to receive data from VE memory");
+		PSEUDO_DEBUG("Failed (%s) to receive sigmask from ve",
+							strerror(errno));
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+	sigdelset(&sigmask, SIGCONT);
 
 	memset(&ve_mask, 0, sizeof(struct ve_signal_mask));
 	/* Communicate with veos to set new signal mask
@@ -13986,11 +14001,10 @@ ret_t ve_epoll_pwait(int syscall_num, char *syscall_name, veos_handle *handle)
 		retval = -EFAULT;
 		goto hndl_return;
 	}
-
+skip_sigprocmask_req:
 	/* unblock all signals except the one actualy blocked by VE process */
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
 	sigfillset(&signal_mask);
-	pthread_sigmask(SIG_SETMASK, &sigmask, NULL);
 
 	/* call VH system call */
 	retval = syscall(syscall_num, args[0], ve_event, maxevents,
@@ -14025,9 +14039,12 @@ ret_t ve_epoll_pwait(int syscall_num, char *syscall_name, veos_handle *handle)
 		}
 	}
 
-	PSEUDO_DEBUG("%s syscall returned with %d",
-				SYSCALL_NAME, (int)retval);
+	PSEUDO_DEBUG("%s syscall returned with %d", SYSCALL_NAME, (int)retval);
 restore_sigmask:
+	/* if the signal mask argument is NULL, no need to restore task's
+	 * signal mask in veos because it's not updated before syscall */
+	if (NULL == (void *)args[4])
+		goto hndl_return;
 
 	/* Communicate with veos to restore signal mask */
 	memcpy(&ve_mask.newset, &ve_mask.oldset, sizeof(sigset_t));

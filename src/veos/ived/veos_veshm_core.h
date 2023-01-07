@@ -59,6 +59,8 @@ struct owned_veshm_info{
 	uint64_t *paddr_array;		/*!< Array of physical pages */
 	uint64_t physical_pages;	/*!< The number of physical pages */
 	uint64_t physical_pgsize;	/*!< Physical page size of a page */
+
+	int	register_cnt_proc_swappable;	/*!< Open counter from ve processes and with VE_SWAPPABLE */
 };
 
 
@@ -69,7 +71,8 @@ struct attaching_veshm_info{
 	uint64_t	target_vemva;	/*!< Address in the owner process */
 	uint64_t	size;		/*!< Size of a target memory */
 	int		pcisync_num;	/* PCISYAR/MR tuple number */
-	uint64_t	mode_flag;	
+	uint64_t	mode_flag;
+	uint64_t	req_mode_flag;	/*!< mode_flag for attaching request */
 	uint64_t	vemva;		/*!< Address in a user process */
 	int		ref_cnt_vemva;  /*!< Reference counter (VEMVA) */
 	uint64_t	vehva;		/*!< Address in a user process */

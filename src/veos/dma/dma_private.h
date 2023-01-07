@@ -30,6 +30,7 @@
 #include "ve_list.h"
 #include "vedma_hw.h"
 #include "dma_reqlist_private.h"
+#include "veos_ipc.h"
 
 #define VE_DMA_MAX_LENGTH 0x7FFFFFFFFFFFFFF8UL
 #define VH_PAGE_SHIFT (12)
@@ -108,6 +109,7 @@ struct ve_dma_req_hdl_struct {
 	int vh_sock_fd; /*!< Infomation of DMA request waiting pin down */
 	int comp;
 	int posting;
+	struct ve_ipc_sync *ipc_sync;
 };
 
 

@@ -1300,6 +1300,7 @@ int rpm_handle_create_process_req(struct veos_thread_arg *pti)
 	ProtobufCBinaryData rpm_pseudo_msg = {0};
 	struct velib_create_process create_proc = {0};
 	struct ve_core_struct *p_ve_core = NULL;
+	int num_proc_min = MAX_TASKS_PER_NODE, num_proc = -1;
 	cpu_set_t cpu_mask;
 	int core_loop = 0;
 
@@ -1320,7 +1321,7 @@ int rpm_handle_create_process_req(struct veos_thread_arg *pti)
 	}
 	memcpy(&create_proc, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
 	numa_node = create_proc.numa_num;
-	cpu_mask = create_proc.mask;
+	CPU_ZERO(&cpu_mask);
 
 
 	if (!((numa_node >= -1) &&
@@ -1336,7 +1337,7 @@ int rpm_handle_create_process_req(struct veos_thread_arg *pti)
 
 	for (; core_loop < VE_NODE(0)->nr_avail_cores;
 			core_loop++) {
-		if (!CPU_ISSET(core_loop, &cpu_mask))
+		if (!CPU_ISSET(core_loop, &create_proc.mask))
 			continue;
 		p_ve_core = VE_CORE(0, core_loop);
 		if (numa_node == -1)
@@ -1351,12 +1352,32 @@ int rpm_handle_create_process_req(struct veos_thread_arg *pti)
 		}
 		if (core_id == -1)
 			core_id = core_loop;
+		CPU_SET(core_loop, &cpu_mask);
 	}
 
 	if (core_id == -1) {
 		VEOS_DEBUG("Invalid CPU");
 		retval = -VE_EINVAL_COREID;
 		goto hndl_return;
+	}
+
+	/* Find Core with Minimum Processes from the set of allowed cores*/
+	for (int i = 0; VE_NODE(0)->numa[numa_node].cores[i] != NULL; i++) {
+		p_ve_core = VE_NODE(0)->numa[numa_node].cores[i];
+
+		if (NULL == p_ve_core ||
+				!CPU_ISSET(p_ve_core->core_num, &cpu_mask))
+			continue;
+
+		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), RDLOCK,
+				"Failed to acquire ve core read lock");
+		num_proc = psm_get_active_proc_num(p_ve_core);
+		if (num_proc < num_proc_min) {
+			num_proc_min = num_proc;
+			core_id = p_ve_core->core_num;
+		}
+		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
+				"Failed to release ve core lock");
 	}
 
 	/* AS numa_node and core_id can't send together,
@@ -2503,9 +2524,7 @@ static void veos_get_swapped_size(struct ve_task_struct *tsk,
 	struct list_head *p = NULL, *n = NULL;
 	struct ve_swapped_virtual *tmp = NULL;
 	size_t tmp_swapped_sz = 0;
-	struct ve_node_struct *vnode = VE_NODE(0);
 	int refcount = 0;
-	struct ve_page **ve_pages = vnode->ve_pages;
 
 	VEOS_TRACE("In %s", __func__);
 	list_for_each_safe(p, n, &(tsk->p_ve_mm->swapped_pages)) {
@@ -2513,8 +2532,7 @@ static void veos_get_swapped_size(struct ve_task_struct *tsk,
 		tmp = list_entry(p, struct ve_swapped_virtual, pages);
 		if ((tmp->kind == PPS_VIRT_ATB) || (tmp->kind == PPS_VIRT_DMAATB)) {
 			if (tmp->phy->pno != -1) {
-				refcount = tmp->phy->ref_cnt
-					 + ve_pages[tmp->phy->pno]->ref_count;
+				continue;
 			} else {
 				refcount = tmp->phy->ref_cnt;
 			}
@@ -2540,90 +2558,31 @@ static void veos_get_swapped_size(struct ve_task_struct *tsk,
  * @param[out] swapped_sz Pointer to contain the swapped memory size
  *		of VE process
  *
- * @return 0 on success, -errno on failure.
+ * @return 0 on success.
  */
 static int veos_get_swappable_size(struct ve_task_struct *tsk,
 				unsigned long long *swappable_sz)
 {
-	pgno_t pgno;
-	int dir = 0, ent = 0;
-	int retval = 0, ret = 0;
-	size_t tmp_swapped_sz = 0;
-	struct ve_node_struct *vnode = VE_NODE(0);
-	int refcount = 0;
+	int retval = 0;
+	size_t tmp_swappable_sz = 0;
+	uint64_t uss_cns = 0;
+	uint64_t pss_cns = 0;;
+	uint64_t pss = 0;
+	uint64_t uss = 0;
+	uint64_t rss = 0;
 
 	VEOS_TRACE("In %s", __func__);
 
-	/*  dmaatb calculate */
-	for (dir = vnode->nr_avail_cores; dir < DMAATB_DIR_NUM; dir++) {
-		if (!ps_isvalid(&(tsk->p_ve_mm->dmaatb.dir[dir])))
-			continue;
+	uss = get_uss(tsk->p_ve_mm, &uss_cns);
+	pss = get_pss(tsk->p_ve_mm, &pss_cns);
 
-		VEOS_DEBUG("DIR[%d] : 0x%lx", dir,
-				tsk->p_ve_mm->dmaatb.dir[dir].data);
-		for (ent = 0; ent < DMAATB_ENTRY_MAX_SIZE; ent++) {
-			if (pg_gettype(&(tsk->p_ve_mm->
-				dmaatb.entry[dir][ent])) != VE_ADDR_VEMAA)
-				continue;
+	VEOS_DEBUG("[pid:%d] uss : %ld, pss : %ld ", tsk->pid, uss, pss);
+	VEOS_DEBUG("[pid:%d] uss_cns : %ld, pss_cns : %ld ", tsk->pid, uss_cns, pss_cns);
 
-			pgno = pg_getpb(&(tsk->p_ve_mm->dmaatb.entry[dir][ent]),
-									PG_2M);
-			if ((pgno == PG_BUS) || (pgno == 0))
-				continue;
+	rss = uss + pss;
+	tmp_swappable_sz = rss - (uss_cns + pss_cns);
+	*swappable_sz = tmp_swappable_sz;
 
-			ret = is_ve_page_swappable(pgno, vnode);
-			if (ret != 0)
-				continue;
-
-			VEOS_DEBUG("ENT[%d][%d] : 0x%lx ", dir, ent,
-						VE_PAGE(vnode, pgno)->pgsz);
-			if (VE_PAGE(vnode, pgno)->swapped_info != NULL) {
-				refcount = VE_PAGE(vnode, pgno)->ref_count
-					 + VE_PAGE(vnode, pgno)->swapped_info->ref_cnt;
-			} else {
-				refcount = VE_PAGE(vnode, pgno)->ref_count;
-			}
-			if (refcount != 0) {
-				tmp_swapped_sz +=
-					(VE_PAGE(vnode, pgno)->pgsz) / refcount;
-				refcount = 0;
-			}
-		}
-	}
-
-	/*  atb calculate */
-	for (dir = 0; dir < ATB_DIR_NUM; dir++) {
-		if (!ps_isvalid(&(tsk->p_ve_mm->atb[0].dir[dir])))
-			continue;
-
-		VEOS_DEBUG("DIR[%d] : 0x%lx", dir,
-				tsk->p_ve_mm->atb[0].dir[dir].data);
-		for (ent = 0; ent < ATB_ENTRY_MAX_SIZE; ent++) {
-			pgno = pg_getpb(&(tsk->p_ve_mm->atb[0].entry[dir][ent]),
-									PG_2M);
-			if ((pgno == PG_BUS) || (pgno == 0))
-				continue;
-
-			ret = is_ve_page_swappable(pgno, vnode);
-			if (ret != 0)
-				continue;
-
-			VEOS_DEBUG("ENT[%d][%d] : 0x%lx ", dir, ent,
-						VE_PAGE(vnode, pgno)->pgsz);
-			if (VE_PAGE(vnode, pgno)->swapped_info != NULL) {
-				refcount = VE_PAGE(vnode, pgno)->ref_count
-					 + VE_PAGE(vnode, pgno)->swapped_info->ref_cnt;
-			} else {
-				refcount = VE_PAGE(vnode, pgno)->ref_count;
-			}
-			if (refcount != 0) {
-				tmp_swapped_sz +=
-					(VE_PAGE(vnode, pgno)->pgsz) / refcount;
-				refcount = 0;
-			}
-		}
-	}
-	*swappable_sz = tmp_swapped_sz;
 	VEOS_DEBUG("swappable_sz : %llu ", *swappable_sz);
 
 	VEOS_TRACE("Out %s", __func__);
@@ -2764,13 +2723,13 @@ int rpm_handle_ve_swapinfo_req(struct veos_thread_arg *pti)
 		pthread_mutex_lock_unlock(&(vnode->ve_pages_node_lock),
 				LOCK, "Failed to acquire ve_pages_node_lock");
 		veos_get_swapped_size(tsk, p_swapped_sz);
+		pthread_mutex_lock_unlock(&(vnode->ve_pages_node_lock),
+				UNLOCK, "Failed to release  ve_pages_node_lock");
 
 		VEOS_DEBUG("swapped_sz is %llu", swap_status->swapped_sz);
 
 		/* get swappable memory size*/
 		ret = veos_get_swappable_size(tsk, p_swappable_sz);
-		pthread_mutex_lock_unlock(&(vnode->ve_pages_node_lock),
-			UNLOCK, "Failed to release  ve_pages_node_lock");
 		pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock),
 			UNLOCK, "Failed to release thread_group_mm_lock");
 		if (ret != 0) {

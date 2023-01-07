@@ -3778,6 +3778,7 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 	int retval = -1;
 	PseudoVeosMessage *rusage_req = NULL;
 	struct ve_task_struct *tsk = NULL, *group_leader = NULL;
+	struct ve_task_struct *temp = NULL, *ve_task_list_head = NULL;
 	struct ve_rusage ve_r = {{0}};
 	struct ve_rusage_info rusage_task = {0};
 	uint64_t max_rss = 0;
@@ -3847,11 +3848,31 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 	group_leader = tsk->group_leader;
 
 	if (rusage_task.cleanup) {
-
+		/* Release the task reference temporarily and acquire it
+		 * after getting the thread group del_lock. This is required
+		 * to avoid a deadlock scenario between this thread and the
+		 * thread performing same task's zombie partial clean-up.
+		 * The later makes sure no other thread has the task reference
+		 * while performing partial clean-up.
+		 */
+		pthread_mutex_lock_unlock(&tsk->ref_lock, LOCK,
+				"Failed to acquire task reference lock");
+		tsk->ref_count--;
+		VEOS_DEBUG("PID:%d :: ref_count(after decrement):%d :: exiting flag:%d",
+			tsk->pid, tsk->ref_count, tsk->exit_status);
+		if (tsk->ref_count != 0)
+			pthread_cond_signal(&tsk->ref_lock_signal);
+		pthread_mutex_lock_unlock(&tsk->ref_lock, UNLOCK,
+				"Failed to release task reference lock");
 		VEOS_DEBUG("Parent acquiring del_lock for PID %d",
 				group_leader->pid);
 		pthread_mutex_lock_unlock(&(group_leader->sighand->del_lock), LOCK,
 				"Failed to acquire thread group delete lock");
+		tsk = checkpid_in_zombie_list(rusage_task.pid);
+		if (tsk == NULL) {
+			VEOS_DEBUG("Child PID: %d not found.", rusage_task.pid);
+			goto send_ack1;
+		}
 
 		/* populating cexec_time field in parent as it waits for child */
 		group_leader->parent->sighand->cexec_time =
@@ -3870,6 +3891,37 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 					group_leader->parent->pid, max_rss);
 		}
 
+		/* Delete this VE process node if it is still on VE core */
+		pthread_rwlock_lock_unlock(&(VE_CORE(0, group_leader->core_id)->ve_core_lock),
+			WRLOCK,
+			"Failed to acquire ve core write lock");
+		if (group_leader->ve_task_state == ZOMBIE)
+			goto skip_delete_from_core;
+		VEOS_DEBUG("PID %d state(%d) is not ZOMBIE, removing it from core list",
+							group_leader->pid, group_leader->ve_task_state);
+		ve_task_list_head = VE_CORE(0, group_leader->core_id)->ve_task_list;
+
+		if (group_leader == ve_task_list_head && group_leader->next == group_leader) {
+			/* Current task to be deleted is head of the list */
+			VEOS_DEBUG("PID %d is to be deleted", group_leader->pid);
+			ve_task_list_head = NULL;
+			VE_CORE(0, group_leader->core_id)->ve_task_list = ve_task_list_head;
+			goto skip_delete_from_core;
+		}
+		temp = group_leader->next;
+		while (temp->next != group_leader)
+			temp = temp->next;
+
+		temp->next = group_leader->next;
+		if (group_leader == ve_task_list_head) {
+			ve_task_list_head = temp->next;
+			VE_CORE(0, group_leader->core_id)->ve_task_list = ve_task_list_head;
+			VEOS_DEBUG("Now Head is %p", ve_task_list_head);
+		}
+skip_delete_from_core:
+		pthread_rwlock_lock_unlock(&(VE_CORE(0, group_leader->core_id)->ve_core_lock),
+				UNLOCK,
+				"Failed to release ve core lock");
 		pthread_mutex_lock_unlock(&(group_leader->ve_task_lock), LOCK,
 				"Failed to acquire task lock");
 
@@ -3887,7 +3939,7 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 		if (!(group_leader->ref_count == 1) &&
 				pthread_cond_wait(&group_leader->ref_lock_signal,
 					&group_leader->ref_lock)) {
-			veos_abort("pthread_cond_signal failed %s",
+			veos_abort("pthread_cond_wait failed %s",
 					strerror(errno));
 		}
 		pthread_mutex_lock_unlock(&group_leader->ref_lock, UNLOCK,
@@ -4748,6 +4800,413 @@ int psm_handle_set_next_thread_worker_req(struct veos_thread_arg *pti)
 	if (retval == -1)
 		VEOS_ERROR("Failed to send SET NEXT THREAD WORKER "
 				"acknowledgement to pseudo process");
+
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief prepare the acknowledgement and send the existing fd to pseudo process
+ *
+ * @param[in] pti contains the request message received from pseudo process
+ * @param[in] pseudo_vefd value at vedriver fd
+ *
+ * @return positive value on success, -1 on failure
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_pseudo_send_stop_user_threads_ack(struct veos_thread_arg *pti,
+		int ack_ret)
+{
+	ssize_t retval = -1;
+	char buf[MAX_PROTO_MSG_SIZE] = {0};
+	ssize_t pseudo_msg_len = 0, msg_len = 0;
+	PseudoVeosMessage stop_user_threads_ack = PSEUDO_VEOS_MESSAGE__INIT;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument received");
+		goto hndl_return;
+	}
+
+	/* Popuate SET RETURN ACK process return value */
+	stop_user_threads_ack.has_syscall_retval = true;
+	stop_user_threads_ack.syscall_retval = ack_ret;
+
+	pseudo_msg_len = pseudo_veos_message__get_packed_size(
+		&stop_user_threads_ack);
+
+	msg_len = pseudo_veos_message__pack(&stop_user_threads_ack,
+		(uint8_t *)buf);
+	if (msg_len != pseudo_msg_len) {
+		VEOS_ERROR("Packing message protocol buffer error");
+		VEOS_DEBUG("Expected length: %ld, Returned length: %ld",
+				pseudo_msg_len, msg_len);
+		goto hndl_return;
+	}
+
+	VEOS_DEBUG("Sending STOP USER THREADS ACK");
+	/* send SET NEXT THREAD WORKER ACK */
+	retval = psm_pseudo_send_cmd(pti->socket_descriptor,
+		buf, pseudo_msg_len);
+	if (retval < pseudo_msg_len) {
+		VEOS_ERROR("Failed to send response to pseudo process");
+		VEOS_DEBUG("Expected bytes: %ld, Transferred bytes: %ld",
+				pseudo_msg_len, retval);
+		retval = -1;
+		goto hndl_return;
+	}
+
+	retval = 0;
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Handles the request of set flag which set “ve_sched_state” of
+ *        all threads except worker to VE_SCHED_STOPPING
+ *
+ * @param[in] pti Contains the request message received from Pseudo Process
+ *
+ * @return positive value on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_handle_stop_user_threads_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	int pid = -1;
+	PseudoVeosMessage *request = NULL;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument received");
+		goto hndl_return;
+	}
+
+	request = (PseudoVeosMessage *)pti->pseudo_proc_msg;
+	pid = request->pseudo_pid;
+
+	retval = psm_handle_stop_user_threads_request(pid);
+	retval = psm_pseudo_send_stop_user_threads_ack(pti, retval);
+	if (retval == -1)
+		VEOS_ERROR("Failed to send STOP USER THREADS "
+				"acknowledgement to pseudo process");
+
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief prepare the acknowledgement and send the existing fd to pseudo process
+ *
+ * @param[in] pti contains the request message received from pseudo process
+ * @param[in] pseudo_vefd value at vedriver fd
+ *
+ * @return positive value on success, -1 on failure
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_pseudo_send_start_user_threads_ack(struct veos_thread_arg *pti,
+		int ack_ret)
+{
+	ssize_t retval = -1;
+	char buf[MAX_PROTO_MSG_SIZE] = {0};
+	ssize_t pseudo_msg_len = 0, msg_len = 0;
+	PseudoVeosMessage stop_user_threads_ack = PSEUDO_VEOS_MESSAGE__INIT;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument received");
+		goto hndl_return;
+	}
+
+	/* Popuate SET RETURN ACK process return value */
+	stop_user_threads_ack.has_syscall_retval = true;
+	stop_user_threads_ack.syscall_retval = ack_ret;
+
+	pseudo_msg_len = pseudo_veos_message__get_packed_size(
+		&stop_user_threads_ack);
+
+	msg_len = pseudo_veos_message__pack(&stop_user_threads_ack,
+		(uint8_t *)buf);
+	if (msg_len != pseudo_msg_len) {
+		VEOS_ERROR("Packing message protocol buffer error");
+		VEOS_DEBUG("Expected length: %ld, Returned length: %ld",
+				pseudo_msg_len, msg_len);
+		goto hndl_return;
+	}
+
+	VEOS_DEBUG("Sending START USER THREADS ACK");
+	/* send SET NEXT THREAD WORKER ACK */
+	retval = psm_pseudo_send_cmd(pti->socket_descriptor,
+		buf, pseudo_msg_len);
+	if (retval < pseudo_msg_len) {
+		VEOS_ERROR("Failed to send response to pseudo process");
+		VEOS_DEBUG("Expected bytes: %ld, Transferred bytes: %ld",
+				pseudo_msg_len, retval);
+		retval = -1;
+		goto hndl_return;
+	}
+
+	retval = 0;
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+
+/**
+ * @brief Handles the request of set flag which set “ve_sched_state” of
+ *        all threads except worker to VE_SCHED_STARTED
+ *
+ * @param[in] pti Contains the request message received from Pseudo Process
+ *
+ * @return positive value on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_handle_start_user_threads_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	int pid = -1;
+	PseudoVeosMessage *request = NULL;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument received");
+		goto hndl_return;
+	}
+
+	request = (PseudoVeosMessage *)pti->pseudo_proc_msg;
+	pid = request->pseudo_pid;
+
+	retval = psm_handle_start_user_threads_request(pid);
+	retval = psm_pseudo_send_start_user_threads_ack(pti, retval);
+
+	if (retval == -1)
+		VEOS_ERROR("Failed to send START USER THREADS "
+				"acknowledgement to pseudo process");
+
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief prepare the acknowledgement and send the existing fd to pseudo process
+ *
+ * @param[in] pti contains the request message received from pseudo process
+ * @param[in] pseudo_vefd value at vedriver fd
+ *
+ * @return positive value on success, -1 on failure
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_pseudo_send_get_user_threads_state_ack(struct veos_thread_arg *pti,
+		int ack_ret)
+{
+	ssize_t retval = -1;
+	char buf[MAX_PROTO_MSG_SIZE] = {0};
+	ssize_t pseudo_msg_len = 0, msg_len = 0;
+	PseudoVeosMessage get_user_threads_state_ack = PSEUDO_VEOS_MESSAGE__INIT;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument received");
+		goto hndl_return;
+	}
+
+	/* Popuate SET RETURN ACK process return value */
+	get_user_threads_state_ack.has_syscall_retval = true;
+	get_user_threads_state_ack.syscall_retval = ack_ret;
+
+	pseudo_msg_len = pseudo_veos_message__get_packed_size(
+		&get_user_threads_state_ack);
+
+	msg_len = pseudo_veos_message__pack(&get_user_threads_state_ack,
+		(uint8_t *)buf);
+	if (msg_len != pseudo_msg_len) {
+		VEOS_ERROR("Packing message protocol buffer error");
+		VEOS_DEBUG("Expected length: %ld, Returned length: %ld",
+				pseudo_msg_len, msg_len);
+		goto hndl_return;
+	}
+
+	VEOS_DEBUG("Sending GET USER THREADS STATE ACK");
+	/* send SET NEXT THREAD WORKER ACK */
+	retval = psm_pseudo_send_cmd(pti->socket_descriptor,
+		buf, pseudo_msg_len);
+	if (retval < pseudo_msg_len) {
+		VEOS_ERROR("Failed to send response to pseudo process");
+		VEOS_DEBUG("Expected bytes: %ld, Transferred bytes: %ld",
+				pseudo_msg_len, retval);
+		retval = -1;
+		goto hndl_return;
+	}
+
+	retval = 0;
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+
+/**
+ * @brief Handles the request of set flag which check all the flags
+ *        “ve_sched_state” of all threads except worker.
+ *
+ * @param[in] pti Contains the request message received from Pseudo Process
+ *
+ * @return 0 when all threads except worker are started,
+ *         2 when all threads except worker are stoped,
+ *         1 on other case.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_handle_get_user_threads_state_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	int pid = -1;
+	PseudoVeosMessage *request = NULL;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument received");
+		goto hndl_return;
+	}
+
+	request = (PseudoVeosMessage *)pti->pseudo_proc_msg;
+	pid = request->pseudo_pid;
+
+	retval = psm_handle_get_user_threads_state_request(pid);
+	retval = psm_pseudo_send_get_user_threads_state_ack(pti, retval);
+
+	if (retval == -1)
+		VEOS_ERROR("Failed to send GET USER THREADS STATE "
+				"acknowledgement to pseudo process");
+
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+/**
+ *  @brief Handles the SIGNAL_MASK_REQ request from pseudo process.
+ *
+ *  @param[in] pti Contains the request received from the pseudo process
+ *
+ *  @return 0 on success, -1 on failure.
+ *
+ *  @internal
+ *  @author PSMG / Process management
+ */
+int psm_handle_set_signal_mask_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	sigset_t ve_mask = {{0}};
+	PseudoVeosMessage *signal_mask_req = NULL;
+	pid_t pid = -1;
+	struct ve_task_struct *tsk = NULL;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument "
+				"received from pseudo process");
+		goto hndl_return;
+	}
+
+	signal_mask_req = (PseudoVeosMessage *)pti->pseudo_proc_msg;
+	pid = signal_mask_req->pseudo_pid;
+	VEOS_DEBUG("Received set signal mask request from Pseudo PID:%d", pid);
+
+	memcpy(&ve_mask, signal_mask_req->pseudo_msg.data,
+			signal_mask_req->pseudo_msg.len);
+
+	tsk = find_ve_task_struct(pid);
+	if (tsk == NULL) {
+		VEOS_ERROR("Failed to find task structure");
+		VEOS_DEBUG("Failed to fetch task structure for PID %d", pid);
+		retval = -ESRCH;
+	} else {
+		if (!tsk->execed_proc)
+			memcpy(&(tsk->blocked), &ve_mask, sizeof(sigset_t));
+		put_ve_task_struct(tsk);
+		retval = 0;
+	}
+
+hndl_return:
+	VEOS_DEBUG("PID : %d SIGNAL MASK REQ returns %d", pid, retval);
+	/* Send ACK */
+	retval = psm_pseudo_set_signal_mask_ack(pti, retval);
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Sends acknowlegdment for SIGNAL_MASK_REQ request received
+ * from pseudo process.
+ *
+ * @param[in] pti Contains the request received from the pseudo process
+ * @param[in] ack_ret Acknowledgment to be send to pseudo process
+ *
+ * @return positive value on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_pseudo_set_signal_mask_ack(struct veos_thread_arg *pti, int ack_ret)
+{
+	ssize_t retval = -1;
+	PseudoVeosMessage signal_mask_ack = PSEUDO_VEOS_MESSAGE__INIT;
+	char buf[MAX_PROTO_MSG_SIZE] = {0};
+	ssize_t pseudo_msg_len = 0, msg_len = 0;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("NULL argument received");
+		goto hndl_return;
+	}
+
+	/* Populate acknowledgment message */
+	signal_mask_ack.has_syscall_retval = true;
+	signal_mask_ack.syscall_retval = ack_ret;
+
+	pseudo_msg_len = pseudo_veos_message__get_packed_size(&signal_mask_ack);
+	msg_len =  pseudo_veos_message__pack(&signal_mask_ack, (uint8_t *)buf);
+	if (pseudo_msg_len != msg_len) {
+		VEOS_ERROR("Internal message protocol error");
+		VEOS_DEBUG("Expected length: %ld, Returned length: %ld",
+				pseudo_msg_len, msg_len);
+		retval = -1;
+		goto hndl_return;
+	}
+
+	VEOS_DEBUG("Sending signal mask request acknowledgement");
+	retval = psm_pseudo_send_cmd(pti->socket_descriptor,
+			buf, pseudo_msg_len);
+	if (retval < pseudo_msg_len) {
+		VEOS_ERROR("Failed to send response to pseudo process");
+		VEOS_DEBUG("Expected bytes: %ld, Transferred bytes: %ld",
+				pseudo_msg_len, retval);
+		retval = -1;
+	}
 
 hndl_return:
 	VEOS_TRACE("Exiting");

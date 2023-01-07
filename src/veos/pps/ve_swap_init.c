@@ -784,6 +784,7 @@ veos_init_pps_file_info(char *pps_file_path, size_t pps_file_size,
 
 	PPS_TRACE(cat_os_pps, "In %s", __func__);
 	pthread_mutex_init(&(vnode->pps_file_lock), NULL);
+	pthread_mutex_init(&(vnode->pps_file_buffer_lock), NULL);
 
 	if((pps_file_path == NULL) || (pps_file_size == 0))
 		goto hndl_return;

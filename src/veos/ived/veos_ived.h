@@ -78,6 +78,9 @@ struct ived_shared_resource_data{
 
 	struct veos_vhshm veos_vhshm_res_head; /* !< VHSHM resource structure */
 	bool is_swap_out;			/*!< process swap out or not */
+	struct list_head swapped_owned_veshm_list;	/*!< List head of swapped-out owned VESHM */
+	struct list_head swapped_attach_veshm_list;	/*!< List head of swapped-out attaching VESHM */
+	pthread_mutex_t re_attach_veshm_lock;	/*!< Lock for re-attach VESHM from PPS */
 };
 
 

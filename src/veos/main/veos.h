@@ -254,6 +254,7 @@ struct ve_node_struct {
 	struct ve_swap_file_info pps_file; /* !< Information of PPS file */
 	pthread_mutex_t pps_file_lock; /* !< Lock which protects pps_file */
 	void *pps_file_transfer_buffer; /* !< Address of PPS file transfer buffer */
+	pthread_mutex_t pps_file_buffer_lock; /* !< Lock for transferring data from pps file buffer to pps file */
 };
 
 /**

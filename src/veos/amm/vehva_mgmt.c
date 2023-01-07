@@ -413,3 +413,59 @@ void mark_bits(uint64_t *bmap, int64_t entry, int64_t count,
 	}
 	VEOS_TRACE("returned");
 }
+
+/**
+* @brief  This function marks the bits as unused in the
+*         pseudo vehva bitmap at an entry till the count given.
+*
+* @param[out] bmap pseudo vehva list bitmap
+* @param[in] entry Position from which bits are set
+* @param[in] count Number of bits to set
+* @param[in] flag Information about how the bits has to be
+*             marked and which bitmap has to be marked.
+*          MARK_USED: Bits has to be marked used.
+*          MARK_UNUSED: Bits has to be marked unused.
+*                       or unused depending upon other flag.
+*
+* @return It returns 1 if the bits are marked as specified in flag.
+* else it returns 0.
+*/
+int check_bits(uint64_t *bmap, int64_t entry, int64_t count,
+		uint8_t flag)
+{
+	int64_t word = 0, bit = 0;
+
+	VEOS_TRACE("Invoked");
+	word = entry / BITS_PER_WORD;
+	bit = entry % BITS_PER_WORD;
+
+	VEOS_DEBUG("word:%ld bit:%ld", word, bit);
+
+	while (count) {
+		if ((flag & MARK_USED) && (bmap[word] &
+					((uint64_t)1 << bit))) {
+			goto err_out;
+		} else if ((flag & MARK_UNUSED) && (!(bmap[word] &
+					((uint64_t)1 << bit)))) {
+			goto err_out;
+		}
+
+		if (!(--count))
+			break;
+
+		bit++;
+
+		if (bit >= BITS_PER_WORD) {
+			word++;
+			bit = 0;
+		}
+	}
+
+	VEOS_DEBUG("returned with success");
+	VEOS_TRACE("returned");
+	return 1;
+err_out:
+	VEOS_DEBUG("returned with failure");
+	VEOS_TRACE("returned");
+	return 0;
+}

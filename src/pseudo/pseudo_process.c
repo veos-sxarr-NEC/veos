@@ -63,6 +63,7 @@
 #include "vemmr_mgmt.h"
 #include <sys/time.h>
 #include <sys/resource.h>
+#include "signal_comm.h"
 
 #define PROGRAM_NAME "ve_exec"
 #define ISDIGIT(c)      ((unsigned)c-'0' < 10)
@@ -826,6 +827,9 @@ int main(int argc, char *argv[], char *envp[])
 	int numa_node = -1;
 	int mem_policy = MPOL_DEFAULT;
 	char *io_type = NULL;
+	char *envp_sig = getenv("VE_SIGPROCMASK");
+	long mask = 0;
+	int signum = 0;
 
 	/* Block all the signals till we successfully create VE process
 	 * also store the previous mask, storing previous mask will
@@ -1351,7 +1355,44 @@ int main(int argc, char *argv[], char *envp[])
 
 	PSEUDO_DEBUG("MAKING A STACK IS END.");
 
+	/* If the environment variable is set to VE_SIGPROCMASK,
+	 * check the bits to add the corresponding signal to the signal mask.
+	 */
+	if (envp_sig) {
+		mask = strtol(envp_sig, &endptr, 0);
+		PSEUDO_DEBUG("mask value:%ld\n", mask);
+		if (mask > 0 && *endptr == '\0') {
+			sigemptyset(&curr_ve_mask);
+			for (signum = 0; mask > 0 && signum < 32 ; signum++) {
+				if ( mask % 2  == 1 && signum != 0) {
+					sigaddset(&curr_ve_mask, signum);
+					PSEUDO_DEBUG("sigaddset signal:%d", signum);
+				}
+			mask = mask / 2;
+			}
+		}
+		unsetenv(envp_sig);
+	}
 
+	/* Communicate with veos to set new signal mask
+	 * and get the old signal mask.
+	 * */
+	retval = pseudo_psm_send_signal_mask(handle->veos_sock_fd, curr_ve_mask);
+	if (0 > retval) {
+		PSEUDO_ERROR("veos request error");
+		PSEUDO_DEBUG("failed to send set signal mask request, %d", retval);
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
+	/* Waiting for ACK from PSM */
+	retval = pseudo_psm_recv_signal_mask_ack(handle->veos_sock_fd);
+	if (0 > retval) {
+		PSEUDO_ERROR("veos acknowledgement error");
+		PSEUDO_DEBUG("Failed to receive SIGNAL_MASK_REQ "
+				"acknowledgement: %d", retval);
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
 
 	/* free ve_argv */
 	for (i = 0; i < ve_argc; i++)

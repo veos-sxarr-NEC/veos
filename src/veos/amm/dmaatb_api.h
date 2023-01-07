@@ -63,6 +63,11 @@ int64_t veos_alloc_dmaatb_entry_for_vemva(pid_t, pid_t, vemva_t, size_t,
 int64_t veos_alloc_dmaatb_entry_for_aa(pid_t, uint64_t *, int, int, uint64_t);
 int64_t veos_alloc_dmaatb_entry_for_aa_tsk(struct ve_task_struct *, int64_t *,
 		int, int, uint64_t, bool);
+int64_t veos_alloc_dmaatb_entry_by_vehva(pid_t, uint64_t *, int, int, uint64_t,
+		uint64_t);
+int64_t veos_alloc_dmaatb_entry_by_vehva_tsk(struct ve_task_struct *, vhsaa_t *,
+		int, int, uint64_t, bool, uint64_t);
+
 int8_t amm_set_dmaatb(uint64_t, int, uint64_t, struct ve_task_struct *, int,
 		uint8_t, uint8_t, uint16_t);
 int8_t amm_unset_dmaatb(uint64_t, struct ve_task_struct *, uint64_t, uint8_t);

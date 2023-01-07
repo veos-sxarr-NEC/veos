@@ -32,6 +32,7 @@
 #include "buddy.h"
 #include "mm_type.h"
 #include "ve_shm.h"
+#include "ived_common.h"
 
 /**
 * @brief This function will dump all PCIATB.
@@ -379,11 +380,6 @@ int alloc_pcientry(uint64_t start_entry,
 	int idx = 0, entry_cnt = 0;
 	struct ve_node_struct *vnode_info = VE_NODE(0);
 	int ret = 0;
-	int swappable;
-	pgno_t pgnum;
-	struct mmap_desc *mmap_d = NULL;
-	uint64_t pgflag = 0;
-	uint64_t pgperm = 0;
 
 	VEOS_TRACE("invoked with start_entry(0x%lx) count(%ld) page_base(%p)",
 			start_entry, count, page_base);
@@ -406,40 +402,6 @@ int alloc_pcientry(uint64_t start_entry,
 			pthread_mutex_lock_unlock(&vnode_info->pciatb_lock, UNLOCK,
 					"Failed to release pci lock");
 			return ret;
-		}
-		swappable = 0;
-		pthread_mutex_lock_unlock(&vnode_info->ve_pages_node_lock, LOCK,
-						"Fail to acquire ve page lock");
-		pgnum = pfnum(page_base[entry_cnt], PG_2M);
-		if (vnode_info->ve_pages[pgnum] == (struct ve_page *)-1)
-			pgnum = ROUN_DN(pgnum, HUGE_PAGE_IDX);
-		if (!(is_ve_page_swappable(pgnum, vnode_info))) {
-			swappable = 1;
-			pgflag = vnode_info->ve_pages[pgnum]->flag;
-			pgperm = vnode_info->ve_pages[pgnum]->perm;
-		}
-		vnode_info->ve_pages[pgnum]->pci_count++;
-		pthread_mutex_lock_unlock(&vnode_info->ve_pages_node_lock,
-					UNLOCK, "Fail to release ve page lock");
-		if (swappable) {
-			/* swappable memory is 'writable private anonymous' or
-			 * 'writable private filebacked', so type of private_data
-			 * is 'struct mmap_desc'.
-			 */
-			if (!MMAP_DESC(pgflag, pgperm))
-				veos_abort("Illegal memory is found "
-					   "while increment non-swappable memory size");
-			if (vnode_info->ve_pages[pgnum]->private_data) {
-				mmap_d = (struct mmap_desc *)(vnode_info->
-						ve_pages[pgnum]->private_data);
-				pthread_mutex_lock_unlock(
-						&mmap_d->mmap_desc_lock, LOCK,
-						"Fail to get mmap desc lock");
-				mmap_d->ns_pages++;
-				pthread_mutex_lock_unlock(
-						&mmap_d->mmap_desc_lock, UNLOCK,
-						"Fail to release mmap desc lock");
-			}
 		}
 	}
 
@@ -922,7 +884,7 @@ bool is_contiguos(struct buddy_mempool *pci_mp,
  * @return On success returns statring PCIATB entry and negative of errno on failure.
  */
 int64_t veos_alloc_pciatb(pid_t pid, uint64_t vaddr,
-		size_t size, uint64_t perm, bool access_ok, bool update_mns)
+		size_t size, uint64_t perm, bool access_ok)
 {
 	struct ve_task_struct *tsk = NULL;
 	struct ve_node_struct *vnode_info = VE_NODE(0);
@@ -932,7 +894,6 @@ int64_t veos_alloc_pciatb(pid_t pid, uint64_t vaddr,
 	uint64_t pg_mode = -1;
 	int req_type = -1;
 	int64_t ret = 0, count = 0;
-	uint64_t uss_ns = 0, pss_ns = 0;
 	bool same = false;
 
 	pci_pgsize = vnode_info->pci_bar01_pgsz;
@@ -1085,13 +1046,6 @@ int64_t veos_alloc_pciatb(pid_t pid, uint64_t vaddr,
 			UNLOCK, "Failed to release mm-thread-group-lock");
 		goto pci_failed;
 	}
-	if (update_mns) {
-		get_uss(tsk->p_ve_mm, &uss_ns);
-		get_pss(tsk->p_ve_mm, &pss_ns);
-		if (tsk->p_ve_mm->mns < (uss_ns + pss_ns))
-			tsk->p_ve_mm->mns = (uss_ns + pss_ns);
-		VEOS_DEBUG("mns : %ld byte\n", tsk->p_ve_mm->mns);
-	}
 	pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock), UNLOCK,
 				"Failed to release mm-thread-group-lock");
 
@@ -1151,14 +1105,9 @@ int64_t veos_delete_pciatb(uint64_t entry, size_t size)
 	size_t pci_pgsize = -1;
 	struct ve_node_struct *vnode_info = VE_NODE(0);
 	int64_t ret = 0;
-	pgno_t pgnum;
-	int swappable;
-	struct mmap_desc *mmap_d = NULL;
-	uint64_t pgflag = 0;
-	uint64_t pgperm = 0;
 
-	VEOS_DEBUG("invoked to detete pcientry(%ld)"
-		"with size(0x%lx)", entry, size);
+	VEOS_DEBUG("invoked to detete pcientry(%ld) with size(0x%lx)",
+		entry, size);
 
 	pci_pgsize = vnode_info->pci_bar01_pgsz;
 
@@ -1186,7 +1135,6 @@ int64_t veos_delete_pciatb(uint64_t entry, size_t size)
 	/* Calculate the page bage from PCI
 	 * entry and decrement the ref count*/
 	for (idx = entry; idx < (entry + entry_cnt); idx++) {
-		swappable = 0;
 		/* First check whether entries
 		 * is already allocated or not*/
 		if (idx > vnode_info->pci_mempool->total_pages) {
@@ -1205,54 +1153,9 @@ int64_t veos_delete_pciatb(uint64_t entry, size_t size)
 		page_base = GET_PCIATB_PB(&vnode_info->pciatb[idx]);
 		/*Invalidating pci s/w entry*/
 		vnode_info->pciatb[idx].data = INVALID_ENTRY;
-		pthread_mutex_lock_unlock(&vnode_info->ve_pages_node_lock, LOCK,
-						"Fail to acquire ve page lock");
-		if (vnode_info->ve_pages[page_base] == NULL) {
-			VEOS_DEBUG("%ld page is not found", page_base);
-			pthread_mutex_lock_unlock(
-					&vnode_info->ve_pages_node_lock,
-					UNLOCK, "Fail to release ve page lock");
-			pthread_mutex_lock_unlock(&vnode_info->pciatb_lock,
-					UNLOCK, "Failed to release pci lock");
-			return ret;
-		} else if (vnode_info->ve_pages[page_base] ==
-							(struct ve_page *)-1) {
-			pgnum = ROUN_DN(page_base, HUGE_PAGE_IDX);
-		} else {
-			pgnum = page_base;
-		}
-		vnode_info->ve_pages[pgnum]->pci_count--;
-		if (!(is_ve_page_swappable(pgnum, vnode_info))) {
-			swappable = 1;
-			pgflag = vnode_info->ve_pages[pgnum]->flag;
-			pgperm = vnode_info->ve_pages[pgnum]->perm;
-		}
-		pthread_mutex_lock_unlock(&vnode_info->ve_pages_node_lock,
-					UNLOCK, "Fail to release ve page lock");
-
-		if (swappable) {
-			/* swappable memory is 'writable private anonymous' or
-			 * 'writable private filebacked', so type of private_data
-			 * is 'struct mmap_desc'.
-			 */
-			if (!MMAP_DESC(pgflag, pgperm))
-				veos_abort("Illegal memory is found "
-					"while decrement non-swappable memory size");
-			if (vnode_info->ve_pages[pgnum]->private_data) {
-				mmap_d = (struct mmap_desc *)(vnode_info->
-						ve_pages[pgnum]->private_data);
-				pthread_mutex_lock_unlock(
-						&mmap_d->mmap_desc_lock, LOCK,
-						"Fail to get mmap desc lock");
-				mmap_d->ns_pages--;
-				pthread_mutex_lock_unlock(
-						&mmap_d->mmap_desc_lock, UNLOCK,
-						"Fail to release mmap desc lock");
-			}
-		}
 
 		ret = amm_put_page(page_base * PAGE_SIZE_2MB);
-		if (ret < 0) {
+		if ((ret < 0) && (ret != -EBUSY)) {
 			VEOS_DEBUG("Error(%s) in inc ref count",
 					strerror(-ret));
 			pthread_mutex_lock_unlock(&vnode_info->pciatb_lock,

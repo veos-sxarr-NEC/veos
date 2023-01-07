@@ -845,6 +845,84 @@ hndl_return:
 }
 
 /**
+ * @brief Handler of ve_stop_user_threads().
+ *        This function set the flag which stop threads
+ *        except worker thread in the process.
+ *
+ * @param [in] handle VEOS handle of pseudo process.
+ * @return 0 on Success, -errno on failure.
+ */
+int ve_sys_stop_user_threads(veos_handle *handle)
+{
+	int ret = 0;
+
+	PSEUDO_TRACE("Entering");
+
+	if (handle == NULL) {
+		ret = -EFAULT;
+		PSEUDO_ERROR("%s", strerror(-ret));
+		goto hndl_return;
+	}
+	ret = ve_request_veos(handle, STOP_USER_THREADS, NULL, NULL);
+hndl_return:
+	PSEUDO_TRACE("Exiting");
+	return ret;
+}
+
+/**
+ * @brief Handler of ve_start_user_threads().
+ *        This function set the flag which start threads
+ *        except worker thread in the process.
+ *
+ * @param [in] handle VEOS handle of pseudo process.
+ * @return 0 on Success, -errno on failure.
+ */
+int ve_sys_start_user_threads(veos_handle *handle)
+{
+	int ret = 0;
+
+	PSEUDO_TRACE("Entering");
+
+	if (handle == NULL) {
+		ret = -EFAULT;
+		PSEUDO_ERROR("%s", strerror(-ret));
+		goto hndl_return;
+	}
+
+	ret = ve_request_veos(handle, START_USER_THREADS, NULL, NULL);
+hndl_return:
+	PSEUDO_TRACE("Exiting");
+	return ret;
+}
+
+/**
+ * @brief Handler of ve_get_user_threads_state().
+ *        This function check the flag which stop threads
+ *        except worker thread in the process.
+ *
+ * @param [in] handle VEOS handle of pseudo process.
+ *
+ * @return 0 on Success, -errno on failure.
+ */
+int ve_sys_get_user_threads_state(veos_handle *handle)
+{
+	int ret = 0;
+
+	PSEUDO_TRACE("Entering");
+
+	if (handle == NULL) {
+		ret = -EFAULT;
+		PSEUDO_ERROR("%s", strerror(-ret));
+		goto hndl_return;
+	}
+
+	ret = ve_request_veos(handle, GET_USER_THREADS_STATE, NULL, NULL);
+hndl_return:
+	PSEUDO_TRACE("Exiting");
+	return ret;
+}
+
+/**
  * @brief This function gets VE product neme from a sysfs file of current VE node and a correspondence table.
  *
  * @param[in] handle VEOS handle of pseudo process.

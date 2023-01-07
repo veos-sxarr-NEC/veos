@@ -1529,6 +1529,16 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 		break;
 	case VE_SYSVE_SET_NEXT_THREAD_WORKER:
 		retval = ve_sys_set_next_thread_worker(handle);
+		break;
+	case VE_SYSVE_STOP_USER_THREADS:
+		retval = ve_sys_stop_user_threads(handle);
+		break;
+	case VE_SYSVE_START_USER_THREADS:
+		retval = ve_sys_start_user_threads(handle);
+		break;
+	case VE_SYSVE_GET_USER_THREADS_STATE:
+		retval = ve_sys_get_user_threads_state(handle);
+		break;
 	case VE_SYSVE_VEMVA_REGION:
 		retval = ve_sys_get_vemva_region(handle,
 						args[1], args[2], args[3]);

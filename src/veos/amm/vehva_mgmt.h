@@ -105,3 +105,4 @@ int veos_vehva_free(vehva_t, size_t, struct ve_task_struct *);
 
 int64_t veos_get_free_vehva(uint64_t *, int64_t, int64_t, int64_t);
 void mark_bits(uint64_t *, int64_t, int64_t, uint8_t);
+int check_bits(uint64_t *, int64_t, int64_t, uint8_t);
