@@ -25,15 +25,13 @@
 */
 
 #include <elf.h>
-#include "ve_memory.h"
 #include "handle.h"
 #include "comm_request.h"
+#include "sys_mm.h"
 
 typedef Elf64_Ehdr Elf_Ehdr;
 typedef Elf64_Phdr Elf_Phdr;
 typedef Elf64_Shdr Elf_Shdr;
-
-typedef unsigned long long offset_t;
 
 #define VE_FIXED_ADDRESS_SPACE_SIZE  0x10000000000 /* 1TB */
 
@@ -42,6 +40,13 @@ typedef unsigned long long offset_t;
 #define RANDOM_BYTE		16
 #define AUX_BYTE		2
 #define ALIGNED_8BYTE		7
+
+/* Macro to represent maximum value of hardware mask */
+#define HWCAP_VE_MASK (0xFFFFFFFF)
+/* Macro used to identify VE1 device capability*/
+#define HWCAP_VE_VE1 (0x0)
+/* Macro used to identify VE3 device capability*/
+#define HWCAP_VE_VE3 (0x1)
 
 /**
 * @brief data structer for Auxilary vector information.
@@ -58,25 +63,8 @@ struct auxv_info {
 	Elf64_Addr    e_phdr;		/*!< Elf program header pointer*/
 	Elf64_Addr    e_base;		/*!< ELf base*/
 	Elf64_Xword	p_align;	/*!< Segment alignment*/
+	Elf64_Xword   p_hwcap;          /* Harware Capability = AT_HWCAP (Execution Device) VE1 or VE3 */
 };
-
-/**
-* @brief This structure contains the VE process stack and heap limit
-* related information.
-*/
-struct ve_address_space_info {
-	uint64_t heap_start;		/*!< Start address of heap */
-	uint64_t heap_top;		/*!< Heap top of VE Process */
-	uint64_t stack_limit;		/*!< Max stack limit for a VE Process.
-					 * value = 0 in case of UNLIMITED,
-					 * value = 'X' in case of User-Defined
-					 * or default(Currently 10MB).
-					 */
-	uint64_t stack_bottom;		/*!< Stack bottom of a VE Process */
-	uint64_t stack_pointer_aligned;	/*!< Page size aligned actual stack
-					 * pointer of a VE process. */
-};
-extern struct ve_address_space_info ve_info;
 
 /**
 * @brief Contain information for executable and library to load.
@@ -94,8 +82,8 @@ struct ve_elf_load_stat  {
 	char *start_string;	/*!< start of string of section header */
 	char *start_section_dyn;/*!< start of section header */
 	char *start_string_dyn;	/*!< start of string of section header */
-	offset_t start_bss;	/*!< start of BSS section */
-	offset_t start_bss_dyn;	/*!< start of BSS section in INTERP */
+	ve_mem_offset_t start_bss;	/*!< start of BSS section */
+	ve_mem_offset_t start_bss_dyn;	/*!< start of BSS section in INTERP */
 	uint64_t size_bss;	/*!< size of BSS section */
 	uint64_t size_bss_dyn;	/*!< size of BSS section in INTERP */
 };

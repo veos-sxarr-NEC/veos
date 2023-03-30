@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -24,7 +24,6 @@
  * @internal
  * @author AMM
  */
-#include "ve_hw.h"
 
 #ifndef _SYS_MEMORY_
 #define _SYS_MEMORY_
@@ -70,7 +69,7 @@
 
 #define NBPLP		0x200000	/* bytes of LP */
 #define NBPHP		0x4000000	/* bytes of HP */
-#define NBPSP		0x1000	/* bytes of SP */
+#define NBPSP		0x1000		/* bytes of SP */
 
 #define BPSPSHFT	12	/* Shift for bytes per small page */
 #define BPLPSHFT	21
@@ -103,17 +102,13 @@
 /* page type */
 #define VE_ADDR_VECRAA 0x5	/* VE CR Absolute Address */
 #define VE_ADDR_VEMAA 0x6	/* VE Memory Absolute Address */
-#define VE_ADDR_VERAA 0x4	/* VE Register Absolute Address */
+#define VE_ADDR_VERAA 0x4	/* VE Register Absolute Address for control */
 #define VE_ADDR_VHSAA 0x2	/* VH System Absolute Address */
 
 
 #define pg_getpb4(P)		(((P)->data >> PSSHFT4K) & PGFNMASK4K)
 #define pg_getpb_l(P)		(((P)->data >> PSSHFT) & PGFNMASK)
 #define pg_getpb_h(P)		(((P)->data >> PSSHFT_H) & PGFNMASK_H)
-#define pg_getpb(P, pgmode) \
-	(((pgmode) == PG_4K) ? pg_getpb4(P) : \
-	 ((pgmode) == PG_HP) ? pg_getpb_h(P) : \
-	pg_getpb_l(P))
 
 #define	pg_setpb4(P, pfn)	((P)->data |= (((uint64_t)pfn <<\
 				PSSHFT4K)) & PG_ADDR)
@@ -122,45 +117,50 @@
 #define	pg_setpb_h(P, pfn)	((P)->data |= (((uint64_t)pfn <<\
 				PSSHFT_H)) & PG_ADDR)
 /* Set page base. */
-#define pg_setpb(P, pfn, pgmode) \
-	(((pgmode) == PG_4K) ? pg_setpb4(P, pfn) : \
-	 ((pgmode) == PG_HP) ? pg_setpb_h(P, pfn) : \
-	 pg_setpb_l(P, pfn))
 
 #define pg_gettype(P)		(((P)->data & PG_TYPE) >> type_shft)
 #define	pg_settype(P, type)	((P)->data |= (type << type_shft))
 /* Set memory type. */
+
 #define pg_unsettype(P)		((P)->data &= ~PG_TYPE)
 /* Unset memory Type */
 
 #define pg_setro(P)		((P)->data |=  PG_RO)
 /* Set memory ro. */
+
 #define pg_unsetro(P)		((P)->data &= ~PG_RO)
 /* Unset memory ro */
+
 #define pg_setido(P)		((P)->data |=  PG_IDO)
 /* Set memory ido. */
+
 #define pg_unsetido(P)		((P)->data &= ~PG_IDO)
 /* Unset memory ido */
 
 #define pg_setprot(P)		((P)->data |=  PG_WRITI)
 /* Set write protection bit. */
+
 #define pg_unsetprot(P)		((P)->data &= ~PG_WRITI)
 /* Clear write protection bit. */
 
 #define pg_valid(P)		((P)->data &= ~PG_NP)
 /* Set valid bit. */
+
 #define	pg_invalid(P)		((P)->data |= PG_NP)
 /* Clear valid bit. */
 
 #define pg_isprot(P)		(((P)->data & PG_WRITI)>>prot_shft)
 /* Check: If P is write inhibit, return 1  */
+
 #define pg_isvalid(P)		(!((P)->data & PG_NP))
 /* Check: If P is valid, return 1  */
 
 #define	pg_setbypass(P)		((P)->data |= PG_BYPS)
 /* Set cache bypass bit. */
+
 #define	pg_unsetbypass(P)	((P)->data &= ~PG_BYPS)
 /* Unset cache bypass bit. */
+
 #define pg_isbypass(P)		(((P)->data & PG_BYPS)>>bypass_shft)
 /* Check: If P is cache bypassbit, return 1  */
 
@@ -187,24 +187,24 @@
 #define	PG_4K	0
 #define	PG_2M	1
 #define	PG_HP	2
+#define PG_SHP	3
 
 #define	ps_setps4(PD, psnum)	((PD)->data |= ((uint64_t)psnum << ps_shft4))
 #define	ps_setps(PD, psnum)	((PD)->data |= ((uint64_t)psnum << ps_shft))
 #define	ps_setps_h(PD, psnum)	((PD)->data |= ((uint64_t)psnum << ps_shft_h))
-#define ps_setpsnum(PD, psnum, pgmode) \
-	(((pgmode) == PG_4K) ? ps_setps4(PD, psnum) : \
-	 ((pgmode) == PG_HP) ? ps_setps_h(PD, psnum) : \
-	 ps_setps(PD, psnum))
 
 /* Set pertial space number */
 #define ps_clrdir(PD)          ((PD)->data &= 0ULL)
 /* Set JID */
 #define ps_clrjid(PD, jid)	((PD)->data &= ~JIDCLR)
 #define ps_setjid(PD, jid)	((PD)->data |= (jid << jid_shft))
+
 #define	ps_setpgsz(PD, pgsz)	((PD)->data |= (pgsz << pgsz_shft))
 /* Set page size */
+
 #define	ps_valid(PD)		((PD)->data |= PG_NP)
 /* Clear valid bit. */
+
 #define	ps_invalid(PD)		((PD)->data &= ~PG_NP)
 /* Clear valid bit. */
 
@@ -215,10 +215,6 @@
 #define	ps_getps4k(PD)	((uint64_t)(((PD)->data) & PS_ADDR) >> ps_shft4)
 #define	ps_getps2m(PD)	((uint64_t)(((PD)->data) & PS_ADDR) >> ps_shft)
 #define	ps_getps_h(PD)	((uint64_t)(((PD)->data) & PS_ADDR) >> ps_shft_h)
-
-#define ps_getps(PD, pgmode)	(((pgmode) == PG_4K) ? ps_getps4k(PD) : \
-		((pgmode) == PG_2M) ? ps_getps2m(PD) : \
-		((pgmode) == PG_HP) ? ps_getps_h(PD) : -1)
 
 /* get JID in PSD descriptor */
 #define	ps_getjid(PD)	((uint64_t)(((PD)->data) & PS_JID) >> jid_shft)
@@ -271,18 +267,10 @@
 #define	psnum_l(v)	((uint64_t)(v) >> PSNMSHFT)
 #define	psnum_h(v)	((uint64_t)(v) >> PSNMSHFT_H)
 
-#define psnum(v, pgmode)	(((pgmode) == PG_4K) ? psnum4k(v) :\
-		((pgmode) == PG_2M) ? psnum_l(v) :\
-		((pgmode) == PG_HP) ? psnum_h(v) : -1)
-
 /* virtual address to pgentry */
 #define	pgentry4k(v)	(((uint64_t)(v) >> PSSHFT4K) & PTMASK)
 #define	pgentry_l(v)	(((uint64_t)(v) >> PSSHFT) & PTMASK)
 #define	pgentry_h(v)	(((uint64_t)(v) >> PSSHFT_H) & PTMASK)
-
-#define pgentry(v, pgmode)	(((pgmode) == PG_4K) ? pgentry4k(v) :\
-		((pgmode) == PG_2M) ? pgentry_l(v) :\
-		((pgmode) == PG_HP) ? pgentry_h(v) : -1)
 
 /* virtual address to page offset */
 #define poff(v)		((uint64_t)(v) & POFFMASK)
@@ -296,11 +284,6 @@
 		<< PSNMSHFT_H) | ((uint64_t)pgoff<<PSSHFT_H)
 #define	psnum_to_vaddr4k(psnum, pgoff)	((uint64_t)psnum\
 		<< PSNMSHFT4K) | ((uint64_t)pgoff<<PSSHFT4K)
-
-#define psnum_to_vaddr(psnum, pgoff, pgmod) (pgmod == PG_4K) ?\
-			     psnum_to_vaddr4k(psnum, pgoff) : ((pgmod == PG_2M) ?\
-			     psnum_to_vaddr_l(psnum, pgoff) :\
-		     psnum_to_vaddr_h(psnum, pgoff))
 
 /*
  *      The following routines are used to convert
@@ -330,18 +313,10 @@
 #define pfnum_l(X)	(((uint64_t)(X) >> PSSHFT) & PGFNMASK)
 #define pfnum_h(X)	(((uint64_t)(X) >> PSSHFT_H) & PGFNMASK_H)
 
-#define pfnum(X, pgmode)	(((pgmode) == PG_4K) ? pfnum4k(X) :\
-		((pgmode) == PG_2M) ? pfnum_l(X) :\
-		((pgmode) == PG_HP) ? pfnum_h(X) : -1)
-
 /*page frame number (page base) to physical address */
 #define pbaddr4k(X)	((uint64_t)(X) << PSSHFT4K)
 #define pbaddr_l(X)	((uint64_t)(X) << PSSHFT)
 #define pbaddr_h(X)	((uint64_t)(X) << PSSHFT_H)
-
-#define pbaddr(X, pgmode)	(((pgmode) == PG_4K) ? pbaddr4k(X) :\
-		((pgmode) == PG_2M) ? pbaddr_l(X) :\
-		((pgmode) == PG_HP) ? pbaddr_h(X) : -1)
 
 /*
  *	Miscellaneous macros.

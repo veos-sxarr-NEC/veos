@@ -23,17 +23,13 @@
 #ifndef VE_VEOS_DMA_HW_H
 #define VE_VEOS_DMA_HW_H
 
-#include <libved.h>
+#include <veos_arch_defs.h>
 
-int ve_dma_hw_get_readptr(vedl_handle *, system_common_reg_t *);
-uint64_t ve_dma_hw_get_ctlword1(vedl_handle *, system_common_reg_t *);
-uint32_t ve_dma_hw_get_ctlstatus(vedl_handle *, system_common_reg_t *);
-int ve_dma_hw_post_dma(vedl_handle *, system_common_reg_t *, int, uint64_t,
-		       uint64_t, uint64_t, uint64_t, uint32_t, int, int, int);
-void ve_dma_hw_start(vedl_handle *, system_common_reg_t *);
-void ve_dma_hw_post_stop(vedl_handle *, system_common_reg_t *);
-uint64_t ve_dma_hw_desc_status(vedl_handle *, system_common_reg_t *, int);
-void ve_dma_hw_nullify_dma(vedl_handle *, system_common_reg_t *, int);
-int ve_dma_hw_clear_dma(vedl_handle *, system_common_reg_t *, int);
-int ve_dma_hw_set_readptr(vedl_handle *, system_common_reg_t *, int);
+#include <libved.h>
+struct ve_dma_engine_usage;
+
+void ve_dma_hw_start(vedl_common_reg_handle *);
+void ve_dma_hw_post_stop(vedl_common_reg_handle *);
+int ve_dma_hw_clear_all_dma(vedl_handle *, vedl_common_reg_handle *);
+int ve_dma_hw_engine_is_halt(vedl_handle *, vedl_common_reg_handle *);
 #endif

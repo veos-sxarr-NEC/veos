@@ -34,14 +34,12 @@ int64_t ve_dma_reqlist_make(ve_dma_req_hdl *,
 void ve_dma_reqlist_free(ve_dma_req_hdl *);
 ve_dma_status_t ve_dma_reqlist_test(ve_dma_req_hdl *);
 void ve_dma__block_free(vedl_handle *, ve_dma__block *);
-int ve_dma_reqlist__entry_post(ve_dma_reqlist_entry *);
-int ve_dma_reqlist_post(ve_dma_req_hdl *);
 int ve_dma_reqlist_drain_waiting_list(ve_dma_hdl *);
-void ve_dma_free_used_desc(ve_dma_hdl *, int);
 void ve_dma_finish_reqlist_entry(ve_dma_reqlist_entry *, uint64_t, int);
 void ve_dma_reqlist__cancel(ve_dma_req_hdl *);
 ve_dma_req_hdl *ve_dma_reqlist_entry_to_req_hdl(ve_dma_reqlist_entry *);
 ve_dma_req_hdl *ve_dma_waiting_list_head_to_req_hdl(const struct list_head *);
 void ve_dma__terminate_nolock(ve_dma_req_hdl *);
+void ve_dma__block_free(vedl_handle *, ve_dma__block *);
 void ve_dma__dec_ipc_sync_nolock(ve_dma_req_hdl *);
 #endif

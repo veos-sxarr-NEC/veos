@@ -1477,16 +1477,16 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 		retval = ve_sys_unmap_dmades(handle,(uint64_t)args[1]);
 		break;
 	case VE_SYSVE_AIO_READ:
-                retval = sys_ve_aio_read(handle, (void *)args[1], (int)args[2],
-                                (ssize_t)args[3], (void *)args[4], args[5]);
-                break;
-        case VE_SYSVE_AIO_WRITE:
-                retval = sys_ve_aio_write(handle, (void *)args[1], (int)args[2],
-                                (ssize_t)args[3], (void *)args[4], args[5]);
-                break;
-        case VE_SYSVE_AIO_WAIT:
-                retval = sys_ve_aio_wait(handle, (void *)args[1]);
-                break;
+		retval = sys_ve_aio_read(handle, (void *)args[1], (int)args[2],
+						(ssize_t)args[3], (void *)args[4], args[5]);
+		break;
+	case VE_SYSVE_AIO_WRITE:
+		retval = sys_ve_aio_write(handle, (void *)args[1], (int)args[2],
+						(ssize_t)args[3], (void *)args[4], args[5]);
+		break;
+	case VE_SYSVE_AIO_WAIT:
+		retval = sys_ve_aio_wait(handle, (void *)args[1]);
+		break;
 	case VE_SYSVE_AIO2_INIT:
 		retval = sys_ve_aio2_init(handle);
 		break;
@@ -1502,15 +1502,23 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 		retval = sys_ve_aio2_wait(handle, (void *)args[1]);
 		break;
 	case VE_SYSVE_ACCELERATED_IO_INIT:
-		retval = sys_accelerated_io_init(handle,(void **)args[1],
-				(uint64_t *)args[2], (void *)args[3],
-				(uint64_t *)args[4], (int)args[5]);
+		retval = EINVAL;
 		break;
 	case VE_SYSVE_ACCELERATED_IO_REGISTER_DMAATB:
-		retval = sys_accelerated_io_register_dmaatb(handle,
-				(void *)args[1], (uint64_t *)args[2],
-				(void *)args[3], (uint64_t *)args[4],
-				(int)args[5]);
+		retval = EINVAL;
+		break;
+	case VE_SYSVE_ACCELERATED_IO_INIT2:
+		retval = sys_accelerated_io_init(handle,(void **)args[1],
+				(uint64_t *)args[2], (void *)args[3],
+				(uint64_t *)args[4]);
+		break;
+	case VE_SYSVE_ACCELERATED_IO_UNREGISTER_DMAATB:
+		retval = sys_accelerated_io_unregister_dmaatb(handle,
+				(uint64_t)args[1],(uint64_t)args[2]);
+		break;
+	case VE_SYSVE_ACCELERATED_IO_FREE_VH_BUF:
+		retval = sys_accelerated_io_free_vh_buf(handle,
+				(uint64_t)args[1]);
 		break;
 	case VE_SYSVE_SYSTEM:
 		retval = sys_system(handle, args[1], args[2]);
@@ -1546,6 +1554,9 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 	case VE_SYSVE_GET_VE_PRODUCT_NAME:
                 retval = ve_sys_get_ve_product_name(handle, (char *)args[1], (size_t)args[2]);
                 break;
+	case VE_SYSVE_GET_PROGINF_DATA:
+		retval = ve_sys_get_proginf_data(handle, args[1], args[2]);
+		break;
 	default:
 		/* write return value */
 		retval = -EINVAL;

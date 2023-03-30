@@ -33,6 +33,8 @@
 #include <libved.h>
 
 #include "vehva_mgmt.h"
+#include "dmaatb_api.h"
+#include "ve_memory.h"
 
 #include "proto_buff_schema.pb-c.h"
 #include "psm_comm.h"

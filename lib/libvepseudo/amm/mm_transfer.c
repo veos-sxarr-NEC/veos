@@ -33,11 +33,9 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/syscall.h>
-#include <sys/mman.h>
 #include <ctype.h>
 #include <stdbool.h>
 #include "comm_request.h"
-#include "ve_hw.h"
 #include "dma.h"
 #include "process_mgmt_comm.h"
 #include "ve_socket.h"
@@ -47,7 +45,6 @@
 #include "vemva_mgmt.h"
 #include "proto_buff_schema.pb-c.h"
 #include "velayout.h"
-#include "libvepseudo.h"
 
 /* A lock to avoid sending data unexpected change */
 pthread_mutex_t ve_send_data_lock=PTHREAD_MUTEX_INITIALIZER;

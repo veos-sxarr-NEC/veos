@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -32,6 +32,10 @@
 #include <sys/mman.h>
 #include "velayout.h"
 #include "veos_sock.h"
+#include "ve_memory.h"
+#include "task_sched.h"
+#include "psm_stat.h"
+#include "ve_memory_def.h"
 
 /**
 * @brief to get shared memory segment by key and shmid.
@@ -223,7 +227,7 @@ int amm_do_shmat(key_t key, int shmid, vemva_t shmaddr, size_t size,
 	vemva_t shmaddr_tmp = 0;
 	size_t pgsz = 0;
 	vemaa_t *pgaddr = NULL;
-	dir_t dirs[ATB_DIR_NUM] = {0}, prv_dir = -1;
+	dir_t dirs[VEOS_ATB_DIR_NUM] = {0}, prv_dir = -1;
 	dir_t dir_num = 0;
 	int i = 0;
 	uint64_t rss_cur = 0;
@@ -231,6 +235,7 @@ int amm_do_shmat(key_t key, int shmid, vemva_t shmaddr, size_t size,
 
 	struct ve_node_struct *vnode = VE_NODE(0);
 	int index = 0;
+	uint64_t bmap = 0;
 
 	VEOS_TRACE("invoked");
 
@@ -335,8 +340,10 @@ int amm_do_shmat(key_t key, int shmid, vemva_t shmaddr, size_t size,
 			goto shmat_err;
 		}
 
-		if (prv_dir == -1 || prv_dir != dir_num)
+		if (prv_dir == -1 || prv_dir != dir_num) {
 			dirs[i++] = dir_num;
+			bmap |= 1UL << dir_num;
+		}
 		prv_dir = dir_num;
 
 		/*
@@ -372,7 +379,7 @@ int amm_do_shmat(key_t key, int shmid, vemva_t shmaddr, size_t size,
 		goto shmat_err;
 	}
 
-	if( 0 == psm_sync_hw_regs(tsk, _ATB, true, -1, 1))
+	if( 0 == psm_sync_hw_regs_atb(tsk, true, -1, 1, bmap))
         {
                 VEOS_DEBUG("Syncing ATB");
                 ret = veos_update_atb(tsk->core_set, dirs, i, tsk);
@@ -542,11 +549,12 @@ int amm_do_shmdt(vemva_t shmaddr, struct ve_task_struct *tsk,
 	uint64_t pgno = -1, pgsz = 0;
 	vemaa_t pgaddr = 0;
 	dir_t dir_num = 0;
-	dir_t dirs[ATB_DIR_NUM] = {0}, prv_dir = -1;
+	dir_t dirs[VEOS_ATB_DIR_NUM] = {0}, prv_dir = -1;
 	struct shm *shm_segment = NULL, *shm_ent = NULL;
 	struct ve_node_struct *vnode = VE_NODE(0);
 	struct ve_mm_struct *mm = tsk->p_ve_mm;
 	int index = 0;
+	uint64_t bmap = 0;
 
 	VEOS_TRACE("invoked by tsk(%p):pid(%d) for vemva %lx and shminfo(%p)",
 			tsk, tsk->pid, shmaddr, shm_info);
@@ -633,8 +641,10 @@ detach_directly:
 			goto shmdt_ret;
 		}
 
-		if (prv_dir == -1 || prv_dir != dir_num)
+		if (prv_dir == -1 || prv_dir != dir_num) {
 			dirs[i++] = dir_num;
+			bmap |= 1UL << dir_num;
+		}
 		prv_dir = dir_num;
 
 		ret = amm_put_page(pgaddr);
@@ -654,7 +664,7 @@ detach_directly:
 	for (index = 0; index < vnode->numa_count; index++)
 		memcpy(&(mm->atb[index]), &tmp_atb[index], sizeof(atb_reg_t));
 
-	if( 0 == psm_sync_hw_regs(tsk, _ATB, true, -1, 1))
+	if( 0 == psm_sync_hw_regs_atb(tsk, true, -1, 1, bmap))
         {
                 VEOS_DEBUG("Syncing ATB");
                 ret = veos_update_atb(tsk->core_set, dirs, i, tsk);

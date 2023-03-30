@@ -14,6 +14,7 @@ libvemain_a_SOURCES = \
 
 libvemain_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 \
+	-I$(srcdir)/.. \
 	-I$(top_srcdir)/lib/libvepseudo \
 	-I$(srcdir)/../dma \
 	-I$(srcdir)/../psm \
@@ -33,6 +34,7 @@ libvecommon_a_SOURCES = \
 
 libvecommon_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 \
+	-I$(srcdir)/.. \
 	-I$(srcdir)/../dma \
 	-I$(srcdir)/../amm \
 	-I$(srcdir)/../psm \

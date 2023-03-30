@@ -35,8 +35,8 @@
 #include <sys/socket.h>
 #include <sys/capability.h>
 #include <mempolicy.h>
-#include "ve_hw.h"
 #include "task_mgmt.h"
+#include "task_sched.h"
 #include "ve_clone.h"
 #include "veos_handler.h"
 #include "psm_comm.h"
@@ -3475,6 +3475,113 @@ hndl_return:
 }
 
 /**
+ * @brief Handles the SET_CPU_MASK request from pseudo process.
+ *
+ * @param[in] pti Contains the request received from the pseudo process
+ *
+ * @return 0 on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_handle_set_cpu_mask_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	cpu_set_t ve_mask = {{0}};
+	PseudoVeosMessage *cpu_mask_req = NULL;
+	pid_t caller_pid = -1, pid = -1;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument "
+				"received from pseudo process");
+		goto hndl_return;
+	}
+
+	cpu_mask_req = (PseudoVeosMessage *)pti->pseudo_proc_msg;
+	caller_pid = cpu_mask_req->pseudo_pid;
+	VEOS_DEBUG("Received set cpu mask request from Pseudo PID : %d",
+								caller_pid);
+
+	memcpy(&ve_mask, cpu_mask_req->pseudo_msg.data,
+						cpu_mask_req->pseudo_msg.len);
+
+	/* Convert namespace pid to host pid */
+	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, caller_pid);
+	if (pid <= 0) {
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d error: %s",
+				pti->cred.pid, caller_pid, strerror(errno));
+		retval = -errno;
+		goto hndl_return;
+	}
+
+	retval = psm_handle_set_cpu_mask_request(pid, ve_mask);
+hndl_return:
+	VEOS_DEBUG("PID : %d SET CPU MASK returns %d", caller_pid, retval);
+	/* Send ACK */
+	retval = psm_pseudo_send_cpu_mask_ack(pti, retval);
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Sends acknowlegdment for SET_CPU_MASK request received
+ * from pseudo process.
+ *
+ * @param[in] pti Contains the request received from the pseudo process
+ * @param[in] ack_ret Acknowledgment to be send to pseudo process
+ *
+ * @return positive value on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_pseudo_set_cpu_mask_ack(struct veos_thread_arg *pti, int ack_ret)
+{
+	ssize_t retval = -1;
+	PseudoVeosMessage cpu_mask_ack = PSEUDO_VEOS_MESSAGE__INIT;
+	char buf[MAX_PROTO_MSG_SIZE] = {0};
+	ssize_t pseudo_msg_len = 0, msg_len = 0;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("NULL argument received");
+		goto hndl_return;
+	}
+
+	/* Populate acknowledgment message */
+	cpu_mask_ack.has_syscall_retval = true;
+	cpu_mask_ack.syscall_retval = ack_ret;
+
+	pseudo_msg_len = pseudo_veos_message__get_packed_size(&cpu_mask_ack);
+	msg_len =  pseudo_veos_message__pack(&cpu_mask_ack, (uint8_t *)buf);
+	if (pseudo_msg_len != msg_len) {
+		VEOS_ERROR("Internal message protocol error");
+		VEOS_DEBUG("Expected length: %ld, Returned length: %ld",
+				pseudo_msg_len, msg_len);
+		retval = -1;
+		goto hndl_return;
+	}
+
+	VEOS_DEBUG("Sending setrlimit acknowledgement");
+	retval = psm_pseudo_send_cmd(pti->socket_descriptor,
+			buf, pseudo_msg_len);
+	if (retval < pseudo_msg_len) {
+		VEOS_ERROR("Failed to send response to pseudo process");
+		VEOS_DEBUG("Expected bytes: %ld, Transferred bytes: %ld",
+				pseudo_msg_len, retval);
+		retval = -1;
+	}
+
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
  * @brief Handles the SET AFFINITY request from pseudo process.
  *
  * @param[in] pti Contains the request received from the pseudo process
@@ -4807,6 +4914,62 @@ hndl_return:
 }
 
 /**
+ * @brief Prepare the SET_CPU_MASK acknowledgment/response that is to be
+ * sent to pseudo process.
+ *
+ * @param[in] pti Contains the message received from pseudo process
+ * @param[in] syscall_ret Contains the value to be returned to pseudo process
+ *
+ * @return positive value on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / Scheduling and context switch
+ */
+int psm_pseudo_send_cpu_mask_ack(struct veos_thread_arg *pti,
+				int64_t syscall_ret)
+{
+	ssize_t retval = -1;
+	ssize_t msg_pack_len = 0, pseudo_msg_len = 0;
+	PseudoVeosMessage ve_ack = PSEUDO_VEOS_MESSAGE__INIT;
+	char buf[MAX_PROTO_MSG_SIZE] = {0};
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid argument pti");
+		goto hndl_return;
+	}
+
+	/* prepare SCHEDULE_ACK response */
+	ve_ack.has_syscall_retval = true;
+	ve_ack.syscall_retval = syscall_ret;
+
+	/* Pack ve_schedule_ack before sending */
+	pseudo_msg_len = pseudo_veos_message__get_packed_size(&ve_ack);
+	msg_pack_len = pseudo_veos_message__pack(&ve_ack, (uint8_t *)buf);
+
+	if (pseudo_msg_len != msg_pack_len) {
+		VEOS_ERROR("Ack from PSM to PSEUDO failed");
+		VEOS_DEBUG("Message pack length: %ld", msg_pack_len);
+		goto hndl_return;
+	}
+
+	/* Send ACK to the pseudo side */
+	VEOS_DEBUG("Sending set cpu mask ack");
+	retval = psm_pseudo_send_cmd(pti->socket_descriptor,
+			(void *)buf, pseudo_msg_len);
+	if (retval < pseudo_msg_len) {
+		VEOS_ERROR("Sending set cpu mask ack failed");
+		VEOS_DEBUG("PSM Send command wrote %ld bytes", retval);
+		retval = -1;
+	}
+
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
  * @brief prepare the acknowledgement and send the existing fd to pseudo process
  *
  * @param[in] pti contains the request message received from pseudo process
@@ -4949,7 +5112,7 @@ int psm_pseudo_send_start_user_threads_ack(struct veos_thread_arg *pti,
 	VEOS_DEBUG("Sending START USER THREADS ACK");
 	/* send SET NEXT THREAD WORKER ACK */
 	retval = psm_pseudo_send_cmd(pti->socket_descriptor,
-		buf, pseudo_msg_len);
+			buf, pseudo_msg_len);
 	if (retval < pseudo_msg_len) {
 		VEOS_ERROR("Failed to send response to pseudo process");
 		VEOS_DEBUG("Expected bytes: %ld, Transferred bytes: %ld",
@@ -4963,7 +5126,6 @@ hndl_return:
 	VEOS_TRACE("Exiting");
 	return retval;
 }
-
 
 /**
  * @brief Handles the request of set flag which set “ve_sched_state” of
@@ -5208,6 +5370,142 @@ int psm_pseudo_set_signal_mask_ack(struct veos_thread_arg *pti, int ack_ret)
 		retval = -1;
 	}
 
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+/**
+ * @brief Sends an acknowledgment to the pseudo process about the proginf information
+ *
+ * @param[in] pti Contains the request message received from pseudo process
+ * @param[in] ack_ret Command ack to send
+ * @param[in] proginf proginf information set to pseudo process
+ *
+ * @return positive value on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / MP-MT
+ */
+int psm_pseudo_send_get_proginf_ack(struct veos_thread_arg *pti, int64_t ack_ret,
+                                struct proginf_v1 *proginf)
+{
+	ssize_t retval = -1;
+	PseudoVeosMessage proginf_ack = PSEUDO_VEOS_MESSAGE__INIT;
+	ProtobufCBinaryData proginf_msg = {0};
+	char buf[MAX_PROTO_MSG_SIZE] = {0};
+	ssize_t pseudo_msg_len = 0, msg_len = 0;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument(pti) received from "
+				"pseudo process");
+		goto hndl_return;
+	}
+	/* Popuate PROGINF ACK process message */
+	proginf_ack.has_syscall_retval = true;
+	proginf_ack.syscall_retval = ack_ret;
+	if (proginf != NULL) {
+		proginf_ack.has_pseudo_msg = true;
+		proginf_msg.len = sizeof(struct proginf_v1);
+		proginf_msg.data = (uint8_t *)proginf;
+		proginf_ack.pseudo_msg = proginf_msg;
+	}
+
+	/* Pack proginf_ack before sending */
+	pseudo_msg_len = pseudo_veos_message__get_packed_size(&proginf_ack);
+
+	msg_len = pseudo_veos_message__pack(&proginf_ack, (uint8_t *)buf);
+	if (msg_len != pseudo_msg_len) {
+		VEOS_ERROR("Packing message protocol buffer error");
+		VEOS_DEBUG("Expected length: %ld, Returned length: %ld",
+				pseudo_msg_len, msg_len);
+		goto hndl_return;
+	}
+
+	VEOS_DEBUG("Sending PROGINF Acknowledgement");
+	/* Send ACK to the pseudo side */
+	retval = psm_pseudo_send_cmd(pti->socket_descriptor,
+			buf, pseudo_msg_len);
+	if (retval < pseudo_msg_len) {
+		VEOS_ERROR("Failed to send response to pseudo process");
+		VEOS_DEBUG("Expected bytes: %ld, Transferred bytes: %ld",
+				pseudo_msg_len, retval);
+		retval = -1;
+	}
+
+hndl_return:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief Handles the get proginf request from pseudo process.
+ *
+ * @param[in] pti Contains the request received from the pseudo process
+ *
+ * @return positive value on success, -1 on failure.
+ *
+ * @internal
+ * @author PSMG / Process management
+ */
+int psm_handle_get_proginf_req(struct veos_thread_arg *pti)
+{
+	int retval = 0;
+	struct ve_task_struct *tsk = NULL;
+	pid_t pid = -1;
+	pid_t ve_pid = -1;
+	pid_t namespace_ve_pid = -1;
+	struct proginf_v1 proginf;
+	int length = -1;
+	int version = -1;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti) {
+		VEOS_ERROR("Invalid(NULL) argument received from "
+				"Pseudo process");
+		goto hndl_return;
+	}
+	pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
+	VEOS_DEBUG("Received get proginf request from "
+			"Pseudo with pid :%d", pid);
+	length = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_msg.len;
+	memcpy(&version, ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_msg.data,
+			length);
+	namespace_ve_pid = pid;
+	/* Convert namespace pid to host pid */
+	ve_pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, namespace_ve_pid);
+	if (ve_pid <= 0) {
+		VEOS_DEBUG("PID conversion failed, host: %d"
+				" namespace: %d"
+				" error: %s",
+				pti->cred.pid,
+				namespace_ve_pid,
+				strerror(errno));
+		retval = -errno;
+		retval = psm_pseudo_send_get_proginf_ack(pti, retval, NULL);
+		goto hndl_return;
+	}
+
+	tsk = find_ve_task_struct(ve_pid);
+	if (NULL == tsk) {
+		VEOS_ERROR("Failed to find task structure");
+		VEOS_DEBUG("Task with PID %d not found", ve_pid);
+		retval = -ESRCH;
+		retval = psm_pseudo_send_get_proginf_ack(pti, retval, NULL);
+		goto hndl_return;
+	}
+	if (version == PROGINF_VERSION) {
+		get_performance_register_for_proginf(tsk, &proginf);
+		collect_proginf_data(tsk, &proginf);
+		retval = psm_pseudo_send_get_proginf_ack(pti, retval, &proginf);
+	} else {
+		VEOS_DEBUG("PROGINF version is incorrect : %d", version);
+		retval = -EINVAL;
+		retval = psm_pseudo_send_get_proginf_ack(pti, retval, NULL);
+	}
+	put_ve_task_struct(tsk);
 hndl_return:
 	VEOS_TRACE("Exiting");
 	return retval;

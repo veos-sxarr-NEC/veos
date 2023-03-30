@@ -37,12 +37,8 @@
 
 #define PG_TYP_MSK (uint64_t)0x7
 
-struct hw_dmaaatb_map {
-	uint64_t count;
-}hw_dma_map[DMAATB_DIR_NUM];
-
 /* DMAATB  Handling related API's*/
-int64_t veos_set_dmaatb(uint64_t, int, int, dmaatb_reg_t *, int, int);
+int64_t veos_set_dmaatb(uint64_t, int, int, veos_dmaatb_reg_t *, int, int);
 struct vehva_map *vehva_to_vehva_map(uint64_t ,struct ve_mm_struct *);
 void amm_dump_vehva(struct ve_mm_struct *);
 int64_t del_vehva(vehva_t, size_t, struct ve_task_struct *);
@@ -51,7 +47,7 @@ int amm_acquire_dmaatb(struct ve_task_struct *);
 int veos_schedulein_dmaatb(struct ve_task_struct *tsk);
 int veos_scheduleout_dmaatb(struct ve_task_struct *tsk);
 
-void veos_free_dmaatb(dmaatb_reg_t *, enum swap_progress);
+void veos_free_dmaatb(veos_dmaatb_reg_t *, enum swap_progress);
 int64_t veos_free_dmaatb_entry(pid_t, vehva_t, size_t);
 int64_t veos_free_dmaatb_entry_tsk(struct ve_task_struct *, vehva_t, size_t);
 
@@ -72,7 +68,6 @@ int8_t amm_set_dmaatb(uint64_t, int, uint64_t, struct ve_task_struct *, int,
 		uint8_t, uint8_t, uint16_t);
 int8_t amm_unset_dmaatb(uint64_t, struct ve_task_struct *, uint64_t, uint8_t);
 void amm_dump_dmaatb(struct ve_task_struct *, bool);
-void __dump_dmaatb(FILE*, dmaatb_reg_t *);
 int64_t veos_aa_to_vehva(pid_t, vemaa_t, int);
 int sync_node_dmaatb_dir(vehva_t, struct ve_mm_struct *, dir_t, jid_t);
 int veos_map_dmades(pid_t, uint64_t *, uint64_t *);

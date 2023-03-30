@@ -25,6 +25,7 @@ libvepsm_a_SOURCES = \
 # libived is used for Dummy AMM
 libvepsm_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 \
+	-I$(srcdir)/.. \
 	-I$(top_srcdir)/src/veos/dma \
 	-I$(top_srcdir)/src/veos/pps \
 	-I$(top_srcdir)/src/veos/amm \

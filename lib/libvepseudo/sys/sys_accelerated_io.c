@@ -37,14 +37,6 @@
 #include "veos_defs.h"
 #include "vemva_mgmt.h"
 
-typedef struct {
-	uint64_t vh_buf_vhva;   /*!< vhva of VH buffer */
-	ssize_t vh_buf_size;    /*!< size of VH buffer */
-} vh_buf_info;
-
-static __thread uint64_t pseudo_ve_buf_vehva = 0;
-static vh_buf_info pseudo_vh_buf_info = {0, 0};
-
 /**
  * @brief This function allocates VH buffer and registers VH IO buffer and VE
  * IO buffer to DMAATB.
@@ -54,13 +46,12 @@ static vh_buf_info pseudo_vh_buf_info = {0, 0};
  * @param[out] An address of variable to store VEHVA of VH buffer
  * @param[in]  An address of VE buff.
  * @param[out] An address of variable to store VEHVA of VE buffer
- * @param[in]  The number of cores
  *
  * @return 0 on success, -errno on Failure.
  */
 int sys_accelerated_io_init(veos_handle *handle, void **vhva,
 				uint64_t *vehva, void *local_vemva,
-				uint64_t *local_vehva, int core_num)
+				uint64_t *local_vehva)
 {
 	int retval = -EIO;
 	int ret;
@@ -74,16 +65,14 @@ int sys_accelerated_io_init(veos_handle *handle, void **vhva,
 		return retval;
 	}
 
-	vh_buff_size = SIZE_8MB * core_num;
-	PSEUDO_DEBUG("Core number is %d", core_num);
+	vh_buff_size = SIZE_8MB;
 	PSEUDO_DEBUG("VH buffer size is %ld", vh_buff_size);
 
 	/* allocates VH buffer */
-	pseudo_vh_buf_info.vh_buf_vhva = 0;
-	pseudo_vh_buf_info.vh_buf_size = 0;
 	l_vhva = mmap(0, vh_buff_size, PROT_READ|PROT_WRITE,
 			MAP_ANONYMOUS|MAP_SHARED|MAP_HUGETLB,
 			-1, 0);
+
 	if (MAP_FAILED == l_vhva) {
 		retval = -errno;
 		PSEUDO_ERROR("Failed to create VH buffer:%s", strerror(errno));
@@ -95,13 +84,10 @@ int sys_accelerated_io_init(veos_handle *handle, void **vhva,
 	PSEUDO_DEBUG("local_vemva = %p\n", local_vemva);
 	PSEUDO_DEBUG("local_vehva = %p\n", local_vehva);
 
-	pseudo_vh_buf_info.vh_buf_vhva = (uint64_t)l_vhva;
-	pseudo_vh_buf_info.vh_buf_size = vh_buff_size;
-
 	/* registers VH IO buffer and VE IO buffer to DMAATB */
 	ret = sys_accelerated_io_register_dmaatb(handle, l_vhva,
 					vehva, local_vemva,
-					local_vehva, core_num);
+					local_vehva);
 	if (0 != ret) {
 		retval = ret;
 		munmap(l_vhva, vh_buff_size);
@@ -132,7 +118,7 @@ int sys_accelerated_io_init(veos_handle *handle, void **vhva,
  */
 int sys_accelerated_io_register_dmaatb(veos_handle *handle, void *vhva,
 					 uint64_t *vehva, void *local_vemva,
-					 uint64_t *local_vehva, int core_num)
+					 uint64_t *local_vehva)
 {
 	int retval = -EIO;
 	uint64_t ve_args[VESHM_MAX_ARGS+1];
@@ -146,8 +132,9 @@ int sys_accelerated_io_register_dmaatb(veos_handle *handle, void *vhva,
 	int64_t register_size = 0;
 	pid_t pid;
 
-	vh_buff_size = SIZE_8MB * core_num;
-	PSEUDO_DEBUG("Core number is %d", core_num);
+	uint64_t pseudo_ve_buf_vehva = 0;
+
+	vh_buff_size = SIZE_8MB;
 	PSEUDO_DEBUG("VH buffer size is %ld", vh_buff_size);
 
 	/* register VH IO buffer to DMAATB */
@@ -245,20 +232,72 @@ int sys_accelerated_io_register_dmaatb(veos_handle *handle, void *vhva,
 }
 
 /**
+ * @brief This function call pseudo_veshm_detach() and sys_vhshm_exchange_detach_request 
+ * to unregister ve and vh buffer memory from DMAATB.
+ *
+ * @param[in] VEOS handle of Pseudo Process
+ * @param[in] VEHVA of VE memory
+ * @param[in] VEHVA of VH memory
+ *
+ * @return 0
+ */
+int sys_accelerated_io_unregister_dmaatb(veos_handle *handle,
+		uint64_t vehva_ve, uint64_t vehva_vh){
+	uint64_t ve_detach_args[3];
+	pid_t pid;
+	int retval;
+	uint64_t change_mask;
+        int64_t vehva_pg_size;
+
+
+	pid = getpid();
+	vehva_pg_size = pseudo_veshm_get_pgmode(handle, VE_ADDR_VEHVA,
+                                                pid, vehva_ve);
+	PSEUDO_DEBUG("Page size is %ld", vehva_pg_size);
+	if (vehva_pg_size == SIZE_2MB) {
+		change_mask = CHANGE_MASK_2MB;
+	} else if (vehva_pg_size == SIZE_64MB) {
+		change_mask = CHANGE_MASK_64MB;
+	} else if (vehva_pg_size < 0) {
+		PSEUDO_ERROR("Failed to get page size: %d",
+				(int)vehva_pg_size);
+		retval = vehva_pg_size;
+		return retval;
+	} else {
+		PSEUDO_ERROR("Unsupported page size: %d",
+				(int)vehva_pg_size);
+		retval = -EIO;
+		return retval;
+	}
+
+	ve_detach_args[1] = vehva_ve & change_mask;
+	ve_detach_args[2] = VE_MEM_LOCAL; 
+
+	pseudo_veshm_detach(ve_detach_args, handle);
+	sys_vhshm_exchange_detach_request(handle, vehva_vh);
+	return 0;
+}
+
+/**
+ * @brief This function call munmap() to free VH memory.
+ *
+ * @param[in] VEOS handle of Pseudo Process
+ * @param[in] VH memory to be unmapped
+ *
+ * @return 0
+ */
+int sys_accelerated_io_free_vh_buf(veos_handle *handle, uint64_t vhva){
+	munmap((void *)vhva, SIZE_8MB);
+	return 0;
+}
+
+/**
  * @brief This function call pseudo_veshm_detach() to unregister ve buffer
  * memory from DMAATB
  *
  */
 void sys_accelerated_unregister_ve_buf_vehva(veos_handle *handle)
 {
-	uint64_t ve_detach_args[3];
-
-	ve_detach_args[1] = pseudo_ve_buf_vehva;
-	ve_detach_args[2] = VE_MEM_LOCAL;
-	PSEUDO_DEBUG("ve_buf_vehva = %p", (void *)ve_detach_args[1]);
-	if (ve_detach_args[1]) {
-		pseudo_veshm_detach(ve_detach_args, handle);
-	}
 }
 
 /**
@@ -267,7 +306,5 @@ void sys_accelerated_unregister_ve_buf_vehva(veos_handle *handle)
  */
 void sys_accelerated_free_vh_buf(void)
 {
-	munmap((void *)pseudo_vh_buf_info.vh_buf_vhva,
-		pseudo_vh_buf_info.vh_buf_size);
 }
 

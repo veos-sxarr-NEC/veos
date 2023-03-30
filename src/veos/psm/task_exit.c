@@ -61,6 +61,7 @@
 #include "ptrace_req.h"
 #include "locking_handler.h"
 #include "task_mgmt.h"
+#include "veos_arch_ops.h"
 
 extern pthread_mutex_t readproc_mutex;
 #define ZOMBIE_TASK_CLEANUP_INTERVAL 5
@@ -289,6 +290,11 @@ int psm_del_sighand_struct(struct ve_task_struct *p_ve_task)
 		p_ve_task->thread_sched_count = NULL;
 		free(p_ve_task->thread_sched_bitmap);
 		p_ve_task->thread_sched_bitmap = NULL;
+		free(p_ve_task->thread_core_bitmap);
+		p_ve_task->thread_core_bitmap = NULL;
+		(*_veos_arch_ops->arch_psm_free_pmc_pmmr)(p_ve_task);
+		p_ve_task->pmc_pmmr = p_ve_task->initial_pmc_pmmr = NULL;
+		(*_veos_arch_ops->arch_psm_free_acct)(sighand->pacct.acct_info);
 		free(sighand);
 		p_ve_task->sighand = NULL;
 	}
@@ -762,7 +768,7 @@ void delete_entries(struct ve_task_struct *del_task_struct)
 		ve_task_list_head = NULL;
 		VE_CORE(0, core_id)->ve_task_list = ve_task_list_head;
 
-		ve_atomic_dec(&(VE_NODE(0)->num_ve_proc));
+		(*_veos_arch_ops->arch_decrement_num_ve_proc)();
 		ve_atomic_dec(&(VE_NODE(0)->
 			numa[del_task_struct->numa_node].num_ve_proc));
 		ve_atomic_dec(&(VE_CORE(0, core_id)->num_ve_proc));
@@ -783,7 +789,7 @@ void delete_entries(struct ve_task_struct *del_task_struct)
 		VEOS_DEBUG("Now Head is %p", ve_task_list_head);
 	}
 
-	ve_atomic_dec(&(VE_NODE(0)->num_ve_proc));
+	(*_veos_arch_ops->arch_decrement_num_ve_proc)();
 	ve_atomic_dec(&(VE_NODE(0)->
 		numa[del_task_struct->numa_node].num_ve_proc));
 	ve_atomic_dec(&(VE_CORE(0, core_id)->num_ve_proc));
@@ -852,7 +858,9 @@ resume:
 	if (del_task_struct->ve_task_state == ZOMBIE)
 		goto hndl_return;
 	if (NULL != del_task_struct->p_ve_thread)
-		free(del_task_struct->p_ve_thread);
+		free_ve_thread_struct(del_task_struct->p_ve_thread);
+	if (del_task_struct->pmc_pmmr && del_task_struct->initial_pmc_pmmr)
+		(*_veos_arch_ops->arch_psm_free_pmc_pmmr)(del_task_struct);
 	if (NULL != del_task_struct) {
 		pthread_mutex_destroy(&(del_task_struct->ptrace_lock));
 		pthread_mutex_destroy(&(del_task_struct->ve_task_lock));
@@ -1133,6 +1141,13 @@ hndl_reparent:
 					&& real_parent->block_status == UNBLOCK_SERVED) {
 				VEOS_DEBUG("vforked process waking up parent");
 				psm_set_task_state(real_parent, RUNNING);
+
+				pthread_mutex_lock_unlock(
+						&(real_parent->ve_task_lock), UNLOCK,
+						"failed to release task lock");
+				pthread_mutex_lock_unlock(
+						&(real_parent->ve_task_lock), LOCK,
+						"Failed to acquire task lock");
 			}
 			real_parent->vfork_state = VFORK_COMPLETED;
 
@@ -1234,7 +1249,7 @@ void psm_delete_zombie_task (struct ve_task_struct *tsk)
 	free(tsk->p_ve_mm);
 	tsk->p_ve_mm = NULL;
 	if (NULL != tsk->p_ve_thread)
-		free(tsk->p_ve_thread);
+		free_ve_thread_struct(tsk->p_ve_thread);
 	if (NULL != tsk) {
 		pthread_mutex_destroy(&(tsk->ptrace_lock));
 		pthread_mutex_destroy(&(tsk->ve_task_lock));

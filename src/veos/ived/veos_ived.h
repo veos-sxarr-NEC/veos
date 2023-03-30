@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or 
@@ -28,14 +28,12 @@
 #ifndef __VEOS_IVED_H
 #define __VEOS_IVED_H
 
+#include <stdbool.h>
 #include <sys/socket.h>
 #include <pthread.h>
 #include <uuid/uuid.h>
+#include <log4c.h>
 #include "ve_list.h"
-#include "task_mgmt.h"
-#include "cr_api.h"
-#include "veos_cr.h"
-#include "veos_vhshm.h"
 
 /* List of ived_shared_resource_data */
 extern struct list_head ived_task_list;
@@ -62,27 +60,8 @@ extern pthread_rwlock_t ived_requesting_lock;
  * owned_veshm_num and attach_veshm_num counts length of each list entries
  * for the purpose of debuging. Don't divert them.
  */
-struct ived_shared_resource_data{
-	struct list_head list;		    /* list_head for ived_task_list */
-	pthread_rwlock_t ived_resource_lock; /*!< Lock of itself */
-	pid_t	pid;
-	uuid_t	uuid_proc;		    /*! UUID for a process */
-
-	pthread_mutex_t proc_cr_lock;	    /*!< Lock for CR data */
-	struct proc_cr_page cr_page[MAX_CRD_PER_CORE]; /*!< CR page data */
-
-	struct list_head owned_veshm_list;  /*!< List head of owned VESHM  */
-	int owned_veshm_num;    /*!< For debug only. Don't divert to other purpose. */
-	struct list_head attach_veshm_list; /*!< List head of attaching VESHM */
-	int attach_veshm_num;	/*!< For debug only. Don't divert to other purpose. */
-
-	struct veos_vhshm veos_vhshm_res_head; /* !< VHSHM resource structure */
-	bool is_swap_out;			/*!< process swap out or not */
-	struct list_head swapped_owned_veshm_list;	/*!< List head of swapped-out owned VESHM */
-	struct list_head swapped_attach_veshm_list;	/*!< List head of swapped-out attaching VESHM */
-	pthread_mutex_t re_attach_veshm_lock;	/*!< Lock for re-attach VESHM from PPS */
-};
-
+struct ived_shared_resource_data;
+struct ve_task_struct;
 
 extern int veos_ived_register_osdata();
 extern int veos_ived_erase_osdata();

@@ -1,0 +1,3 @@
+#The time interval of logging power throttling events that occurs in
+#PMC14 register of each core for VE3 architecture.
+#ve-os-launcher@*=--power-throttle-log-interval=3600

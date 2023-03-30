@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -41,6 +41,7 @@
 #include "comm_request.h"
 #include "sys_common.h"
 #include "mm_type.h"
+#include "mman_ve.h"
 #include "vemva_layout.h"
 
 /* AMM specific macros and function prototype */
@@ -50,12 +51,6 @@
 #define MASK_2MB_ALIGN		(PAGE_SIZE_2MB - 1)
 #define MASK_64MB_ALIGN		(PAGE_SIZE_64MB - 1)
 
-/* Macro For Address alignment */
-#define IS_ALIGNED(x, a)	(((x) & ((typeof(x))(a) - 1)) == 0)
-#define ALIGN(x, a)		__ALIGN_MASK(x, (typeof(x))(a) - 1)
-#define __ALIGN_MASK(x, mask)	(((x) + (mask)) & ~(mask))
-
-#define ALIGN_RD(x, a)  (x & (~((typeof(x))(a) - 1)))
 /* Macro For VEMVA Support */
 #define ENTRIES_PER_DIR		256
 #define MAX_VEMVA_LIST		32
@@ -75,25 +70,6 @@
 
 #define AS_WITHIN_64GB_2MB	((uint8_t)1 << 4)
 #define AS_WITHIN_64GB_64MB	((uint8_t)1 << 5)
-
-/* Mapping control flags
- * Note : MAP_2MB, MAP_64MB, MAP_ADDR_SPACE, MAP_VDSO flags are also
- * defined in file 've_mem.h'. There puropose is same in noth file.
- * please take care while modifying these flag value.
- *
- * Note : MAP_ADDR_64GB_FIXED and MAP_ADDR_64GB_SPACE these both
- * flags are also defined in file 'loader.c' and glibc please take
- * before modifying the value of these flag
- * */
-
-#define MAP_VESHM		((uint64_t)1<<21)
-#define MAP_2MB			((uint64_t)1<<22)
-#define MAP_64MB		((uint64_t)1<<23)
-#define MAP_ADDR_64GB_FIXED     ((uint64_t)1<<36)
-#define MAP_ADDR_64GB_SPACE     ((uint64_t)1<<35)
-#define MAP_ADDR_SPACE		((uint64_t)1<<34)
-#define MAP_VDSO		((uint64_t)1<<32)
-
 
 /**
 * @brief This flag is used to specify,

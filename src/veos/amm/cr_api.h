@@ -57,9 +57,15 @@ enum cr_page_type {THREAD = 0, MPI, ALL, NONE, DELAYED};
 #define crdisvalid(p)		(((p)->data & VALID_MASK) >> CR_VALID_SHIFT)
 #define setcrdinvalid(p)	((p)->data &= (~VALID_MASK))
 #define setcrdvalid(p)		((p)->data |= VALID_MASK)
-#define CR_INIT_VAL 0x00UL
 
 #define tot_cr_res(p) (p->nr_avail_cores)
+
+/* TODO: remove and make portable */
+struct cr_cluster {
+	ve_reg_t data[32];
+	uint8_t padding[0x1000-0x100];
+};
+typedef struct cr_cluster cr_cluster_t;
 
 /*CR page manipulation*/
 struct tsk_cr_pg {
@@ -97,6 +103,21 @@ struct cr_stl {
 	struct list_head *stl; /*!< share task list*/
 };
 
+struct ve_node_struct;
+struct ve_mm_struct;
+
+/*CRD registor*/
+#ifndef veos__crd_defined
+#define veos__crd_defined
+typedef union crd_t {
+	ve_reg_t data;
+	struct {
+		ve_reg_t pgnum:5, rfu:58, valid:1;
+	} bf;
+} crd_t;
+#endif
+
+
 /*Function to alloc and free cr data*/
 int amm_alloc_cr_data(struct ve_mm_struct *);
 int amm_init_node_cr_data(struct ve_node_struct *);
@@ -126,6 +147,8 @@ int veos_restore_cr(struct ve_task_struct *);
 void veos_set_crd_context(struct ve_task_struct *);
 int set_cr_rlimit(pid_t, uint64_t, int, int);
 void dump_cr(pid_t, uint64_t);
+
+int veos_get_pci_crarea_address(uint64_t *);
 
 /*CR Dump functions*/
 int veos_dump_cr(struct ve_task_struct *, uint64_t);

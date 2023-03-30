@@ -5,7 +5,7 @@ libvhve_la_SOURCES = \
 	vhve_socket.c \
 	vhve_socket.h \
 	vhve.h \
-	libvhve.c 
+	libvhve.c
 
 libvhve_la_CFLAGS = \
 	-I../../include \

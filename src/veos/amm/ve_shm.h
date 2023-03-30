@@ -31,13 +31,14 @@
 #include "ve_mem.h"
 #include <sys/mman.h>
 #include <sys/shm.h>
-#include "ptrace_req.h"
-#include "psm_stat.h"
-#include "ve_memory.h"
-#include "task_mgmt.h"
-#include "task_signal.h"
-#include "rpm_comm.h"
+#include <proc/readproc.h>
 #include <sys/capability.h>
+
+/* declarations from external/rpm_comm.h */
+struct shm_summary;
+struct ve_shm_data;
+typedef struct ve_shm_data sdata_t;
+struct ve_mapheader;
 
 #define	PG_SHM		(0x200000000)	/*!< Flag represent Shared memory page*/
 /* Flag represent VE Anonymous page */

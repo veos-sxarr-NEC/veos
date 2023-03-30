@@ -28,7 +28,7 @@
 #include <libved.h>
 
 #include "ve_list.h"
-#include "vedma_hw.h"
+#include "veos_arch_defs.h"
 #include "dma_reqlist_private.h"
 #include "veos_ipc.h"
 
@@ -59,6 +59,7 @@ do { \
 } while (0)
 
 struct ve_dma_reqlist_entry;
+struct ve_dma_engine_usage;
 
 /**
  * @brief DMA handle
@@ -73,10 +74,8 @@ struct ve_dma_hdl_struct {
 	pthread_mutex_t pin_wait_list_mutex;
 	pthread_cond_t pin_wait_list_cond;
 	int should_stop;/*!< flag denoting that DMA engine should stop and should not accept any more requests */
-	int desc_used_begin;/*!< the start number of used DMA descriptors */
-	int desc_num_used;/*!< the number of used DMA descriptors */
-	struct ve_dma_reqlist_entry *req_entry[VE_DMA_NUM_DESC];/*!< DMA reqlist entry on each DMA descriptor */
-	system_common_reg_t *control_regs;/*!< pointer to node control registers area */
+	struct ve_dma_engine_usage *dma_engine_usage;/*!< HW-dependent opaque information */
+	vedl_common_reg_handle *control_regs;/*!< pointer to node control registers area */
 	int blk_count;/*!< counter for pin downed block*/
 };
 
@@ -103,7 +102,7 @@ struct ve_dma_req_hdl_struct {
 	struct ve_dma_waiting_req_struct waiting_src; /*!< Infomation of DMA request source waiting pin down */
 	struct ve_dma_waiting_req_struct waiting_dst; /*!< Infomation of DMA request destination waiting pin down */
 	ve_dma__block *src_blk;
-	ve_dma__block *dst_blk; 
+	ve_dma__block *dst_blk;
 	uint64_t length; /*!< Infomation of DMA request waiting pin down */
 	uint64_t opt; /*!< Infomation of DMA request waiting pin down */
 	int vh_sock_fd; /*!< Infomation of DMA request waiting pin down */

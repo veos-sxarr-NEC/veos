@@ -11,13 +11,15 @@ libpseudopsm_la_SOURCES = \
 	sys_signal.c \
 	exception.h \
 	ve_signal.h \
-	exception.c
+	exception.c \
+	arch_func_ptrs.c
 
 libpseudopsm_la_CFLAGS = \
 	-g -Wall -Werror -DDEBUG -D_GNU_SOURCE -std=gnu99 \
 	-I$(top_srcdir)/src/veos/dma \
 	-I$(top_srcdir)/src/veos/main \
 	-I$(top_srcdir)/src/pseudo \
+	-I$(srcdir)/.. \
 	-I$(srcdir)/../common \
 	-I$(srcdir)/../amm \
 	-I$(srcdir)/../loader \

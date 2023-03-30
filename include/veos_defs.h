@@ -69,5 +69,14 @@
 #define VE_REGID_PMC13	19
 #define VE_REGID_PMC14	20
 #define VE_REGID_PMC15	21
+#define VE_REGID_PMC16	22
+#define VE_REGID_PMC17	23
+#define VE_REGID_PMC18	24
+#define VE_REGID_PMC19	25
+#define VE_REGID_PMC20	26
+/* following definitions are reserve for future use */
+#define DMY_VE_REGID_PMC21	27
+#define DMY_VE_REGID_PMC22	28
+#define DMY_VE_REGID_PMC23	29
 
 #endif

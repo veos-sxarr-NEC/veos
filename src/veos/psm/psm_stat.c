@@ -30,10 +30,12 @@
 #include <stdlib.h>
 #include <sys/capability.h>
 #include "psm_stat.h"
+#include "task_sched.h"
 #include "velayout.h"
 #include "ve_mem.h"
 #include "signal.h"
 #include "locking_handler.h"
+#include <veos_arch_defs.h>
 /**
  * @brief Get the scheduling priority of the VE process.
  *
@@ -273,9 +275,8 @@ int psm_rpm_handle_pidstat_req(int pid, struct velib_pidstat *pidstat)
 	memcpy(pidstat->cmd, tsk->ve_comm, strlen(tsk->ve_comm)+1);
 
 	/* Populate the stack pointer & instruction pointer */
-	pidstat->kstesp = tsk->p_ve_thread->SR[11];
-	pidstat->ksteip = tsk->p_ve_thread->IC;
-
+	pidstat->kstesp = (unsigned long)(*_veos_arch_ops->arch_psm_get_stack_pointer_on_thread_struct)(tsk->p_ve_thread->arch_user_regs); 
+	pidstat->ksteip = (unsigned long) (*_veos_arch_ops->arch_psm_get_program_counter_from_thread_struct)(tsk->p_ve_thread->arch_user_regs);
 	if (namespace_pid == pid)
 		pidstat->tgid = tsk->tgid;
 	else
@@ -343,6 +344,62 @@ int psm_rpm_handle_stat_req(struct ve_node_struct *p_ve_node,
 hndl_return:
 	VEOS_TRACE("Exiting");
 	return retval;
+}
+
+/**
+ * @brief Function will populate the fields pf struct velib_statinfo_3.
+ *
+ * @param[in] p_ve_node Pointer to VE node struct
+ * @param[out] statinfo Pointer to struct velib_statinfo_v3
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int psm_rpm_handle_stat_req_v3(struct ve_node_struct *p_ve_node,
+                struct velib_statinfo_v3 *statinfo_v3)
+{
+        int retval = -1;
+        int core_loop = 0;
+        unsigned long nr_switches = 0;
+        struct timeval now = {0};
+        uint64_t core_uptime = 0;
+        struct ve_core_struct *p_ve_core = NULL;
+
+        VEOS_TRACE("Entering");
+        if (!p_ve_node || !statinfo_v3)
+                goto hndl_return;
+
+        memset(statinfo_v3, 0, sizeof(struct velib_statinfo_v3));
+
+        /* Core busy & idle values are populated in struct velib_statinfo_v3 */
+        for (core_loop = 0; core_loop < p_ve_node->nr_avail_cores;
+                        core_loop++) {
+                VEOS_DEBUG("Core loop: %d", core_loop);
+                p_ve_core = VE_CORE(0, core_loop);
+                gettimeofday(&now, NULL);
+                core_uptime = timeval_diff(now, p_ve_core->core_uptime);
+                statinfo_v3->user[core_loop] = p_ve_core->busy_time;
+                statinfo_v3->idle[core_loop] = core_uptime - p_ve_core->busy_time;
+        }
+
+        nr_switches = psm_calc_nr_context_switches(p_ve_node);
+        if ((unsigned long)-1 == nr_switches) {
+                VEOS_ERROR("Failed to get number of context switches");
+                goto hndl_return;
+        }
+        statinfo_v3->ctxt = nr_switches;
+        statinfo_v3->running = p_ve_node->nr_active;
+
+        /* As of now, VEOS do not maintain any state which can provide count
+         * of blocked processes which are waiting specifically for IO.
+         * So, VE blocked process count will be 0.
+         */
+        statinfo_v3->blocked = 0;
+        statinfo_v3->processes = p_ve_node->total_forks;
+        statinfo_v3->btime = p_ve_node->node_boot_time;
+        retval = 0;
+hndl_return:
+        VEOS_TRACE("Exiting");
+        return retval;
 }
 
 /**

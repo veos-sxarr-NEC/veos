@@ -26,13 +26,7 @@
 #include "libved.h"
 #include "task_mgmt.h"
 
-#define VESYNC_CREG_OFFSET_SYNC (offsetof(system_common_reg_t, SYNC))
-#define VESYNC_CREG_OFFSET_DMYWR 0x00000408
-#define VESYNC_BAR01_SYNC_ADDR_SIZE 4096
-
-#define VE_CORE_OFFSET_OF_HCR 0x10a00
-#define VE_RSA_DISABLE_BIT_ON 0xf000000000000000
-#define VE_RSA_DISABLE_BIT_OFF 0x0000000000000000
+#include <veos_arch_defs.h>
 
 /**
  * @brief Allocate address for pci bar01 sync.
@@ -47,12 +41,8 @@ int veos_alloc_pci_bar01_sync_addr(void)
 	vedl_handle *vh = VE_HANDLE(0);
 	struct ve_node_struct *ve_node = VE_NODE(0);
 
-	ve_node->pci_bar01_sync_addr = mmap(NULL, VESYNC_BAR01_SYNC_ADDR_SIZE,
-					    PROT_READ | PROT_WRITE, MAP_SHARED,
-					    vh->vefd,
-					    VEDRV_MAP_BAR0_OFFSET
-					    + ve_node->pci_bar01_pgsz
-					    * ve_node->vdso_pcientry);
+	ve_node->pci_bar01_sync_addr = (*_veos_arch_ops->
+		arch_vesync_map_pci_memory_window_sync_area)(vh, ve_node);
 	if (ve_node->pci_bar01_sync_addr == MAP_FAILED)
 		return -1;
 
@@ -68,8 +58,9 @@ void veos_free_pci_bar01_sync_addr(void)
 
 	if (ve_node->pci_bar01_sync_addr != MAP_FAILED &&
 	    ve_node->pci_bar01_sync_addr != NULL) {
-		munmap(ve_node->pci_bar01_sync_addr,
-		       VESYNC_BAR01_SYNC_ADDR_SIZE);
+		(*_veos_arch_ops->
+			arch_vesync_unmap_pci_memory_window_sync_area)(
+				ve_node->pci_bar01_sync_addr);
 	}
 	ve_node->pci_bar01_sync_addr = NULL;
 }
@@ -85,12 +76,7 @@ int veos_commit_rdawr_order(void)
  * As an optimization for HW behavior, the followings help VEOS to ensure
  * the order of read after write rapidly.
  */
-	for (int i = 0; i < 20; i++) {
-		vedl_set_cnt_reg_word(VE_HANDLE(0), VE_CORE_CNT_REG_ADDR(0),
-				      VESYNC_CREG_OFFSET_DMYWR, 0);
-	}
-	/* mfence is not needed because memory type is UC */
-	return 0; /* always successful */
+	return (*_veos_arch_ops->arch_vesync_commit_rdawr_order)();
 }
 
 /**
@@ -100,38 +86,18 @@ int veos_commit_rdawr_order(void)
  */
 int veos_invalidate_branch_history(int core_id)
 {
-	reg_t regdata = 0;
-	if (core_id < 0 || VE_NODE(0)->nr_avail_cores <= core_id)
-		return -1;
-
-	regdata = VE_RSA_DISABLE_BIT_ON;
-	vedl_set_sys_reg_words(VE_HANDLE(0),
-			       VE_CORE_SYS_REG_ADDR(0, core_id),
-			       VE_CORE_OFFSET_OF_HCR,
-			       &regdata, sizeof(reg_t));
-	regdata = VE_RSA_DISABLE_BIT_OFF;
-	vedl_set_sys_reg_words(VE_HANDLE(0),
-                               VE_CORE_SYS_REG_ADDR(0, core_id),
-                               VE_CORE_OFFSET_OF_HCR,
-                               &regdata, sizeof(reg_t));
-	return 0;
+	return (*_veos_arch_ops->
+			arch_vesync_invalidate_branch_history)(core_id);
 }
 
 /**
- * @brief Write serialize function for bar2.
+ * @brief Write serialize function for register area
  *
  * @return always 0
  */
 int veos_sync_w_bar2(void)
 {
-/*
- * As VE-HW specifications, the followings are necessary for VEOS
- * to write any data completely to any resources over bar2.
- */
-	vedl_set_cnt_reg_word(VE_HANDLE(0), VE_CORE_CNT_REG_ADDR(0),
-			      VESYNC_CREG_OFFSET_SYNC, 0);
-	/* mfence is not needed because memory type is UC */
-	return 0; /* always successful */
+	return (*_veos_arch_ops->arch_vesync_sync_w_pci_register_area)();
 }
 
 /**
@@ -139,12 +105,12 @@ int veos_sync_w_bar2(void)
  *
  * @return always 0
  */
-int veos_sync_r_bar01_bar3(void)
+int veos_sync_r_bar01_bar_cr(void)
 {
 	veos_commit_rdawr_order();
 /*
  * As VE-HW specifications, the followings are necessary for VEOS
- * to transfer any data completely to any resources over bar01 or bar3.
+ * to transfer any data completely to any resources over bar01 or bar with CR(VE1:bar3,VE3:bar4).
  */
 	struct ve_node_struct *ve_node = VE_NODE(0);
 
@@ -161,16 +127,6 @@ int veos_sync_r_bar01_bar3(void)
  */
 int veos_sync_r_bar2(void)
 {
-	veos_commit_rdawr_order();
-/*
- * As VE-HW specifications, the followings are necessary for VEOS
- * to transfer any data completely to any resources over bar2.
- */
-	reg_t data;
-
-	vedl_get_cnt_reg_word(VE_HANDLE(0), VE_CORE_CNT_REG_ADDR(0),
-			      VESYNC_CREG_OFFSET_SYNC, &data);
-	/* mfence is not needed because memory type is UC */
-	return 0; /* always successful */
+	return (*_veos_arch_ops->arch_vesync_sync_r_pci_register_area)();
 }
 

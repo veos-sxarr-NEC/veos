@@ -26,12 +26,17 @@
 #include "ve_memory.h"
 #include "ve_mem.h"
 #include "veos.h"
+#include "align.h"
 #include "pciatb_api.h"
 #include "velayout.h"
 #include <sys/mman.h>
 #include "buddy.h"
 #include "mm_type.h"
 #include "ve_shm.h"
+#include "mman_ve.h"
+
+#include <veos_arch_defs.h>
+#include "ve_memory_def.h"
 #include "ived_common.h"
 
 /**
@@ -41,34 +46,7 @@
 */
 int pciatb_dump(void)
 {
-	struct ve_node_struct *vnode_info = VE_NODE(0);
-	pciatb_entry_t *pci_entry = NULL;
-	int ret = 0;
-
-	VEOS_TRACE("invoked to dump PCIATB");
-
-	pci_entry = (pciatb_entry_t *)calloc(PCIATB_VLD_SIZE,
-			(sizeof(pciatb_entry_t)));
-	if (NULL == pci_entry) {
-		ret = -ENOMEM;
-		VEOS_CRIT("error (%s) in allocating pci entry obj",
-			strerror(-ret));
-		return ret;
-	}
-
-	ret = vedl_get_pciatb_all(vnode_info->handle,
-		vnode_info->cnt_regs_addr, pci_entry);
-	if (ret < 0) {
-		free(pci_entry);
-		veos_abort("unable to read pciatb hardware reg values");
-	}
-
-	for (int pci_ent = 0; pci_ent < PCIATB_VLD_SIZE; pci_ent++)
-		VEOS_DEBUG("PCIATB[%d] : 0x%lx", pci_ent, pci_entry[pci_ent].data);
-
-	free(pci_entry);
-	VEOS_TRACE("returned(%d)", ret);
-	return  ret;
+	return (*_veos_arch_ops->arch_amm_pciatb_dump)();
 }
 
 /**
@@ -78,54 +56,13 @@ int pciatb_dump(void)
 *
 * @param[in] val Value of attribute i.e. 0, 1 etc.
 *
-* @return On success returns 0 and negative of errno on failure.
 */
 void veos_set_pciatb_attr(uint64_t attr, uint64_t val)
 {
-	pci_attr_t p_attr = {0};
-	int64_t ret = 0;
-	off_t offset = 0;
-	struct ve_node_struct *vnode_info = VE_NODE(0);
-	vedl_handle *handle = VE_HANDLE(0);
-
-	VEOS_TRACE("invoked to set pciatb attribute");
-
-	offset = offsetof(system_common_reg_t, PCIATBA);
-
-	memset(&p_attr, 0, sizeof(pci_attr_t));
-
-	/*GET pgmod in PCIATBA registor*/
-	ret = vedl_get_cnt_reg_word(handle, vnode_info->cnt_regs_addr,
-		offset, (reg_t *)&p_attr);
-	if (ret < 0)
-		veos_abort("unable to read pciatb attr hardware reg");
-
-	/*If attribute is size*/
-	if (attr == PCIATTR_SIZE) {
-		p_attr.data = val;
-		VEOS_DEBUG("PCIATB attribute set to :%ld",
-		p_attr.data);
+	int ret = (*_veos_arch_ops->arch_amm_set_pciatb_attr)(attr, val);
+	if (ret != 0) {
+		veos_abort("Failed to set PCIATBA");
 	}
-
-	/*SET pgmod in PCIATBA registor*/
-	ret = vedl_set_cnt_reg_word(handle, vnode_info->cnt_regs_addr,
-		 offset, p_attr.data);
-	if (ret < 0)
-		veos_abort("unable to update pciatb attr hardware reg");
-
-	/*Get pciattr register and store it in node struct*/
-	ret =  vedl_get_cnt_reg_word(handle, vnode_info->cnt_regs_addr,
-			offset, (reg_t *)&p_attr);
-	if (ret < 0)
-		veos_abort("unable to read pciatb attr hardware reg");
-
-	vnode_info->pciattr = p_attr.data;
-
-	VEOS_DEBUG("PCI PAGE MODE SET TO :%s",
-			(vnode_info->pciattr == 0) ?
-				"2MB PGMODE" : "64MB PGMODE");
-
-	VEOS_TRACE("returned(%ld)", ret);
 }
 
 /**
@@ -141,38 +78,36 @@ int amm_init_pciatb(struct ve_node_struct *vnode_info)
 	size_t bar0_size = 0;
 	uint64_t base_addr = 0;
 	struct buddy_mempool *pci_mempool = NULL;
-	uint64_t entry_cnt = 0;
 	int pgmod, reg_cnt = 0;
-	pciatb_entry_t pci_entry = {0};
 
-	vedl_handle *handle = VE_HANDLE(0);
 
 	VEOS_TRACE("invoked");
 	/*Get BAR0 size*/
-	ret = vedl_get_pci_bar0_size(handle, &bar0_size);
+	ret = (*_veos_arch_ops->
+			arch_amm_get_pci_memory_window_size)(&bar0_size);
 	if (ret < 0)
 		veos_abort("unable to read pciatb bar0 size");
 
-	vnode_info->pci_bar01_sz = bar0_size;
+	vnode_info->pci_bar_mem_sz = bar0_size;
 
 	VEOS_DEBUG("PCI BAR0 size is %lx",
-				vnode_info->pci_bar01_sz);
+				vnode_info->pci_bar_mem_sz);
 
 	if (bar0_size < PCIBAR_128MB) {
 		VEOS_DEBUG("BAR01 size %lx is small", bar0_size);
 		return -EINVAL;
 	} else if (bar0_size == PCIBAR_128MB) {
-		vnode_info->pci_bar01_pgsz = PAGE_2MB;
+		vnode_info->pci_bar_mem_pgsz = PAGE_2MB;
 		pgmod = PGMOD_2MB;
 	} else {
 		pgmod = PGMOD_64MB;
-		vnode_info->pci_bar01_pgsz = PAGE_64MB;
+		vnode_info->pci_bar_mem_pgsz = PAGE_64MB;
 	}
 
 	/*INIT pci  buddy mempool, here we are
 	 * assuming PCI base address as ZERO*/
-	pci_mempool = veos_buddy_init(base_addr, vnode_info->pci_bar01_sz,
-			vnode_info->pci_bar01_pgsz);
+	pci_mempool = veos_buddy_init(base_addr, vnode_info->pci_bar_mem_sz,
+			vnode_info->pci_bar_mem_pgsz);
 	if (NULL == pci_mempool) {
 		ret = -ENOMEM;
 		VEOS_DEBUG("Error (%s) while initializing PCI memory pool",
@@ -195,17 +130,10 @@ int amm_init_pciatb(struct ve_node_struct *vnode_info)
 	veos_set_pciatb_attr(PCIATTR_SIZE, (pgmod == PGMOD_2MB) ?
 				(uint64_t)0 : (uint64_t)1);
 
-	pci_entry.data = INVALID_ENTRY;
 	/*Mark all pciatb entries as invalid
 	 *in s/w as well as h/w */
-	for (entry_cnt = 0; entry_cnt <
-			PCIATB_VLD_SIZE; entry_cnt++) {
-		vnode_info->pciatb[entry_cnt].data = pci_entry.data;
-		ret = vedl_update_pciatb_entry(handle,
-			vnode_info->cnt_regs_addr, &pci_entry, entry_cnt);
-		if (ret < 0)
-			veos_abort("unable to update pciatb hardware entries");
-	}
+	if ((*_veos_arch_ops->arch_amm_invalidate_all_pciatb_entries)() != 0)
+		veos_abort("Failed to invalidate all PCIATB entires.");
 
 	/* SET PCISYARX with val 0*/
 	for (reg_cnt = 0; reg_cnt < PCISYAR_MAX; reg_cnt++) {
@@ -255,25 +183,11 @@ init_failed:
  *
  * @return On success returns 0 and negative of errno on failure.
  */
-void veos_set_pciatb(pciatb_entry_t *reg, int entry_no, int count)
+void veos_set_pciatb(const veos_pciatb_entry_t *reg, int entry_no, int count)
 {
-	int idx = 0, ret = 0;
-	struct ve_node_struct *vnode_info = VE_NODE(0);
-	vedl_handle *handle = VE_HANDLE(0);
-
-	VEOS_TRACE("invoked to set pciatb with entry no(%d)  count(%d)",
-		entry_no, count);
-
-	/* here we will set pciatb_entries
-	 * from entry_no to (entry_no + count)*/
-	for (idx = entry_no; idx < (entry_no + count); idx++) {
-		VEOS_TRACE("Updating PCIATB entry :%d", idx);
-		ret = vedl_update_pciatb_entry(handle,
-			vnode_info->cnt_regs_addr, &reg[idx], idx);
-		if (ret < 0)
-			veos_abort("unable to update pciatb hardware entries");
-	}
-	VEOS_TRACE("returned");
+	int ret = (*_veos_arch_ops->arch_amm_set_pciatb)(reg, entry_no, count);
+	if (ret < 0)
+		veos_abort("unable to update pciatb hardware entries");
 }
 /**
  * @brief This function reads page descriptor from the data structure of PCIATB
@@ -316,7 +230,7 @@ int64_t veos_get_vhsaa_pciatb(vemaa_t vemaa, pid_t pid)
 	/*Get Total valid entry count*/
 	entry_max = vnode_info->pci_mempool->total_pages;
 
-	pg_mode = (uint64_t)((vnode_info->pci_bar01_pgsz == PAGE_2MB)
+	pg_mode = (uint64_t)((vnode_info->pci_bar_mem_pgsz == PAGE_2MB)
 		? PGMOD_2MB : PGMOD_64MB);
 
 	page_no = pfnum(vemaa, PGMOD_2MB);
@@ -377,9 +291,9 @@ int64_t veos_get_vhsaa_pciatb(vemaa_t vemaa, pid_t pid)
 int alloc_pcientry(uint64_t start_entry,
 		uint64_t count, uint64_t *page_base)
 {
-	int idx = 0, entry_cnt = 0;
+	int idx = 0, entry_cnt = 0, entry_cnt_bak = 0;
 	struct ve_node_struct *vnode_info = VE_NODE(0);
-	int ret = 0;
+	int ret = 0, ret_2 = 0;
 
 	VEOS_TRACE("invoked with start_entry(0x%lx) count(%ld) page_base(%p)",
 			start_entry, count, page_base);
@@ -399,6 +313,19 @@ int alloc_pcientry(uint64_t start_entry,
 		if (ret < 0) {
 			VEOS_DEBUG("Error(%s) to inc ref count",
 				strerror(-ret));
+			vnode_info->pciatb[idx].data = INVALID_ENTRY;
+			for (entry_cnt_bak = entry_cnt - 1;
+				entry_cnt_bak >= 0; entry_cnt_bak--) {
+				vnode_info->pciatb[--idx].data = INVALID_ENTRY;
+				ret_2 = amm_do_put_page(
+						page_base[entry_cnt_bak], true);
+				if (ret_2 < 0) {
+					pthread_mutex_lock_unlock(&vnode_info->
+						pciatb_lock, UNLOCK,
+						"Failed to release pci lock");
+					veos_abort("unable to free pciatb");
+				}
+			}
 			pthread_mutex_lock_unlock(&vnode_info->pciatb_lock, UNLOCK,
 					"Failed to release pci lock");
 			return ret;
@@ -438,7 +365,7 @@ int veos_free_pcientry(uint64_t start_entry, uint64_t size)
 		return ret;
 	}
 
-	if (vnode_info->pci_bar01_pgsz == PAGE_2MB)
+	if (vnode_info->pci_bar_mem_pgsz == PAGE_2MB)
 		pci_block->start = (start_entry << LARGE_PSHFT);
 	else
 		pci_block->start = (start_entry << HUGE_PSHFT);
@@ -473,32 +400,32 @@ int get_pci_req_type(uint64_t *pgmod_arr, bool *comm)
 	if (*comm) {
 		page_size = (size_t)((pgmod_arr[0] == PGMOD_2MB) ?
 					PAGE_2MB : PAGE_64MB);
-		if (page_size < vnode->pci_bar01_pgsz) {
+		if (page_size < vnode->pci_bar_mem_pgsz) {
 			VEOS_DEBUG("Process pgsz incomaptible with PCIATB pgsz");
 			return PCI_ALLOC_ERROR;
 		}
 		VEOS_DEBUG("Process pgsz comaptible with PCIATB pgsz");
-		if ((PAGE_64MB == vnode->pci_bar01_pgsz)
-				&& (PAGE_64MB == vnode->pci_bar01_pgsz)) {
+		if ((PAGE_64MB == vnode->pci_bar_mem_pgsz)
+				&& (PAGE_64MB == vnode->pci_bar_mem_pgsz)) {
 			VEOS_DEBUG("Process pgsz 0x%lx PCIATB pgsz: 0x%lx",
-				page_size, vnode->pci_bar01_pgsz);
+				page_size, vnode->pci_bar_mem_pgsz);
 			VEOS_TRACE("returned(%d)", PCI_ALLOC_HUGE);
 			return PCI_ALLOC_HUGE;
-		} else if (page_size > vnode->pci_bar01_pgsz) {
+		} else if (page_size > vnode->pci_bar_mem_pgsz) {
 			VEOS_DEBUG("Process pgsz 0x%lx PCIATB pgsz: 0x%lx",
-				page_size, vnode->pci_bar01_pgsz);
+				page_size, vnode->pci_bar_mem_pgsz);
 			VEOS_TRACE("returned(%d)", PCI_ALLOC_PARTIAL);
 			return PCI_ALLOC_PARTIAL;
-		} else if ((page_size == vnode->pci_bar01_pgsz)
-				&& (PAGE_2MB == vnode->pci_bar01_pgsz)) {
+		} else if ((page_size == vnode->pci_bar_mem_pgsz)
+				&& (PAGE_2MB == vnode->pci_bar_mem_pgsz)) {
 			VEOS_DEBUG("Process pgsz 0x%lx PCIATB pgsz: 0x%lx",
-				page_size, vnode->pci_bar01_pgsz);
+				page_size, vnode->pci_bar_mem_pgsz);
 			VEOS_TRACE("returned(%d)", PCI_ALLOC_NORMAL);
 			return PCI_ALLOC_NORMAL;
 		}
 	}
 
-	if (vnode->pci_bar01_pgsz == PAGE_2MB) {
+	if (vnode->pci_bar_mem_pgsz == PAGE_2MB) {
 		VEOS_TRACE("returned(%d)", PCI_ALLOC_HYBRID);
 		return PCI_ALLOC_HYBRID;
 	}
@@ -528,8 +455,8 @@ int free_unused_entry(uint64_t start_entry,
 		"start_entry(%ld) req_size(0x%lx) alloc_size(0x%lx)",
 		start_entry, req_size, alloc_size);
 
-	total_entry = alloc_size/vnode->pci_bar01_pgsz;
-	req_entry = req_size/vnode->pci_bar01_pgsz;
+	total_entry = alloc_size/vnode->pci_bar_mem_pgsz;
+	req_entry = req_size/vnode->pci_bar_mem_pgsz;
 	extra_entry = total_entry - req_entry;
 
 	VEOS_DEBUG("PCIATB(%ld) extra entries", extra_entry);
@@ -541,7 +468,7 @@ int free_unused_entry(uint64_t start_entry,
 	if (extra_entry) {
 		for (idx = (start_entry + req_entry);
 				idx < (start_entry + total_entry); idx++) {
-			ret = veos_free_pcientry(idx, vnode->pci_bar01_pgsz);
+			ret = veos_free_pcientry(idx, vnode->pci_bar_mem_pgsz);
 			if (ret < 0) {
 				VEOS_DEBUG("Error(%s) in freeing pciatb entry(%ld)",
 					strerror(-ret), idx);
@@ -575,7 +502,7 @@ int veos_delete_vdso_pcientry(uint64_t entry_number)
 {
 	struct ve_node_struct *vnode = VE_NODE(0);
 
-	return veos_delete_pciatb(entry_number, vnode->pci_bar01_pgsz);
+	return veos_delete_pciatb(entry_number, vnode->pci_bar_mem_pgsz);
 }
 
 /*
@@ -588,9 +515,8 @@ int veos_delete_vdso_pcientry(uint64_t entry_number)
 int veos_alloc_vdso_pcientry(uint8_t pairnum, uint64_t sync)
 {
 	struct ve_node_struct *vnode = VE_NODE(0);
-	vedl_handle *handle = VE_HANDLE(0);
 	uint64_t pcientry = -1, pci_addr = -1;
-	pciatb_entry_t *p_entry = NULL;
+	veos_pciatb_entry_t *p_entry = NULL;
 	uint64_t vdso_pgno = (uint64_t)vnode->vdso_pfn;
 	uint64_t vdso_addr = -1;
 	int ret = 0;
@@ -603,7 +529,7 @@ int veos_alloc_vdso_pcientry(uint8_t pairnum, uint64_t sync)
 		pairnum, sync);
 
 	VEOS_DEBUG("Allocating VDSO page");
-	if (vnode->pci_bar01_pgsz == PAGE_64MB) {
+	if (vnode->pci_bar_mem_pgsz == PAGE_64MB) {
 		pgmod = PGMOD_64MB;
 		pgsz = PAGE_64MB;
 	}
@@ -652,14 +578,14 @@ int veos_alloc_vdso_pcientry(uint8_t pairnum, uint64_t sync)
 			vdso_pgno, vdso_addr);
 
 	pci_addr = (uint64_t)buddy_alloc(vnode->pci_mempool,
-			size_to_order(vnode->pci_bar01_pgsz));
+			size_to_order(vnode->pci_bar_mem_pgsz));
 	if ((void *)pci_addr == BUDDY_FAILED) {
 		ret = -ENOMEM;
 		VEOS_DEBUG("No free PCIATB entries available");
 		goto ve_buddy_delloc;
 	}
 
-	if (vnode->pci_bar01_pgsz == PAGE_2MB)
+	if (vnode->pci_bar_mem_pgsz == PAGE_2MB)
 		pcientry = pci_addr >> LARGE_PSHFT;
 	else
 		pcientry = pci_addr >> HUGE_PSHFT;
@@ -682,12 +608,12 @@ int veos_alloc_vdso_pcientry(uint8_t pairnum, uint64_t sync)
 		pcientry, pairnum, sync);
 
 	/*NOW update this entry to H/w */
-	ret = vedl_update_pciatb_entry(handle, vnode->cnt_regs_addr,
+	ret = (*_veos_arch_ops->arch_amm_update_pciatb_entry)(
 			&vnode->pciatb[pcientry], pcientry);
 	if (ret < 0)
 		veos_abort("unable to update pciatb hardware entry");
 
-	if (vnode->pci_bar01_pgsz == PAGE_64MB)
+	if (vnode->pci_bar_mem_pgsz == PAGE_64MB)
 		++vnode->pci_mempool->huge_page_used;
 	else
 		++vnode->pci_mempool->small_page_used;
@@ -793,29 +719,31 @@ bool is_contiguos(struct buddy_mempool *pci_mp,
 {
 	struct ve_node_struct *vnode = VE_NODE(0);
 	struct block *curr_blk = NULL, *tmp_blk = NULL;
-	bool pci_map[PCIATB_VLD_SIZE] = {0};
 	uint64_t idx = 0, contiguous = 0, count = 0;
 	uint64_t tmp_addr = -1, entry_start = -1;
 	size_t tmp_size = 0;
 
 	VEOS_TRACE("invoked to check contiguity");
 
+	const size_t PCIATB_VLD_SIZE = (*_veos_arch_ops->
+					arch_amm_get_number_of_pci_pte)();
+	bool pci_map[PCIATB_VLD_SIZE];
 	memset(pci_map, false, (sizeof(bool) * PCIATB_VLD_SIZE));
 
-	count = size/vnode->pci_bar01_pgsz;
+	count = size/vnode->pci_bar_mem_pgsz;
 
 	/*make entries for each allocation*/
 	list_for_each_entry_safe(curr_blk,
 			tmp_blk, pci_mp->alloc_req_list, link) {
 		tmp_addr = curr_blk->start;
 		while (tmp_size < ((uint64_t)1 << curr_blk->order)) {
-			if (vnode->pci_bar01_pgsz == PAGE_2MB)
+			if (vnode->pci_bar_mem_pgsz == PAGE_2MB)
 				idx = tmp_addr >> LARGE_PSHFT;
 			else
 				idx = tmp_addr >> HUGE_PSHFT;
 			pci_map[idx] = true;
-			tmp_addr = tmp_addr + vnode->pci_bar01_pgsz;
-			tmp_size = tmp_size + vnode->pci_bar01_pgsz;
+			tmp_addr = tmp_addr + vnode->pci_bar_mem_pgsz;
+			tmp_size = tmp_size + vnode->pci_bar_mem_pgsz;
 		}
 		tmp_addr = -1;
 		tmp_size = 0;
@@ -850,7 +778,7 @@ bool is_contiguos(struct buddy_mempool *pci_mp,
 	 * return all entries to buddy allocator*/
 	list_for_each_entry_safe(curr_blk,
 			tmp_blk, pci_mp->alloc_req_list, link) {
-		if (vnode->pci_bar01_pgsz == PAGE_2MB)
+		if (vnode->pci_bar_mem_pgsz == PAGE_2MB)
 			idx = curr_blk->start >> LARGE_PSHFT;
 		else
 			idx = curr_blk->start >> HUGE_PSHFT;
@@ -895,13 +823,14 @@ int64_t veos_alloc_pciatb(pid_t pid, uint64_t vaddr,
 	int req_type = -1;
 	int64_t ret = 0, count = 0;
 	bool same = false;
+	struct block *pci_block = NULL;
 
-	pci_pgsize = vnode_info->pci_bar01_pgsz;
+	pci_pgsize = vnode_info->pci_bar_mem_pgsz;
 
 	VEOS_TRACE("invoked with pid :%d vaddr : 0x%lx "
 		"size : 0x%lx perm :0x%lx access_ok :%u",
 		pid, vaddr, size, perm, access_ok);
-
+	VEOS_DEBUG("pci_pgsize: 0x%lx", pci_pgsize);
 	tsk = find_ve_task_struct(pid);
 	if (NULL == tsk) {
 		ret = -ESRCH;
@@ -1010,12 +939,13 @@ int64_t veos_alloc_pciatb(pid_t pid, uint64_t vaddr,
 		goto pci_failed;
 	}
 
-	pg_mode = (uint64_t)((vnode_info->pci_bar01_pgsz == PAGE_2MB) ?
+	pg_mode = (uint64_t)((vnode_info->pci_bar_mem_pgsz == PAGE_2MB) ?
 			PGMOD_2MB : PGMOD_64MB);
 	/*Get free entry from buddy*/
 	/*if requested size is power of two*/
 	pthread_mutex_lock_unlock(&vnode_info->pci_mempool->buddy_mempool_lock,
 			LOCK, "Failed to acquire pci buddy lock");
+
 	tmp_addr = (uint64_t)buddy_alloc(vnode_info->
 			pci_mempool, size_to_order(buddy_size));
 	if ((void *)tmp_addr == BUDDY_FAILED) {
@@ -1041,9 +971,27 @@ int64_t veos_alloc_pciatb(pid_t pid, uint64_t vaddr,
 	count = alloc_pcientry(pci_entry, page_cnt, page_base);
 	if (count < 0) {
 		VEOS_DEBUG("PCI entries not contiguous");
-		ret = -ENOMEM;
 		pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock),
-			UNLOCK, "Failed to release mm-thread-group-lock");
+				UNLOCK,
+				"Failed to release mm-thread-group-lock");
+
+		pci_block = (struct block *)calloc(1, sizeof(struct block));
+		if (pci_block == NULL) {
+			VEOS_ERROR("Failed to allocate pps_block"
+						" due to %s", strerror(errno));
+			veos_abort("pci buddy mempool inconsistent due to "
+							"calloc failure");
+		}
+		pci_block->start = tmp_addr;
+		pci_block->order = size_to_order(buddy_size);
+		pthread_mutex_lock_unlock(
+				&vnode_info->pci_mempool->buddy_mempool_lock,
+				LOCK, "Failed to acquire pci buddy lock");
+		buddy_free(vnode_info->pci_mempool, pci_block);
+		pthread_mutex_lock_unlock(
+				&vnode_info->pci_mempool->buddy_mempool_lock,
+				UNLOCK, "Failed to release pci buddy lock");
+		ret = -ENOMEM;
 		goto pci_failed;
 	}
 	pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock), UNLOCK,
@@ -1070,7 +1018,7 @@ int64_t veos_alloc_pciatb(pid_t pid, uint64_t vaddr,
 	}
 
 	/*Update total entries used in VE node struct*/
-	if (vnode_info->pci_bar01_pgsz == PAGE_SIZE_2MB)
+	if (vnode_info->pci_bar_mem_pgsz == PAGE_SIZE_2MB)
 		vnode_info->pci_mempool->small_page_used += count;
 	else
 		vnode_info->pci_mempool->huge_page_used += count;
@@ -1109,7 +1057,7 @@ int64_t veos_delete_pciatb(uint64_t entry, size_t size)
 	VEOS_DEBUG("invoked to detete pcientry(%ld) with size(0x%lx)",
 		entry, size);
 
-	pci_pgsize = vnode_info->pci_bar01_pgsz;
+	pci_pgsize = vnode_info->pci_bar_mem_pgsz;
 
 	if (((int64_t)size <= 0) || ((int64_t)entry < 0)) {
 		ret = -EINVAL;
@@ -1165,7 +1113,7 @@ int64_t veos_delete_pciatb(uint64_t entry, size_t size)
 		/*free the perticuler entry*/
 		pthread_mutex_lock_unlock(&vnode_info->pci_mempool->buddy_mempool_lock,
 				LOCK, "Failed to acquire pci buddy lock");
-		ret = veos_free_pcientry(idx, vnode_info->pci_bar01_pgsz);
+		ret = veos_free_pcientry(idx, vnode_info->pci_bar_mem_pgsz);
 		if (ret < 0) {
 			pthread_mutex_lock_unlock(&vnode_info->pci_mempool->
 					buddy_mempool_lock, UNLOCK,
@@ -1189,7 +1137,7 @@ int64_t veos_delete_pciatb(uint64_t entry, size_t size)
 			"Failed to acquire pci buddy lock");
 
 	/*Decreament the count of total used entry*/
-	if (vnode_info->pci_bar01_pgsz == PAGE_SIZE_2MB)
+	if (vnode_info->pci_bar_mem_pgsz == PAGE_SIZE_2MB)
 		vnode_info->pci_mempool->small_page_used -= entry_cnt;
 	else
 		vnode_info->pci_mempool->huge_page_used -= entry_cnt;
@@ -1218,10 +1166,7 @@ int64_t veos_delete_pciatb(uint64_t entry, size_t size)
 int veos_amm_set_pcisymr(uint8_t num, uint64_t val)
 {
 	int ret = 0;
-	vedl_handle *handle = VE_HANDLE(0);
 	struct ve_node_struct *vnode_info = VE_NODE(0);
-	off_t offset = offsetof(system_common_reg_t,
-			pciatb_sync_addr_mask[num]);
 	VEOS_TRACE("invoked to set pcisymr(%u) val(%ld)", num, val);
 	/*Check for PCISYMR number*/
 	if (((int8_t)num < 0) || (num > PCISYMR_MAX)) {
@@ -1232,8 +1177,7 @@ int veos_amm_set_pcisymr(uint8_t num, uint64_t val)
 	/*Set pciatb_sync_addr_mask to h/w */
 	pthread_mutex_lock_unlock(&vnode_info->pciatb_lock, LOCK,
 			"Failed to acquire pci lock");
-	ret = vedl_set_cnt_reg_word(handle,
-			vnode_info->cnt_regs_addr, offset, val);
+	ret = (*_veos_arch_ops->arch_amm__set_pcisymr)(num, val);
 	if (ret < 0) {
 		pthread_mutex_lock_unlock(&vnode_info->pciatb_lock,
 				UNLOCK,	"Failed to release pci lock");
@@ -1256,10 +1200,7 @@ int veos_amm_set_pcisymr(uint8_t num, uint64_t val)
 int veos_amm_get_pcisymr(uint8_t num, uint64_t *val)
 {
 	int ret = 0;
-	vedl_handle *handle = VE_HANDLE(0);
 	struct ve_node_struct *vnode_info = VE_NODE(0);
-	off_t offset = offsetof(system_common_reg_t,
-			pciatb_sync_addr_mask[num]);
 
 	VEOS_TRACE("invoked to get pcisymr(%u) in val(%p)", num, val);
 	/*Check foi PCISYMR number*/
@@ -1272,8 +1213,7 @@ int veos_amm_get_pcisymr(uint8_t num, uint64_t *val)
 	pthread_mutex_lock_unlock(&vnode_info->pciatb_lock, LOCK,
 			"Failed to acquire pci lock");
 	/*Set pciatb_sync_addr_mask to h/w */
-	ret = vedl_get_cnt_reg_word(handle,
-			vnode_info->cnt_regs_addr, offset, val);
+	ret = (*_veos_arch_ops->arch_amm__get_pcisymr)(num, val);
 	if (ret < 0) {
 		pthread_mutex_lock_unlock(&vnode_info->pciatb_lock,
 				UNLOCK,	"Failed to release pci lock");
@@ -1296,10 +1236,7 @@ int veos_amm_get_pcisymr(uint8_t num, uint64_t *val)
 int veos_amm_set_pcisyar(uint8_t num, uint64_t val)
 {
 	int ret = 0;
-	vedl_handle *handle = VE_HANDLE(0);
 	struct ve_node_struct *vnode_info = VE_NODE(0);
-	off_t offset = offsetof(system_common_reg_t,
-			pciatb_sync_addr[num]);
 
 	VEOS_TRACE("invoked to set pcisyar(%u) with val(%ld)", num, val);
 	/*Check for PCISYAR number*/
@@ -1311,8 +1248,7 @@ int veos_amm_set_pcisyar(uint8_t num, uint64_t val)
 	pthread_mutex_lock_unlock(&vnode_info->pciatb_lock, LOCK,
 			"Failed to acquire pci lock");
 	/*Set pciatb_sync_addr_mask to h/w */
-	ret = vedl_set_cnt_reg_word(handle,
-			vnode_info->cnt_regs_addr, offset, val);
+	ret = (*_veos_arch_ops->arch_amm__set_pcisyar)(num, val);
 	if (ret < 0) {
 		pthread_mutex_lock_unlock(&vnode_info->pciatb_lock,
 				UNLOCK,	"Failed to release pci lock");
@@ -1334,10 +1270,7 @@ int veos_amm_set_pcisyar(uint8_t num, uint64_t val)
 int veos_amm_get_pcisyar(uint8_t num, uint64_t *val)
 {
 	int ret = 0;
-	vedl_handle *handle = VE_HANDLE(0);
 	struct ve_node_struct *vnode_info = VE_NODE(0);
-	off_t offset = offsetof(system_common_reg_t,
-			pciatb_sync_addr[num]);
 
 	VEOS_TRACE("invoked to get pcisyar(%u)", num);
 
@@ -1350,8 +1283,7 @@ int veos_amm_get_pcisyar(uint8_t num, uint64_t *val)
 	pthread_mutex_lock_unlock(&vnode_info->pciatb_lock, LOCK,
 			"Failed to acquire pci lock");
 	/*Set pciatb_sync_addr_mask to h/w */
-	ret = vedl_get_cnt_reg_word(handle,
-			vnode_info->cnt_regs_addr, offset, val);
+	ret = (*_veos_arch_ops->arch_amm__get_pcisyar)(num, val);
 	if (ret < 0) {
 		pthread_mutex_lock_unlock(&vnode_info->pciatb_lock,
 				UNLOCK,	"Failed to release pci lock");
@@ -1377,9 +1309,8 @@ int veos_set_pciatb_pgdesc(pid_t pid, uint8_t pairnum, uint64_t entry,
 		uint64_t sync)
 {
 	int ret = 0;
-	vedl_handle *handle = VE_HANDLE(0);
 	struct ve_node_struct *vnode_info = VE_NODE(0);
-	pciatb_entry_t *p_entry = NULL;
+	veos_pciatb_entry_t *p_entry = NULL;
 
 	VEOS_TRACE("invoked to set pciatb pgdesc with pid(%d)"
 			"pairnum(%u) entry(%ld) sync(%ld)",
@@ -1421,7 +1352,7 @@ int veos_set_pciatb_pgdesc(pid_t pid, uint8_t pairnum, uint64_t entry,
 			UNLOCK,	"Failed to release pci lock");
 
 	/*Now update this entry to H/w */
-	ret = vedl_update_pciatb_entry(handle, vnode_info->cnt_regs_addr,
+	ret = (*_veos_arch_ops->arch_amm_update_pciatb_entry)(
 			&vnode_info->pciatb[entry], entry);
 	if (ret < 0)
 		veos_abort("unable to update pciatb hardware entries");
@@ -1443,7 +1374,7 @@ int veos_get_pciatb_pgdes(pid_t pid, uint8_t *pair, uint64_t *sync,
 		uint64_t entry)
 {
 	struct ve_node_struct *vnode_info = VE_NODE(0);
-	pciatb_entry_t *p_entry = NULL;
+	veos_pciatb_entry_t *p_entry = NULL;
 
 	VEOS_TRACE("invoked to get pciatb pgdes for entry(%ld)", entry);
 
@@ -1473,4 +1404,20 @@ int veos_get_pciatb_pgdes(pid_t pid, uint8_t *pair, uint64_t *sync,
 
 	VEOS_TRACE("returned(0)");
 	return 0;
+}
+
+int veos_get_pci_memory_window_address(size_t *bar0)
+{
+	return (*_veos_arch_ops->arch_amm_get_pci_memory_window_address)(bar0);
+}
+
+int veos_get_pci_memory_window_size(size_t *bar0_size)
+{
+	return (*_veos_arch_ops->
+			arch_amm_get_pci_memory_window_size)(bar0_size);
+}
+
+size_t veos_get_number_of_pci_pte(void)
+{
+	return (*_veos_arch_ops->arch_amm_get_number_of_pci_pte)();
 }

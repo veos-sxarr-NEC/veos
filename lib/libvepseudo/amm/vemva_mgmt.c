@@ -28,6 +28,7 @@
 #include "sys_common.h"
 #include "sys_mm.h"
 #include <assert.h>
+#include "align.h"
 #include "vemmr_mgmt.h"
 
 as_attr_t as_attributes;
@@ -92,6 +93,7 @@ void *ve_get_vemva_under_64GB(veos_handle *handle, vemva_t addr,
 {
 	void *vemva  = MAP_FAILED;
 	bool is_holes = false;
+	int saved_errno = errno;
 
 	PSEUDO_TRACE("Invoked");
 
@@ -187,14 +189,26 @@ void *ve_get_vemva_under_64GB(veos_handle *handle, vemva_t addr,
 
 		/* Let's try to allocate memory at holes created within first
 		 * 64GB address space. dlopen() and dlclose() function can
-		 * create holes in 64GB of address space */
+		 * create holes in 64GB of address space.
+		 * However, if glibc has specifically asked for
+		 * MAP_ADDR_64GB_FIXED, no need to look into holes. */
 use_holes:
+		if (is_holes == true && (flag & MAP_ADDR_64GB_FIXED)) {
+			PSEUDO_DEBUG("No free vemva within "
+					"64GB address space");
+			pthread_mutex_unlock(&as_attributes.as_attr_lock);
+			errno = ENOMEM;
+			return MAP_FAILED;
+		}
+
 		flag &= ~MAP_FIXED;
 		vemva = ve_get_vemva(handle, 0, size, flag, prot, fd, offset);
 		if (vemva == MAP_FAILED) {
 			PSEUDO_DEBUG("No free vemva within "
 					"64GB address space");
+			saved_errno = errno;
 			pthread_mutex_unlock(&as_attributes.as_attr_lock);
+			errno = saved_errno;
 			return vemva;
 		} else {
 			/*first check is new vemva is valid or not*/
@@ -203,6 +217,7 @@ use_holes:
 				ve_free_vemva(vemva, size);
 				vemva = MAP_FAILED;
 				pthread_mutex_unlock(&as_attributes.as_attr_lock);
+				errno = ENOMEM;
 				return vemva;
 			}
 		}
@@ -271,8 +286,8 @@ void *ve_get_vemva(veos_handle *handle, uint64_t addr,
 		if (flag & MAP_FIXED) {
 			PSEUDO_DEBUG("Error (%s) vemva is unaligned with"
 					" MAP_FIXED", strerror(EINVAL));
-			errno = EINVAL;
 			pthread_mutex_unlock(&vemva_header.vemva_lock);
+			errno = EINVAL;
 			return MAP_FAILED;
 		}
 

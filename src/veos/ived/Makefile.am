@@ -2,6 +2,7 @@ noinst_LIBRARIES = libveived.a
 libveived_a_SOURCES = \
 	veos_ived.c \
 	veos_ived.h \
+	veos_ived_private.h \
 	veos_ived_common.c \
 	veos_ived_common.h \
 	veos_ived_misc.c \
@@ -21,6 +22,7 @@ libveived_a_SOURCES = \
 libveived_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 \
 	-I$(srcdir) \
+	-I$(srcdir)/.. \
 	-I$(srcdir)/../main \
 	-I$(srcdir)/../pps \
 	-I$(srcdir)/../psm \

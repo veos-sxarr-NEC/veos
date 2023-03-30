@@ -3,6 +3,7 @@ libveexternal_a_SOURCES = rpm_comm.c rpm_comm.h
 
 libveexternal_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 \
+	-I$(top_srcdir)/src/veos \
 	-I$(top_srcdir)/src/veos/dma \
 	-I$(top_srcdir)/src/veos/psm \
 	-I$(top_srcdir)/src/veos/main \

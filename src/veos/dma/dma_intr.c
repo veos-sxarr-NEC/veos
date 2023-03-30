@@ -22,66 +22,20 @@
  */
 #include <errno.h>
 #include <stdlib.h>
+#include <pthread.h>
+
+#include <libved.h>
 
 #include "dma.h"
 #include "dma_private.h"
 #include "dma_reqlist.h"
-#include "dma_reqlist_private.h"
-#include "dma_hw.h"
+#include "dma_intr.h"
 #include "dma_log.h"
-#include "vedma_hw.h"
+#include "dma_reqlist_private.h"
 #include "veos.h"
 #include "vesync.h"
 #include <time.h>
 #include "ve_atomic.h"
-
-static ve_dma_reqlist_entry *ve_dma_intr__finish_descriptor(ve_dma_hdl *, int, uint64_t, int);
-
-/**
- * @brief DMA descriptor finalize function
- *
- * @param dh DMA handle
- * @param entry DMA descriptor entry to be finalized
- * @param status Word 0 in the corresponding DMA descriptor
- * @param readptr Read poiter value of DMA control register
- */
-static ve_dma_reqlist_entry *ve_dma_intr__finish_descriptor(ve_dma_hdl *dh, int entry,
-					   uint64_t status, int readptr)
-{
-	/*
-	 * note: a caller must stop DMA engine before calling this function
-	 * if exception field of the status is not 0.
-	 */
-	ve_dma_reqlist_entry *e, *ret = NULL;
-	ve_dma_req_hdl *r;
-	VE_DMA_TRACE("Finalize DMA descriptor #%d", entry);
-
-	e = dh->req_entry[entry];
-	VE_DMA_TRACE("descriptor #%d -> request %p", entry, e);
-	/* e can be NULL when DMA request is terminated	 */
-	if (e != NULL) {
-		r = ve_dma_reqlist_entry_to_req_hdl(e);
-		if (status & VE_DMA_DESC_EXCEPTION_MASK) {
-			/* it caused some errors */
-			VE_DMA_TRACE("DMA descriptor #%d "
-				     "caused exceptions: status=%016lx",
-				     entry, status);
-			ve_dma_reqlist__cancel(r);
-		} else {
-			ve_dma_finish_reqlist_entry(e, status, readptr);
-			if (e->last) {
-				ve_dma__dec_ipc_sync_nolock(r);
-				r->comp = 1;
-			}
-			ret = e;
-		}
-		pthread_cond_signal(&r->cond);
-	} else {
-		VE_DMA_TRACE("descriptor #%d has been already finished.",
-			     entry);
-	}
-	return ret;
-}
 
 /**
  * @brief DMA interrupt handler thread function
@@ -93,153 +47,35 @@ static ve_dma_reqlist_entry *ve_dma_intr__finish_descriptor(ve_dma_hdl *dh, int 
 void *ve_dma_intr_helper(void *arg)
 {
 	ve_dma_hdl *dh = arg;
-	int i, count;
-	ve_dma_reqlist_entry *e;
-	ve_dma__block *b[VE_DMA_NUM_DESC * 2];
 
 	VE_DMA_DEBUG("DMA interrupt helper thread starts");
 	vedl_handle *handle = dh->vedl_handle;
 	while (!dh->should_stop) {
 		int ret_intr;
-		int entry;
-		int current_begin, current_used;
-		uint64_t ctlword1;
-		int exc = 0;
-		int readptr;
 		struct timespec timo = { .tv_sec = 1, .tv_nsec = 0};
-		ret_intr = vedl_wait_interrupt(handle, VE_INTR_P_DMA,
-					      &timo);
-		VE_DMA_TRACE("vedl_wait_dma_intr returned %d", ret_intr);
+		ret_intr = vedl_wait_for_interrupt(handle, VE_INTR_P_DMA,
+							&timo);
+		VE_DMA_TRACE("vedl_wait_for_interrupt returned %d", ret_intr);
 		if (ret_intr < 0) {
 			switch (errno) {
 			case ETIMEDOUT:
 				VE_DMA_TRACE(
-				"vedl_wait_interrupt() is timedout");
+				"vedl_wait_for_interrupt() is timedout");
 				break;
 			case EINTR:
 				VE_DMA_DEBUG(
-				"vedl_wait_interrupt() is aborted by signal");
+				"vedl_wait_for_interrupt() is interrupted by signal");
 				break;
 			default:
 				VE_DMA_FATAL(
-				"vedl_wait_interrupt() returned error %d",
+				"vedl_wait_for_interrupt() returned error %d",
 				ret_intr);
 				veos_abort(
 				"DMA manager interrupt helper failed.");
 			}
 			continue;
 		}
-		/* which request is finished? */
-		pthread_mutex_lock(&dh->mutex);
-		VE_DMA_TRACE("DMA control register status = 0x%x",
-			     ve_dma_hw_get_ctlstatus(handle,
-						     dh->control_regs));
-
-		/* get exc and readptr */
-		ctlword1 = ve_dma_hw_get_ctlword1(handle, dh->control_regs);
-		if (ctlword1 & VE_DMA_CTL_EXCEPTION_MASK) {
-			exc = 1;
-		};
-		readptr = ctlword1 & VE_DMA_CTL_READ_PTR_MASK;
-		VE_DMA_TRACE("DMA control register word1: exc = %d, "
-			     "readptr = %d",
-			     exc, readptr);
-
-		/*
-		 * desc_used_begin and desc_num_used can be changed
-		 * while finishing request entries.
-		 */
-		current_begin = dh->desc_used_begin;
-		current_used = dh->desc_num_used;
-		VE_DMA_TRACE("desc_used_begin = %d, desc_num_used = %d",
-			     current_begin, current_used);
-		count = 0;
-		if (exc == 0) {
-			/*
-			 * When exc = 0, descriptors between desc_used_begin and
-			 * readptr must be completed without exception.
-			 */
-			for (entry = current_begin; entry != readptr;
-			     entry = (entry + 1) % VE_DMA_NUM_DESC) {
-				e = ve_dma_intr__finish_descriptor(
-					dh, entry, VE_DMA_DESC_STATUS_COMPLETED,
-					readptr);
-				if (e) {
-                                        if (e->src_block) {
-                                                b[count++] = e->src_block;
-                                                e->src_block = NULL;
-                                        }
-                                        if (e->dst_block) {
-                                                b[count++] = e->dst_block;
-                                                e->dst_block = NULL;
-                                        }
-                                }
-				dh->req_entry[entry] = NULL;
-			}
-			ve_dma_free_used_desc(dh, readptr);
-		} else { /* exc == 1 */
-			/*
-			 * When exc = 1, descriptors between desc_used_begin and
-			 * readptr must be completed and any of these caused
-			 * exception.
-			 */
-			/* stop DMA engine and refresh readptr */
-			ve_dma__stop_engine(dh);
-			ctlword1 = ve_dma_hw_get_ctlword1(handle,
-							  dh->control_regs);
-			VE_DMA_ASSERT(ctlword1 & VE_DMA_CTL_EXCEPTION_MASK);
-			readptr = ctlword1 & VE_DMA_CTL_READ_PTR_MASK;
-			VE_DMA_TRACE("DMA control register word1: exc = %d, "
-				     "readptr = %d", exc, readptr);
-			for (entry = current_begin; entry != readptr;
-			     entry = (entry + 1) % VE_DMA_NUM_DESC) {
-				uint64_t status;
-				status = ve_dma_hw_desc_status(dh->vedl_handle,
-							       dh->control_regs,
-							       entry);
-				VE_DMA_ASSERT(status &
-					      VE_DMA_DESC_STATUS_COMPLETED);
-				e = ve_dma_intr__finish_descriptor(
-					dh, entry, status, readptr);
-				if (e) {
-					if (e->src_block) {
-						b[count++] = e->src_block;
-						e->src_block = NULL;
-					}
-					if (e->dst_block) {
-						b[count++] = e->dst_block;
-						e->dst_block = NULL;
-					}
-				}
-				dh->req_entry[entry] = NULL;
-			}
-			ve_dma_free_used_desc(dh, readptr);
-			/* clear exc bit */
-			ve_dma_hw_set_readptr(handle, dh->control_regs,
-					      readptr);
-			/* restart DMA engine */
-			if (dh->should_stop == 0 && dh->desc_num_used > 0) {
-				ve_dma_hw_start(dh->vedl_handle,
-						dh->control_regs);
-			}
-			veos_commit_rdawr_order();
-		}
-		ve_dma__drain_waiting_list(dh);
-		pthread_mutex_unlock(&dh->mutex);
-
-		for (i=0; i<count; i++) {
-			/* unpin block is always done.
- 			 * so decriment the count.*/
-			if (b[i]->type == VE_DMA_VHVA) {
-				ve_atomic_dec(&dh->blk_count);
-				VE_DMA_DEBUG("blk_count %d", dh->blk_count);
-			}
-			ve_dma__block_free(dh->vedl_handle, b[i]);
-		}
-
-		pthread_mutex_lock(&dh->pin_wait_list_mutex);
-		pthread_cond_signal(&dh->pin_wait_list_cond);
-		pthread_mutex_unlock(&dh->pin_wait_list_mutex);
+		(*_veos_arch_ops->arch_dma_intr)(dh);
 	}
 	return (void *)0L;
 }
@@ -253,7 +89,7 @@ void *ve_dma_pindown_helper(void *arg)
 	while(1) {
 		pthread_mutex_lock(&dh->pin_wait_list_mutex);
 		while (!dh->should_stop && (list_empty(&dh->pin_waiting_request) ||
-			 	VE_ATOMIC_GET(int, &dh->blk_count) >= BLOCK_LIMIT))
+				VE_ATOMIC_GET(int, &dh->blk_count) >= BLOCK_LIMIT))
 			pthread_cond_wait(&dh->pin_wait_list_cond,
 						&dh->pin_wait_list_mutex);
 		if (dh->should_stop) {

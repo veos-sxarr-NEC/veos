@@ -32,7 +32,6 @@
 #include <assert.h>
 #include <inttypes.h>
 #include <log4c.h>
-#include "ve_memory.h"
 #include "ived_common.h"
 #include "ived_ipc.h"
 
@@ -69,36 +68,6 @@ ived_check_mutex_locked(pthread_mutex_t *mutex)
 		return (0);
 	}
 	IVED_ERROR(log4cat_lib, "Check locking: %s", strerror(ret));
-	return (-1);
-}
-
-
-/**
- * @brief Convert Page size in byte to flag (bit pattern)
- *
- * @param [in] size size in byte
- * @param [in] mode flag mode VE_ADDR_VEMVA/VE_ADDR_VEHVA/VE_ADDR_PCI
- *
- * @return bit pattern of size on success, -1 on failure
- */
-int
-ived_pgsize_byte2flag(int64_t size, int mode)
-{
-	if (mode == VE_ADDR_PCI){
-		if (size == PGSIZE_64M)
-			return (PGMODE_FLAG_64M);
-		else if (size == PGSIZE_2M)
-			return (PGMODE_FLAG_2M);
-	} else {
-		if (size == PGSIZE_64M)
-			return (PG_HP);
-		else if (size == PGSIZE_2M)
-			return (PG_2M);
-		else if (size == PGSIZE_4K)
-			return (PG_4K);
-	}
-
-	IVED_ERROR(log4cat_lib, "Invalid pagesize: %#"PRIx64"", size);
 	return (-1);
 }
 

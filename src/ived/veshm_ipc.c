@@ -135,7 +135,7 @@ ived_veshm_open(ived_thread_arg_t *pti, RpcVeshmArg *request)
 	struct veshm_memory_info  *veshm_info = NULL;
 
 	uint64_t checking_mask = (VESHM_MODE_SYNC | VESHM_MODE_PCIATB
-				  | VESHM_MODE_RO);
+				  | VESHM_MODE_RO | VESHM_MODE_256MB);
 
 	if (pti == NULL || request == NULL || request->open_arg == NULL){
 		IVED_CRIT(log4cat_veshm, "Argument is NULL.");
@@ -289,7 +289,8 @@ ived_veshm_open(ived_thread_arg_t *pti, RpcVeshmArg *request)
 		veshm_info->pcisync_num    = req_syncnum;
 
 		veshm_info->mode_flag      = req_mode_flag &
-			(VESHM_MODE_RO | VESHM_MODE_SYNC | VESHM_MODE_PCIATB);
+			(VESHM_MODE_RO | VESHM_MODE_SYNC | VESHM_MODE_PCIATB
+			| VESHM_MODE_256MB);
 
 		/* pci_address is NULL or valid address */
 		/* req_n_pci_address is 0 or positive value */
@@ -387,7 +388,7 @@ ived_veshm_attach(ived_thread_arg_t *pti, RpcVeshmArg *request)
 	ProtobufCBinaryData uuid_data1, uuid_data2;
 
 	uint64_t checking_mask = VESHM_MODE_SYNC | VESHM_MODE_PCIATB |
-		VESHM_MODE_RO;
+		VESHM_MODE_RO | VESHM_MODE_256MB;
 
 	if (pti == NULL || request == NULL || request->attach_arg == NULL){
 		IVED_CRIT(log4cat_veshm, "Argument is NULL.");

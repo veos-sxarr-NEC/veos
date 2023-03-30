@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -45,6 +45,7 @@
 #endif
 
 #include <signal.h>
+#include <veos_arch_defs.h>
 #include "handle.h"
 #include "exception.h"
 #include "process_mgmt_comm.h"
@@ -260,108 +261,10 @@ int ve_exception_handler(uint64_t exception, veos_handle *handle)
 	memset(&hw_siginfo, 0, sizeof(siginfo_t));
 
 	/* Mapping H/w exception to signal */
-	switch (exception) {
-	/* ILMP/ILSP/ILPV mapped to SIGSEGV */
-	case EXS_ILMP:
-	case EXS_HMILMP:
-	case EXS_HMILMS:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGSEGV");
-		hw_siginfo.si_signo = SIGSEGV;
-		hw_siginfo.si_code = SEGV_MAPERR;
-		break;
-	case EXS_ILSP:
-	case EXS_HMILSP:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGSEGV");
-		hw_siginfo.si_signo = SIGSEGV;
-		hw_siginfo.si_code = SEGV_ACCERR;
-		break;
-	case EXS_ILMS:
-	case EXS_HMILSA:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGSEGV");
-		hw_siginfo.si_signo = SIGSEGV;
-		hw_siginfo.si_code = SEGV_MAPERR;
-		break;
-		/* ILSA is mapped onto SIGBUS */
-	case EXS_ILSA:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGBUS");
-		hw_siginfo.si_signo = SIGBUS;
-		hw_siginfo.si_code = BUS_ADRALN;
-		break;
-	case EXS_IOAC:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGBUS");
-		hw_siginfo.si_signo = SIGBUS;
-		hw_siginfo.si_code = BUS_ADRERR;
-		break;
-		/* DIVE/FOFE/FUFE/XOFE/INVE/INEE mapped to SIGFPE */
-	case EXS_DIVE:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGFPE");
-		hw_siginfo.si_signo = SIGFPE;
-		hw_siginfo.si_code = FPE_FLTDIV;
-		break;
-	case EXS_FOFE:
-		PSEUDO_DEBUG("Hardware exception  mappped to SIGFPE");
-		hw_siginfo.si_signo = SIGFPE;
-		hw_siginfo.si_code = FPE_FLTOVF;
-		break;
-	case EXS_FUFE:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGFPE");
-		hw_siginfo.si_signo = SIGFPE;
-		hw_siginfo.si_code = FPE_FLTUND;
-		break;
-	case EXS_XOFE:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGFPE");
-		hw_siginfo.si_signo = SIGFPE;
-		hw_siginfo.si_code = FPE_INTOVF;
-		break;
-	case EXS_INVE:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGFPE");
-		hw_siginfo.si_signo = SIGFPE;
-		hw_siginfo.si_code = FPE_FLTINV;
-		break;
-	case EXS_INEE:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGFPE");
-		hw_siginfo.si_signo = SIGFPE;
-		hw_siginfo.si_code = FPE_FLTRES;
-		break;
-		/* ILOP/ILDT mapped to SIGILL */
-	case EXS_ILOP:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGILL");
-		hw_siginfo.si_signo = SIGILL;
-		hw_siginfo.si_code = ILL_ILLOPC;
-		break;
-	case EXS_ILDT:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGILL");
-		hw_siginfo.si_signo = SIGILL;
-		hw_siginfo.si_code = ILL_ILLOPN;
-		break;
-		/* ADRM/BRTR/STEP mapped to SIGTRAP */
-	case EXS_ADRM:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGTRAP");
-		hw_siginfo.si_signo = SIGTRAP;
-		hw_siginfo.si_code = TRAP_HWBKPT;
-		break;
-	case EXS_BRTR:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGTRAP");
-		hw_siginfo.si_signo = SIGTRAP;
-		hw_siginfo.si_code = TRAP_BRANCH;
-		break;
-	case EXS_STEP:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGTRAP");
-		hw_siginfo.si_signo = SIGTRAP;
-		hw_siginfo.si_code = TRAP_TRACE;
-		break;
-	case EXS_MONT:
-		PSEUDO_DEBUG("Hardware exception mappped to SIGTRAP");
-		hw_siginfo.si_signo = SIGTRAP;
-		hw_siginfo.si_code = TRAP_BRKPT;
-		break;
-	default:
-		PSEUDO_ERROR("Anonymous Hardware exception received");
-		return -1;
-	}
-
-	hw_siginfo.si_addr = NULL;
-	hw_siginfo.si_errno = 0;
+	retval = _veos_arch_ops->arch_exception_to_signal(exception,
+					&hw_siginfo);
+	if (retval < 0)
+		return retval;
 
 	if (IS_VE_TRACED(handle->ve_handle)) {
 		/* unblock signal if blocked */
@@ -405,7 +308,6 @@ void pse_exception_handler(veos_handle *handle, void *arg)
 {
 	int ret;
 	uint64_t exs = -1;
-	uint64_t ve_hw_exception = -1;
 	sigset_t signal_mask;
 
 	PSEUDO_TRACE("Entering");
@@ -439,154 +341,6 @@ again:
 		PSEUDO_DEBUG("Task updated blocked set: %lx",
 				signal_mask.__val[0]);
 
-		if (!(exs & NO_EXS)) {
-			PSEUDO_DEBUG("No exception exs: %lx", exs);
-			goto again;
-		}
-
-		/* Exceptions */
-		if (exs & EXS_ILMP) {
-			PSEUDO_INFO("exception EXS_ILMP");
-			ve_hw_exception = EXS_ILMP;
-		}
-		if (exs & EXS_ILMS) {
-			PSEUDO_INFO("exception EXS_ILMS");
-			ve_hw_exception = EXS_ILMS;
-		}
-		if (exs & EXS_ILSP) {
-			PSEUDO_INFO("exception EXS_ILSP");
-			ve_hw_exception = EXS_ILSP;
-		}
-		if (exs & EXS_ILSA) {
-			PSEUDO_INFO("exception EXS_ILSA");
-			ve_hw_exception = EXS_ILSA;
-		}
-		if (exs & EXS_DIVE) {
-			PSEUDO_INFO("exception EXS_DIVE");
-			ve_hw_exception = EXS_DIVE;
-		}
-		if (exs & EXS_FOFE) {
-			PSEUDO_INFO("exception EXS_FOFE");
-			ve_hw_exception = EXS_FOFE;
-		}
-		if (exs & EXS_FUFE) {
-			PSEUDO_INFO("exception EXS_FUFE");
-			ve_hw_exception = EXS_FUFE;
-		}
-		if (exs & EXS_XOFE) {
-			PSEUDO_INFO("exception EXS_XOFE");
-			ve_hw_exception = EXS_XOFE;
-		}
-		if (exs & EXS_INVE) {
-			PSEUDO_INFO("exception EXS_INVE");
-			ve_hw_exception = EXS_INVE;
-		}
-		if (exs & EXS_INEE) {
-			PSEUDO_INFO("exception EXS_INEE");
-			ve_hw_exception = EXS_INEE;
-		}
-		if (exs & EXS_ILOP) {
-			PSEUDO_INFO("exception EXS_ILOP");
-			ve_hw_exception = EXS_ILOP;
-		}
-		if (exs & EXS_ILDT) {
-			PSEUDO_INFO("exception EXS_ILDT");
-			ve_hw_exception = EXS_ILDT;
-		}
-		if (exs & EXS_HMILMP) {
-			PSEUDO_INFO("exception EXS_HMILMP");
-			ve_hw_exception = EXS_HMILMP;
-		}
-		if (exs & EXS_HMILMS) {
-			PSEUDO_INFO("exception EXS_HMILMS");
-			ve_hw_exception = EXS_HMILMS;
-		}
-		if (exs & EXS_HMILSP) {
-			PSEUDO_INFO("exception EXS_HMILSP");
-			ve_hw_exception = EXS_HMILSP;
-		}
-		if (exs & EXS_HMILSA) {
-			PSEUDO_INFO("exception EXS_HMILSA");
-			ve_hw_exception = EXS_HMILSA;
-		}
-		if (exs & EXS_IOAC) {
-			PSEUDO_INFO("exception EXS_IOAC");
-			ve_hw_exception = EXS_IOAC;
-		}
-
-		if (exs & EXS_MONT) {
-			PSEUDO_DEBUG("exception EXS_MONT");
-			ve_hw_exception = EXS_MONT;
-		} else if (exs & EXS_MONC) {
-			PSEUDO_DEBUG("exception EXS_MONC");
-
-			/* System call trace at entry */
-			ve_syscall_trace(handle, true);
-
-
-			/* call system call handler */
-			ve_syscall_handler(handle,
-					vedl_get_syscall_num
-						(handle->ve_handle));
-
-			/* System call trace at exit */
-			ve_syscall_trace(handle, false);
-		}
-		if (exs & EXS_ADRM) {
-			PSEUDO_DEBUG("exception EXS_ADRM");
-			ve_hw_exception = EXS_ADRM;
-		}
-		if (exs & EXS_BRTR) {
-			PSEUDO_DEBUG("exception EXS_BRTR");
-			ve_hw_exception = EXS_BRTR;
-		}
-		if (exs & EXS_STEP) {
-			PSEUDO_DEBUG("exception EXS_STEP");
-			ve_hw_exception = EXS_STEP;
-		}
-		if (exs & EXS_RDBG) {
-			PSEUDO_DEBUG("Fast sync debug interrupt received");
-			ret = pseudo_stop_ve_process(handle);
-			if (0 > ret) {
-				PSEUDO_ERROR("fail to stop ve process");
-				fprintf(stderr, "fail to stop ve process\n");
-				pseudo_abort();
-			}
-		}
-
-
-		/* return when the exception is uncorrectable or unknown */
-		if ((exs & EXS_MONT) || (exs & (UNCORRECTABLE_ERROR)) ||
-				((exs & (CORRECTABLE_ERROR))
-				 && !(exs & (EXS_MONC|EXS_RDBG)))) {
-			/* Send BLOCKING System call request to Aurora OS */
-			ret = block_syscall_req_ve_os(handle);
-			if (0 != ret) {
-				PSEUDO_ERROR("veos failed to perform syscall"
-						" pre-processing");
-				fprintf(stderr
-					, "Handling of exception failed.\n");
-				pseudo_abort();
-			}
-			ret = ve_exception_handler(ve_hw_exception, handle);
-			if (0 != ret) {
-				PSEUDO_ERROR("failed to handle hardware"
-						" exception");
-				fprintf(stderr
-					, "Handling of exception failed\n");
-				pseudo_abort();
-			}
-
-			/* Send the unblock req to VEOS when a traced process
-			 * got CORRECTABLE_ERROR.
-			 */
-			if ((exs & EXS_MONT) || (exs & EXS_ADRM) ||
-				(exs & EXS_BRTR) || (exs & EXS_STEP)) {
-				PSEUDO_DEBUG("Sending unblock when exs: %lx",
-						exs);
-				un_block_and_retval_req(handle,
-						PTRACE_UNBLOCK_REQ, 0, true);
-			}
-		}
+		_veos_arch_ops->arch_exception_handler(handle, exs);
 	}
 }

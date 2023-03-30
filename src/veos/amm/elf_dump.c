@@ -35,7 +35,13 @@
 #include <string.h>
 #include <errno.h>
 #include "veos.h"
+#include "task_mgmt.h"
+#include "task_signal.h"
+#include "ptrace_req.h"
 #include "pmap.h"
+#include "elf_dump.h"
+
+#include <veos_arch_defs.h>
 
 static __thread int isnote;
 static __thread int doalign = 1;
@@ -255,8 +261,8 @@ static int notesize(struct memelfnote *en)
 	int sz = 0;
 
 	sz = sizeof(struct elf64_note);
-	sz += roundups((en->name ? strlen(en->name) : 0) + 1, 4);
-	sz += roundups(en->datasz, 4);
+	sz += ROUND_UP((en->name ? strlen(en->name) : 0) + 1, 4);
+	sz += ROUND_UP(en->datasz, 4);
 
 	return sz;
 };
@@ -745,7 +751,7 @@ static int fill_files_note(struct memelfnote *note,
 		VEOS_ERROR("files fill: size is greater than MAX_FILE_NOTE_SIZE");
 		return -EINVAL;
 	}
-	size = roundups(size, PAGE_SIZE);
+	size = ROUND_UP(size, PAGE_SIZE);
 	data = malloc(size);
 	if (NULL == data) {
 		VEOS_CRIT("files fill: mal memory fails: %s", strerror(errno));
@@ -827,7 +833,7 @@ static int fill_thread_core_info(struct elf_thread_core_info *t,
 {
 	int retval = 1;
 	int i = 1;
-
+	unsigned long size_ureg = 0;
 	fill_prstatus(&t->prstatus, t->task, signr);
 
 	VEOS_DEBUG("fill_prstatus() finish size: "
@@ -835,9 +841,15 @@ static int fill_thread_core_info(struct elf_thread_core_info *t,
 			sizeof(t->prstatus.pr_reg),
 			sizeof(struct ve_user_regs));
 
-	(void)memcpy(t->prstatus.pr_reg, t->task->p_ve_thread,
-			sizeof(struct ve_user_regs));
-
+	void *user_regs = malloc(sizeof(t->prstatus.pr_reg));
+	if (NULL == user_regs) {
+                        VEOS_CRIT("Failed to alloc memory: %s",
+                                strerror(errno));
+                        return 0;
+                }
+	/*Architecture dependent calling to copy user register*/
+	size_ureg = (*_veos_arch_ops->arch_copy_user_regs_to_elf_thread_info)(user_regs, t->task->p_ve_thread);
+	(void)memcpy(t->prstatus.pr_reg, user_regs, size_ureg);
 	fill_note(&t->notes[0], "CORE", NT_PRSTATUS,
 			sizeof(t->prstatus), &t->prstatus);
 	*total += notesize(&t->notes[0]);
@@ -851,6 +863,7 @@ static int fill_thread_core_info(struct elf_thread_core_info *t,
 		if (NULL == data) {
 			VEOS_CRIT("Failed to alloc memory: %s",
 				strerror(errno));
+			free(user_regs);
 			return 0;
 		}
 		/*MEMSET*/
@@ -860,10 +873,8 @@ static int fill_thread_core_info(struct elf_thread_core_info *t,
 				"pr_fpreg: %ld, ve_thread: %ld",
 				size,
 				sizeof(struct ve_user_vregs));
-		(void)memcpy(data,
-				(void *)(t->task->p_ve_thread) +
-				sizeof(struct ve_user_regs),
-				sizeof(struct ve_user_vregs));
+		/*Architecture dependent calling to copy vector register*/
+		(*_veos_arch_ops->arch_copy_vector_regs_from_thread_struct)(data, t->task->p_ve_thread);
 		if (regset->core_note_type != NT_PRFPREG)
 			fill_note(&t->notes[i], "LINUX",
 					regset->core_note_type,
@@ -875,7 +886,7 @@ static int fill_thread_core_info(struct elf_thread_core_info *t,
 		}
 		*total += notesize(&t->notes[i]);
 	}
-
+	free(user_regs);
 	return retval;
 }
 

@@ -32,12 +32,13 @@
 #include <string.h>
 #include <stdbool.h>
 #include <semaphore.h>
-#include "veos_handler.h"
 #include "ve_list.h"
 #include "ve_atomic.h"
-#include "libved.h"
+
+#include <ve_drv.h>
+#include <libved.h>
 #include "dma.h"
-#include "ve_drv.h"
+#include "mm_type.h"
 #include "velayout.h"
 
 /**
@@ -48,7 +49,7 @@
 /**
  * Maximum VE core supported per VE node
  */
-#define VE_MAX_CORE_PER_NODE 16
+#define VE_MAX_CORE_PER_NODE 32
 #define MAX_VE_CORE_PER_VE_NODE -1
 
 /* Defines number of pairs of PCISYARs and PCISYMRs. */
@@ -68,6 +69,8 @@
 #define VEOS_MAX_VE_THREADS (VEOS_THREAD_PAGE_SIZE \
 		/ VEOS_BYTES_PER_VE_THREAD)
 
+#define VE_TYPE_VE1	1
+#define VE_TYPE_VE3	3
 #define VHVE_DMAREQ_HASH_SIZE 128
 
 /**
@@ -83,30 +86,17 @@ extern struct ve_node_struct *p_ve_node_global; /* the pointer to VE node */
 #define VE_NODE(x) \
 	(p_ve_node_global)
 
-#define VE_CORE_USR_REG_ADDR(x, y) \
-	(ve_node.p_ve_core[y]->usr_regs_addr)
-#define VE_CORE_SYS_REG_ADDR(x, y) \
-	(ve_node.p_ve_core[y]->sys_regs_addr)
-#define VE_CORE_CNT_REG_ADDR(x) \
-	(ve_node.cnt_regs_addr)
+#define VE_CORE_USR_REG(x, y) \
+	(ve_node.p_ve_core[y]->usr_regs)
+#define VE_CORE_SYS_REG(x, y) \
+	(ve_node.p_ve_core[y]->sys_regs)
+#define VE_NODE_CNT_REG(x) \
+	(ve_node.cnt_regs)
 
 #define VE_NODE_ID(node_idx) (node_idx)
 
 #define VE_SYSFS_PATH(node_id)	\
 	(ve_node.ve_sysfs_path)
-
-#define SET_ARITHMETIC_MODE(x, val) ((x)->PSW = ((x)->PSW & PSW_AM_MASK) | val);
-
-#define VE_CR_CLUSTER_OFF(i) (offsetof(system_common_reg_t,  CR[(i)]))
-#define VE_CRD_OFF(i) (offsetof(core_system_reg_t, CRD[(i)]))
-
-/*CRD registor*/
-typedef union crd_t {
-	reg_t data;
-	struct {
-		reg_t pgnum:5, rfu:58, valid:1;
-	} bf;
-} crd_t;
 
 /**
  * @brief Scheduling Status
@@ -150,6 +140,12 @@ struct ve_numa_struct {
 	struct buddy_mempool *mp; /* !< Pointer of memory pool of NUMA node */
 };
 
+/* dummy types to hide architecture-dependent data structure */
+struct veos_dmaatb_reg;
+typedef struct veos_dmaatb_reg veos_dmaatb_reg_t;
+union veos_pciatb_entry;
+typedef union veos_pciatb_entry veos_pciatb_entry_t;
+
 /**
  * @brief PPS file infomation Struct
  */
@@ -176,11 +172,12 @@ struct ve_node_struct {
 	struct file_desc *file_desc_start; /*!< Global file_desc */
 	struct list_head shm_head; /*!< Global shm descriptor */
 	volatile int num_ve_proc; /*!< Number of VE processes on this node*/
+	pthread_mutex_t num_ve_proc_lock; /*!< Lock for num_ve_proc */
 	int node_num; /*!< Node Id of this VE Node */
 	struct ve_page **ve_pages; /*!< GLOBAL PAGE ARRAY structure */
 	uint64_t nr_pages; /*!< Total Number of pages */
-	pciatb_entry_t pciatb[PCIATB_VLD_SIZE]; /*!< PCIATB for access
-						* from VHSAA to VEMAA/VERAA*/
+	veos_pciatb_entry_t *pciatb;
+
 	pthread_mutex_t ve_node_lock; /*!< VE Node Mutex lock */
 	pthread_mutex_t shm_node_lock; /*!< SHM node Mutex lock */
 	pthread_mutex_t dmaatb_node_lock; /*!< DMAATB node Mutex lock */
@@ -191,6 +188,8 @@ struct ve_node_struct {
 	pthread_mutex_t pciatb_lock;/*!< Per VE node lock to protect pciatb entry update */
 	pthread_mutex_t ve_tasklist_lock; /*!< Global tasklist_lock to serialize deletions/modifications
 					* of task lists */
+	pthread_mutex_t udma_bitmap_lock; /*!< Mutex lock for clearing/setting free_udma_bitmap */
+
 	pthread_rwlock_t ve_relocate_lock; /*! Global lock for synchronizing task relocation */
 	pthread_cond_t stop_cond;/*!< Conditional lock for SIGSTOP signal */
 	pthread_cond_t zombie_cond;/*!< Conditional lock for zombie task cleanup */
@@ -204,8 +203,8 @@ struct ve_node_struct {
 	vemaa_t zeroed_page_address; /*!< VE Memory Zeroed Page address */
 	vedl_handle *handle; /*!< VEDL handle */
 	ve_dma_hdl *dh; /*!< VE DMA handle */
-	system_common_reg_t *cnt_regs_addr; /*!< Node control registers */
-	dmaatb_reg_t dmaatb; /*!< DMAATB for SHM/LHM area */
+	vedl_common_reg_handle *cnt_regs; /*!< Node control registers */
+	veos_dmaatb_reg_t *dmaatb; /*!< DMAATB for SHM/LHM area */
 	enum context_switch scheduling_status; /*!< Scheduling ongoing flag for VE Node */
 	timer_t psm_sched_timer_id; /*!< Scheduling Timer id for this node */
 	const char *ve_sysfs_path; /*!< SYSFS directory Path */
@@ -217,14 +216,14 @@ struct ve_node_struct {
 	unsigned long nr_active; /*!< Number of active task on VE node */
 	uint64_t total_forks; /*!< Number of forks since VE node is booted */
 	uint64_t node_boot_time; /*!< Time at which node is booted */
-	reg_t pciattr; /*!< PCIATBA register to control PCI attributes */
+	ve_reg_t pciattr; /*!< PCIATBA register to control PCI attributes */
 	unsigned long pci_bar01_vhsaa; /*!< VHSAA of BAR01 */
 	void *pci_bar01_sync_addr; /*!< Address for bar01 sync */
 	struct buddy_mempool *pci_mempool; /*!<*PCI Mempool*/
 	/* PCI accounting data */
-	size_t pci_bar01_sz; /*BAR01 size */
-	size_t pci_bar01_pgsz; /*BAR01 page size*/
-	size_t pci_bar3;
+	size_t pci_bar_mem_sz; /*BAR01 size */
+	size_t pci_bar_mem_pgsz; /*BAR01 page size*/
+	size_t pci_bar_cr;
 	/*CR management*/
 	bool cr_map[32];
 	uint32_t cr_th_pg;
@@ -254,7 +253,12 @@ struct ve_node_struct {
 	struct ve_swap_file_info pps_file; /* !< Information of PPS file */
 	pthread_mutex_t pps_file_lock; /* !< Lock which protects pps_file */
 	void *pps_file_transfer_buffer; /* !< Address of PPS file transfer buffer */
+	void *arch_dep_data; /* !< architecture-dependent data */
+	int ve_type;
+	uint32_t free_udma_bitmap; /* !< bitmap to find VE core id whose DMA descriptor pair (H and E) are free */
 	pthread_mutex_t pps_file_buffer_lock; /* !< Lock for transferring data from pps file buffer to pps file */
+	int couredump_launcher_sockfd;
+	pid_t couredump_launcher_pid;
 };
 
 /**
@@ -271,15 +275,17 @@ struct ve_sys_load {
  */
 #define VE_ABORT_CAUSE_BUF_SIZE 512
 
-#define OPT_PCISYNC1         0
-#define OPT_PCISYNC2         1
-#define OPT_PCISYNC3         2
-#define OPT_CLEANUP          3
-#define OPT_VESWAPMAX        4
-#define OPT_VESWAP_FILE_PATH 5
-#define OPT_VESWAP_FILE_MAX  6
-#define OPT_VESWAP_FILE_USER  7
+#define OPT_PCISYNC1           0
+#define OPT_PCISYNC2           1
+#define OPT_PCISYNC3           2
+#define OPT_CLEANUP            3
+#define OPT_VESWAPMAX          4
+#define OPT_VESWAP_FILE_PATH   5
+#define OPT_VESWAP_FILE_MAX    6
+#define OPT_VESWAP_FILE_USER   7
 #define OPT_VESWAP_FILE_GROUP  8
+#define OPT_SKIPMEMCLEAR       9
+#define OPT_DRORDERING         10
 
 
 #define NOT_REQUIRED 0
@@ -293,11 +299,16 @@ struct ve_sys_load {
 #define TIMEOUT_SEC 20
 #define TIMEOUT_USEC 0
 
+#define CLOCK_GATING_OFF        0
+#define CLOCK_GATING_ON         1
+#define CHECK_STATE_RETRY_CNT   10
+#define CHECK_STATE_RETRY_DELAY 1000 /* Same as ASSIGN_RETRY_DELAY */
+#define CLOCK_GATING_STATE_MASK 0x0000000000000800ULL
+#define CLOCK_GATING_STATE_BIT  52
+#define QTYPE                   254
+
 struct ve_mm_struct *find_ve_mm_struct(int, int, int, int, int);
 int veos_init(void);
-int init_ve_node_struct(struct ve_node_struct *, int, char *);
-int init_ve_core_struct(struct ve_core_struct *,
-					struct ve_node_struct *, int, int);
 int veos_init_ve_node(void);
 int veos_cleanup_pseudo(struct ve_node_struct *);
 int veos_terminate_dma(void *);
@@ -331,6 +342,7 @@ extern pthread_t terminate_dma_th; /* a thread executing veos_terminate_dma() */
 extern sem_t terminate_sem;
 extern char ived_sock_file[PATH_MAX];
 extern int no_update_os_state;
+extern int skip_memclear_flag;
 
 extern bool veos_term;
 /* Used for log4c logging in veos module */

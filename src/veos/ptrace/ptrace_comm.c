@@ -36,6 +36,7 @@
 #include "proto_buff_schema.pb-c.h"
 #include "locking_handler.h"
 #include "velayout.h"
+#include <veos_arch_defs.h>
 
 /**
  * @brief Write the buffer on the file descriptor.
@@ -272,9 +273,13 @@ int veos_ptrace_start_process(struct veos_thread_arg *pti, pid_t pid)
 	}
 
 	/* Change the VE process state */
-	psm_ve_start_process(p_ve_task);
+	retval = psm_ve_start_process(p_ve_task);
+	if(retval < 0){
+		VEOS_ERROR("VE Process: %d is not started", pid);
+		retval = -EIO;
+	}
 
-	retval = 0;
+
 hndl_return1:
 	put_ve_task_struct(p_ve_task);
 hndl_return2:
@@ -1015,14 +1020,18 @@ int veos_ptrace_detach(struct veos_thread_arg *pti, pid_t pid)
 	/* On a safe side after detaching VE process SINGLESTEP interrupt
 	 * bit needs to cleared from PSW register.
 	 */
-	psm_handle_set_reg_req(p_ve_task, PSW, ~PSW_SINGLESTEP, PSW_SINGLESTEP);
+	psm_handle_set_reg_req(p_ve_task, VE_USR_PSW, ~PSW_SINGLESTEP, PSW_SINGLESTEP);
 
 	/* Change the VE process state */
-	psm_ve_start_process(p_ve_task);
+	retval = psm_ve_start_process(p_ve_task);
+	if(retval < 0){
+		VEOS_ERROR("Unable to change VE process state after DETACH");
+		retval = -EIO;
+		goto hndl_return1;
+	}
 
 	VEOS_DEBUG("PID: %d DETACH SUCCESS", pid);
 
-	retval = 0;
 hndl_return1:
 	put_ve_task_struct(p_ve_task);
 hndl_return2:
@@ -1234,7 +1243,7 @@ int veos_ptrace_singlestep(struct veos_thread_arg *pti, pid_t pid, bool on)
 	}
 
 	/* Enable/Disable VE process singlestep tracing */
-	psm_handle_set_reg_req(p_ve_task, PSW,
+	psm_handle_set_reg_req(p_ve_task, VE_USR_PSW,
 			(on)?(PSW_SINGLESTEP):(~PSW_SINGLESTEP), PSW_SINGLESTEP);
 
 	VEOS_DEBUG("Pid: %d SINGLESTEP tracing now: %s", pid,

@@ -30,11 +30,16 @@
 #include <sys/capability.h>
 #include <sys/shm.h>
 #include "velayout.h"
+#include "mman_ve.h"
 #include "veos.h"
+#include "ve_memory.h"
 #include "buddy.h"
 #include "pmap.h"
 #include "mempolicy.h"
 #include "veos_sock.h"
+#include "ve_memory_def.h"
+
+#include <veos_arch_defs.h>
 
 /*
    Supported Vmflags
@@ -167,11 +172,11 @@ uint64_t get_vm_size(struct ve_mm_struct *mm)
 
 	VEOS_TRACE("invoked for task with mm desc %p", mm);
 	/* Loop for very directory for ATB */
-	for (dir_cntr = 0; dir_cntr < ATB_DIR_NUM; dir_cntr++) {
+	for (dir_cntr = 0; dir_cntr < VEOS_ATB_DIR_NUM; dir_cntr++) {
 		/* Check entries only when directory entry is valid */
 		if (ps_isvalid(&(atb->dir[dir_cntr]))) {
 			type = ps_getpgsz(&(atb->dir[dir_cntr]));
-			for (entry_cntr = 0; entry_cntr < ATB_ENTRY_MAX_SIZE;
+			for (entry_cntr = 0; entry_cntr < VEOS_ATB_ENTRY_MAX_SIZE;
 					entry_cntr++) {
 				/* Check if page entries is valid */
 				if (pg_isvalid(&(atb->
@@ -855,10 +860,8 @@ int veos_numa_meminfo(struct velib_meminfo *mem_info, size_t size)
 						PAGE_SIZE_2MB;
 
 		/* Total VE memory free in Bytes*/
-		mem_info[index].kb_main_free = (numa_mp->total_pages -
-				(numa_mp->small_page_used +
-			(HUGE_PAGE_IDX * numa_mp->huge_page_used))) *
-						PAGE_SIZE_2MB;
+		mem_info[index].kb_main_free = (numa_mp->total_pages *
+			PAGE_SIZE_2MB) - mem_info[index].kb_main_used;
 
 		/*Total VE memory used by HUGEPAGE in Bytes*/
 		mem_info[index].kb_hugepage_used =
@@ -886,4 +889,21 @@ int veos_numa_meminfo(struct velib_meminfo *mem_info, size_t size)
 error:
 	VEOS_TRACE("returned");
 	return ret;
+}
+
+/**
+ * @brief Get swapped memory size on DMA space
+ * @note ve_task_lock of struct ve_task_struct is acquired in advance.
+ *
+ * @param[in] tsk Pointer to VE task struct
+ * @param[out] swapped_sz_p Pointer to contain the swapped memory size of
+ *            VE process
+ *
+ * @return zero on success; -errno on failure.
+ */
+int veos_get_dma_space_swappable_size(struct ve_task_struct *tsk,
+				unsigned long *swappable_sz_p)
+{
+	return (*_veos_arch_ops->arch_amm_get_dma_space_swappable_size)(
+				tsk->p_ve_mm->dmaatb, swappable_sz_p);
 }

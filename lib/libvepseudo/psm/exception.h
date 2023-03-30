@@ -30,11 +30,10 @@
 #define __EXCEPTION_H
 #include <signal.h>
 #include <stdbool.h>
-#include <sys_common.h>
 #include <unistd.h>
-#include "libved.h"
+#include <libved.h>
+#include "sys_common.h"
 
-#define NO_EXS	0xFFFFFFFFFFFFFF00
 #define VE_ERESTARTSYS 512
 #define VE_ENORESTART 513
 

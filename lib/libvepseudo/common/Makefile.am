@@ -25,6 +25,7 @@ libpseudocommon_la_CFLAGS = \
 	-I$(top_srcdir)/src/veos/dma \
 	-I$(top_srcdir)/src/veos/pps \
 	-I$(top_srcdir)/src/pseudo \
+	-I$(srcdir)/.. \
 	-I$(srcdir)/../psm \
 	-I$(srcdir)/../amm \
 	-I$(srcdir)/../loader \

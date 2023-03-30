@@ -35,6 +35,15 @@ then
 	export VE_LD_ORIGIN_PATH=`pwd`
 fi
 
+if [[(! -v VE3_LD_LIBRARY_EXCLUDE_PATH)]]; then
+	export VE3_LD_LIBRARY_EXCLUDE_PATH="/opt/nec/ve/lib"
+else
+	flag=`echo $VE3_LD_LIBRARY_EXCLUDE_PATH|awk '{print match($0,"/opt/nec/ve/lib")}'`;
+	if [ $flag -le 0 ];then
+		export VE3_LD_LIBRARY_EXCLUDE_PATH="/opt/nec/ve/lib:$VE3_LD_LIBRARY_EXCLUDE_PATH"
+	fi
+fi
+
 flag_traceme=0
 
 VE_NODE=0
@@ -47,6 +56,12 @@ numa_node_id_given=0
 flag_show_limit=0
 flag_show_usage=0
 regex='^[0-9]+$';
+
+ld_show_aux_flag=0
+if [ -n "$LD_SHOW_AUXV" ]; then
+ld_show_aux_flag=1
+unset LD_SHOW_AUXV
+fi
 
 #declare and initialize variables for VE_LIMIT_OPT parsing
 declare -A resource_limit_option=(
@@ -613,6 +628,91 @@ elif ! [[ ${NUMA_NODE_ID} =~ $regex ]] ; then
 	exit 1;
 fi
 
+if [[ -v VE_CORE_LIMIT ]] ; then
+	core_limit=()
+	IFS=', ' read -a ranges <<< "$VE_CORE_LIMIT"
+	for range in "${ranges[@]}"; do
+		IFS=- read start end <<< "$range"
+		[ -z "$start" ] && continue
+		[ -z "$end" ] && end=$start
+		if ! [[ $start =~ $regex ]]; then
+			echo "ERROR: VE_CORE_LIMIT has invalid core number:$start"
+			exit 1
+		fi
+		if ! [[ $end =~ $regex ]]; then
+			echo "ERROR: VE_CORE_LIMIT has invalid core number:$end"
+			exit 1
+		fi
+		for (( i=start ; i <= end ; i++ )); do
+			core_limit+=("$i")
+		done
+	done
+	if [[ ${VE_CORE} != -1 && ! " ${core_limit[*]} " =~ $VE_CORE ]]; then
+		echo "ERROR: \"-c|--core\" specifies cores outside the list of cores in VE_CORE_LIMIT"
+		exit 1
+	fi
+fi
+if [[ -v _VECORELIST ]] ; then
+	core_list=()
+	IFS=', ' read -a ranges <<< "$_VECORELIST"
+	for range in "${ranges[@]}"; do
+		IFS=- read start end <<< "$range"
+		[ -z "$start" ] && continue
+		[ -z "$end" ] && end=$start
+		if ! [[ $start =~ $regex ]]; then
+			echo "ERROR: Invalid core number '$start' assigned by job scheduler"
+			exit 1
+		fi
+		if ! [[ $end =~ $regex ]]; then
+			echo "ERROR: Invalid core number '$end' assigned by job scheduler"
+			exit 1
+		fi
+		for (( i=start ; i <= end ; i++ )); do
+			core_list+=("$i")
+		done
+	done
+	if [[ ${VE_CORE} != -1 && ! " ${core_list[*]} " =~ $VE_CORE ]]; then
+		echo "ERROR: \"-c|--core\" specifies core outside the list of cores assigned by job scheduler"
+		exit 1
+	fi
+	for core_num in "${core_limit[@]}"; do
+		if [[ ! " ${core_list[*]} " =~ $core_num ]]; then
+			echo "ERROR: VE_CORE_LIMIT specifies cores outside the list of cores assigned by job scheduler"
+			exit 1
+		fi
+	done
+fi
+
+if [[ -v _VENUMALIST && -v _VECORELIST ]]; then
+	echo "ERROR: Job scheduler set both \"numa list\" and \"core list\". Cannot execute VE binary."
+	exit 1
+elif [[ -v _VENUMALIST ]]; then
+	if ! [[ ${_VENUMALIST} =~ $regex ]] ; then
+		echo "ERROR: The numa node id set by job scheduler is not valid "
+		exit 1;
+	elif [[ ${NUMA_NODE_ID} != -1 && $NUMA_NODE_ID -ne $_VENUMALIST ]]; then
+		echo "ERROR: VE numa node $NUMA_NODE_ID is not assigned by the job scheduler."
+		exit 1
+	fi
+	NUMA_NODE_ID=$_VENUMALIST
+	flag_membind=1
+fi
+if [[ -v VE_CORE_LIMIT ]] ; then
+	VE_CORE_LIMIT=0
+	for core_num in ${core_limit[*]}; do
+		((VE_CORE_LIMIT |= 1<<core_num))
+	done
+elif [[ -v _VECORELIST ]] ; then
+	VE_CORE_LIMIT=0
+	for core_num in ${core_list[*]}; do
+		((VE_CORE_LIMIT |= 1<<core_num))
+	done
+
+fi
+
+if [[ -v VE_CORE_LIMIT ]] ; then
+	export VE_CORE_LIMIT
+fi
 
 ve_arg=( $@ )
 if ! [[ -e "$ve_arg" ]]; then
@@ -650,7 +750,7 @@ if ! [[ -e $sock_veos ]]; then
 	exit 1;
 fi
 
-if [[(-v VE_ACC_IO && "${VE_ACC_IO}" != "0")
+if [[ ( ! -v VE_ACC_IO || (-v VE_ACC_IO && "${VE_ACC_IO}" != "0") )
 	&& (! -v VE_ATOMIC_IO || "${VE_ATOMIC_IO}" == "0")
 	&& (! -v VE_PDMA_IO || "${VE_PDMA_IO}" == "0")]]; then
 	export VE_LD_PRELOAD="libveaccio.so.1 $VE_LD_PRELOAD"
@@ -663,5 +763,9 @@ PATH_VE_EXEC="${PATH_VE_EXEC} -d ${sock_driver} -s ${sock_veos} -c ${VE_CORE}
 ve_limit_opt_parse
 
 #executes the actual ve_exec binary
+if [ $ld_show_aux_flag -eq 1 ];then
+  LD_SHOW_AUXV=1
+fi
+
 exec $PATH_VE_EXEC -- "${@}"
 exit 0

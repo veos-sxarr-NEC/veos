@@ -34,6 +34,7 @@
 #include <stdbool.h>
 #include "libved.h"
 #include "task_mgmt.h"
+#include "task_signal.h"
 #include "psm_stat.h"
 #include "mm_stat.h"
 #include "proto_buff_schema.pb-c.h"
@@ -42,8 +43,10 @@
 #include "ve_shm.h"
 #include "buddy.h"
 #include "ve_swap.h"
+#include "ve_memory.h"
 #include "ve_swap_request.h"
 #include "psm_comm.h"
+#include "ve_memory_def.h"
 
 /**
  * @brief Write the buffer on the file descriptor.
@@ -159,6 +162,8 @@ hndl_return:
 int rpm_handle_veosctl_set_req(struct veos_thread_arg *pti)
 {
 	int retval = -1;
+	pid_t pid = 0, pseudo_pid = 0;
+	proc_t ve_proc_info = {0};
 	struct ve_veosctl_stat sched_param = {0};
 	ProtobufCBinaryData rpm_pseudo_msg = {0};
 
@@ -167,6 +172,7 @@ int rpm_handle_veosctl_set_req(struct veos_thread_arg *pti)
 	if (!pti)
 		goto hndl_return1;
 
+	pseudo_pid = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_pid;
 	/* Fetch the struct ve_veosctl_stat from pti */
 	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
 								pseudo_msg;
@@ -177,6 +183,28 @@ int rpm_handle_veosctl_set_req(struct veos_thread_arg *pti)
 	}
 	memcpy(&sched_param, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
 
+	/* Convert namespace pid to host pid */
+	pid = vedl_host_pid(VE_HANDLE(0), pti->cred.pid, pseudo_pid);
+	if (pid <= 0) {
+		VEOS_DEBUG("PID conversion failed, host: %d "
+				"namespace: %d error: %s",
+				pti->cred.pid, pid, strerror(errno));
+		retval = -errno;
+		goto hndl_return;
+	}
+	memset(&ve_proc_info, 0, sizeof(proc_t));
+	retval = psm_get_ve_proc_info(pid, &ve_proc_info);
+	if (-1 == retval) {
+		VEOS_ERROR("Failed to get proc information for pid: %d",
+				pid);
+		retval = -EFAULT;
+		goto hndl_return;
+	}
+	if (0 != ve_proc_info.euid) {
+		retval = -EPERM;
+		VEOS_DEBUG("This veosctl command needs root permission");
+		goto hndl_return;
+	}
 	retval = psm_rpm_handle_veosctl_set_req(sched_param);
 	if (0 > retval) {
 		VEOS_ERROR("Failed to set scheduler parameters using "
@@ -631,6 +659,9 @@ int rpm_handle_get_regvals_req(struct veos_thread_arg *pti)
 
 	memcpy(&regids[0], rpm_pseudo_msg.data, rpm_pseudo_msg.len);
 
+	pthread_rwlock_lock_unlock(&(tsk->p_ve_core->ve_core_lock), WRLOCK,
+			"Failed to acquire Core %d write lock",
+			tsk->p_ve_core->core_num);
 	/* PSM will populate regvals */
 	retval = psm_get_regval(tsk, numregs, regids, regvals);
 	if (0 > retval) {
@@ -639,6 +670,9 @@ int rpm_handle_get_regvals_req(struct veos_thread_arg *pti)
 		VEOS_DEBUG("PSM populate regvals returned %d", retval);
 		goto hndl_return;
 	}
+	pthread_rwlock_lock_unlock(&(tsk->p_ve_core->ve_core_lock), UNLOCK,
+			"Failed to release Core %d write lock",
+			tsk->p_ve_core->core_num);
 
 	retval = 0;
 hndl_return:
@@ -809,6 +843,46 @@ hndl_return:
 hndl_return1:
 	VEOS_TRACE("Exiting");
 	return retval;
+}
+
+/**
+ * @brief Handles the VE_STAT_INFO_V3 request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_stat_req_v3(struct veos_thread_arg *pti)
+{
+        int retval = -1;
+        struct velib_statinfo_v3 statinfo_v3 = { {0} };
+        struct ve_node_struct *p_ve_node = NULL;
+
+        VEOS_TRACE("Entering");
+
+        if (!pti)
+                goto hndl_return1;
+
+        p_ve_node = VE_NODE(0);
+
+        /* PSM will populate the struct velib_statinfo_v3 */
+        retval = psm_rpm_handle_stat_req_v3(p_ve_node, &statinfo_v3);
+        if (-1 == retval) {
+                VEOS_ERROR("Populating information failed");
+                VEOS_DEBUG("PSM populate statinfo_v3 struct returned %d",
+                                retval);
+                retval = -EFAULT;
+                goto hndl_return;
+        }
+
+        retval = 0;
+hndl_return:
+        /* Send the response back to RPM command */
+        retval = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)&statinfo_v3,
+                        sizeof(struct velib_statinfo_v3), retval);
+hndl_return1:
+        VEOS_TRACE("Exiting");
+        return retval;
 }
 
 /**
@@ -1680,6 +1754,83 @@ hndl_return:
 hndl_return1:
 	VEOS_TRACE("Entering");
 	return retval;
+}
+
+/**
+ * @brief Handles the VE_NUMA_INFO_V3 request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_numa_info_req_v3(struct veos_thread_arg *pti)
+{
+        int retval = -1;
+        int core_loop = 0, numa_loop = 0, core_list = 0;
+        struct ve_numa_stat_v3 ve_numa_v3 = {0};
+        struct ve_core_struct *p_ve_core = NULL;
+        struct ve_node_struct *vnode = VE_NODE(0);
+        struct velib_meminfo mem_info[VE_MAX_NUMA_NODE] = { {0} };
+        size_t size = 0;
+
+        VEOS_TRACE("Entering");
+
+        if (!pti) {
+                VEOS_ERROR("Invalid(NULL) argument "
+                                "received from pseudo process");
+                goto hndl_return1;
+        }
+
+        size = (sizeof(struct velib_meminfo) * vnode->numa_count);
+
+        if (VE_NODE(0)->partitioning_mode) {
+                retval = veos_numa_meminfo(mem_info, size);
+                if (0 > retval) {
+                        VEOS_ERROR("veos_numa_meminfo request failed");
+                        goto hndl_return;
+                }
+
+                ve_numa_v3.tot_numa_nodes = vnode->numa_count;
+                for (; numa_loop < vnode->numa_count; numa_loop++) {
+                        core_list = 0;
+                        for (core_loop = 0; core_loop < vnode->nr_avail_cores;
+                                        core_loop++) {
+                                p_ve_core = VE_CORE(0, core_loop);
+                                if (p_ve_core->numa_node == numa_loop)
+                                        core_list |= (1 << core_loop);
+                        }
+                        sprintf(ve_numa_v3.ve_cores[numa_loop], "%x", core_list);
+                        ve_numa_v3.mem_size[numa_loop] =
+                                (uint64_t)mem_info[numa_loop].kb_main_total;
+                        ve_numa_v3.mem_free[numa_loop] =
+                                (uint64_t)mem_info[numa_loop].kb_main_free;
+
+                }
+        } else {
+                retval = veos_meminfo(mem_info);
+                if (0 > retval) {
+                        VEOS_ERROR("veos_meminfo request failed");
+                        goto hndl_return;
+                }
+                for (; core_loop < vnode->nr_avail_cores; core_loop++)
+                        core_list |= (1 << core_loop);
+
+                ve_numa_v3.tot_numa_nodes = vnode->numa_count;
+                sprintf(ve_numa_v3.ve_cores[0], "%x", core_list);
+                ve_numa_v3.mem_size[0] = (uint64_t)mem_info[0].kb_main_total;
+                ve_numa_v3.mem_free[0] = (uint64_t)mem_info[0].kb_main_free;
+        }
+
+        retval = 0;
+hndl_return:
+        /* Send the response back to RPM command */
+        retval = veos_rpm_send_cmd_ack(pti->socket_descriptor,
+                        (uint8_t *)&ve_numa_v3,
+                        sizeof(struct ve_numa_stat_v3),
+                        retval);
+hndl_return1:
+        VEOS_TRACE("Entering");
+        return retval;
 }
 
 /**
@@ -2838,6 +2989,40 @@ hndl_return:
 }
 
 /**
+ * @brief Handles the VE_GET_ARCH request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, negative value on failure.
+ */
+int rpm_handle_arch_info_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	const char *name;
+
+	VEOS_TRACE("Entering");
+
+	if (!pti)
+		goto hndl_return1;
+
+	name = vedl_get_arch_class_name(VE_HANDLE(0));
+	if((0 != strncmp(name, "ve1", 3)) && (0 != strncmp(name, "ve3", 3))) {
+		VEOS_ERROR("Unsupported device error");
+		retval = VE_EINVAL_DEVICE;
+		goto hndl_return;
+	}
+	VEOS_DEBUG("Architecture received: %s", name);
+	retval = 0;
+hndl_return:
+	/* Send the response back to RPM command */
+	retval = veos_rpm_send_cmd_ack(pti->socket_descriptor, (uint8_t *)name,
+			sizeof(char *), retval);
+hndl_return1:
+	VEOS_TRACE("Exiting");
+	return retval;
+}
+
+/**
  * @brief Handles "RPM_QUERY" request from RPM commmand.
  *
  * @param[in] pti Contains the request message received from RPM command
@@ -2864,10 +3049,12 @@ int veos_rpm_hndl_old_cmd_req(struct veos_thread_arg *pti)
 int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 {
 	int retval = -1;
+	int retval_ver = -1;
 	int rpm_subcmd = -1;
 	pid_t host_pid = -1, namespace_pid = -1;
 	char *version = NULL;
 	PseudoVeosMessage *req_msg = NULL;
+	const char *name;
 
 	VEOS_TRACE("Entering");
 
@@ -2899,6 +3086,15 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 		if (retval == -1) {
 			VEOS_ERROR("Version compatibility error");
 			retval = -EINVAL;
+		} else {
+			retval_ver = version_compare(VERSION_V3_STRING, version);
+			if (retval_ver == 1 ) {
+				name = vedl_get_arch_class_name(VE_HANDLE(0));
+				if(0 != strncmp(name, "ve1", 3)) {
+					VEOS_ERROR("Unsupported device error");
+					retval = VE_EINVAL_DEVICE;
+				}
+			}
 		}
 		/* Send the failure response back to RPM command */
 		retval = veos_rpm_send_cmd_ack(pti->socket_descriptor,
@@ -3186,14 +3382,38 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 			goto hndl_return;
 		}
 		break;
-	case VE_VEOSCTL_GET_PARAM:
-		VEOS_DEBUG("RPM request: VE_VEOSCTL_GET_PARAM");
-		retval = rpm_handle_veosctl_get_req(pti);
+	case VE_STAT_INFO_V3:
+		VEOS_DEBUG("RPM request: VE_STAT_INFO_V3");
+		retval = rpm_handle_stat_req_v3(pti);
 		if (0 > retval) {
 			VEOS_ERROR("Query request failed");
 			goto hndl_return;
 		}
 		break;
+        case VE_NUMA_INFO_V3:
+                VEOS_DEBUG("RPM request : VE_NUMA_INFO_V3");
+                retval = rpm_handle_numa_info_req_v3(pti);
+                if (0 > retval) {
+                        VEOS_ERROR("Query request failed");
+                        goto hndl_return;
+                }
+                break;
+        case VE_GET_ARCH:
+                VEOS_DEBUG("RPM request : VE_GET_ARCH");
+                retval = rpm_handle_arch_info_req(pti);
+                if (0 > retval) {
+                        VEOS_ERROR("Query request failed");
+                        goto hndl_return;
+                }
+                break;
+	case VE_VEOSCTL_GET_PARAM:
+		VEOS_DEBUG("RPM request: VE_VEOSCTL_GET_PARAM");
+		retval = rpm_handle_veosctl_get_req(pti);
+                if (0 > retval) {
+                        VEOS_ERROR("Query request failed");
+                        goto hndl_return;
+                }
+                break;
 	case VE_VEOSCTL_SET_PARAM:
 		VEOS_DEBUG("RPM request: VE_VEOSCTL_SET_PARAM");
 		retval = rpm_handle_veosctl_set_req(pti);
@@ -3202,7 +3422,7 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 			goto hndl_return;
 		}
 		break;
-	case VE_RPM_INVALID:
+	default:
 		VEOS_ERROR("Invalid query request failed");
 		retval = -1;
 

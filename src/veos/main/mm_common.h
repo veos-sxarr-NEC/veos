@@ -28,10 +28,11 @@
 
 #include <pthread.h>
 #include "ve_list.h"
-#include "ve_hw.h"
-#include "task_mgmt.h"
 #include "mm_type.h"
-#include "mempolicy.h"
+#include "pagetable.h"
+#include "cr_api.h"
+#include <mempolicy.h>
+#include <comm_request.h>
 #include "ve_swap.h"
 
 #define REQUEST_FOR_PROCESS_SHARED     1
@@ -46,6 +47,10 @@
 #define DMA_DESC_H	(uint8_t)0x2
 #define DMA_DESC_E_H	(uint8_t)0x3
 
+/* TODO: remove and make portable */
+#define VESHM_NUM_PAGE_DIR (32)
+
+#define DIR_MAX 0x7fff
 /*
  * Data Structures
  */
@@ -53,9 +58,11 @@ typedef struct vehva_header {
 	uint64_t *bmap_4k;
 	uint64_t *bmap_2m;
 	uint64_t *bmap_64m;
+	uint64_t *bmap_256m;
 	pthread_mutex_t vehva_4k_lock; /*!< mutex lock*/
 	pthread_mutex_t vehva_2m_lock; /*!< mutex lock*/
 	pthread_mutex_t vehva_64m_lock; /*!< mutex lock*/
+	pthread_mutex_t vehva_256m_lock; /*!< mutex lock*/
 } vehva_header_t;
 
 struct ve_mm_struct {
@@ -63,23 +70,22 @@ struct ve_mm_struct {
 	/* ATB structure*/
 	atb_reg_t atb[VE_MAX_NUMA_NODE];
 	/* DMAATB structure */
-	dmaatb_reg_t dmaatb;
+	veos_dmaatb_reg_t *dmaatb;
 	/* Mutex lock */
 	pthread_mutex_t thread_group_mm_lock;
-	/* SHM/LHM area address for maintaining system call VHSAA and VHVA */
+	/* SHM/LHM area address for maintaining system call VHSAA and VEHVA */
 	vhsaa_t shm_lhm_addr_vhsaa;
 	uint64_t shm_lhm_vehva;
-	uint64_t shm_lhm_addr_vehva;
 
 	/* Count for number of threads that are sharing this mm_struct */
 	uint64_t ref_count;
-	/* SHM/LHM area address */
+	/* SHM/LHM area address (VH virtual address) */
 	uint64_t shm_lhm_addr;
 	/* Info regarding threads under process */
 	/*List of shm segments attached in Process Virtual Address Space*/
 	struct list_head shm_head;
 	/*bitmap information related to veshm*/
-	struct veshm_struct veshm[ATB_DIR_NUM];
+	struct veshm_struct veshm[VESHM_NUM_PAGE_DIR];
 	vehva_header_t vehva_header;
 	/* Will be used by CR module to take decision
 	 * while allocating CR thread page

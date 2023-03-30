@@ -98,6 +98,8 @@ struct veos_cmd_entry pseudo_veos_cmd[PSEUDO_VEOS_MAX_MSG_NUM] = {
 	{"STOP_USER_THREADS", psm_handle_stop_user_threads_req},
 	{"START_USER_THREADS", psm_handle_start_user_threads_req},
 	{"GET_USER_THREADS_STATE", psm_handle_get_user_threads_state_req},
+	{"SET_CPU_MASK", psm_handle_set_cpu_mask_req},
+	{"CMD_GET_PROGINF_DATA", psm_handle_get_proginf_req},
 };
 
 struct veos_vhve_cmd_entry vhve_veos_cmd[VHVE_VEOS_MAX_MSG_NUM] = {

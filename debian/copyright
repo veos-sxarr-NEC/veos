@@ -232,6 +232,7 @@ Files:     Makefile.am
            conf/ve-ived.options
            conf/ve.conf
            conf/veos_timer.options
+           conf/veos_power_throttle.options
            config.h.in
            configure.ac
            doc/Doxyfile.el6

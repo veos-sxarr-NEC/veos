@@ -36,6 +36,8 @@
 #include <pthread.h>
 #include <errno.h>
 
+#include <veos_arch_defs.h>
+
 #include "libved.h"
 #include "comm_request.h"
 #include "proto_buff_schema.pb-c.h"
@@ -448,6 +450,15 @@ veos_veshm_close(veos_thread_arg_t *pti, struct veshm_args *subcmd,
 	request_close.syncnum    = subcmd->arg.args_veshm_sub_close.syncnum;
 	request_close.mode_flag	 = subcmd->arg.args_veshm_sub_close.mode_flag;
 
+	/* VE_MAP_256MB is specified, but not VE3 */
+	if ( (isset_flag(request_close.mode_flag, VE_MAP_256MB))
+		&& (VE_NODE(0)->ve_type != VE_TYPE_VE3)){
+		IVED_DEBUG(log4cat_veos_ived, "VESHM closing: %s",
+			strerror(EINVAL));
+		rpc_retval = -EINVAL;
+		goto err_ret;
+	}
+
 	/* invalid flag */
 	if (isset_flag(request_close.mode_flag, VE_SYS_FLAG_MASK)){
 		IVED_DEBUG(log4cat_veos_ived, "VESHM closing: %s",
@@ -457,7 +468,8 @@ veos_veshm_close(veos_thread_arg_t *pti, struct veshm_args *subcmd,
 	}
 	if ( isset_flag(request_close.mode_flag,
 			~(VE_SHM_RO | VE_PCISYNC 
-			  | VE_REGISTER_PCI | VE_REGISTER_NONE | VE_SWAPPABLE))){
+			  | VE_REGISTER_PCI | VE_REGISTER_NONE
+			  | VE_MAP_256MB | VE_SWAPPABLE))){
 		rpc_retval = -EINVAL;
 		goto err_ret;
 	}

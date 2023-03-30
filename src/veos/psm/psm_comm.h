@@ -26,6 +26,9 @@
  */
 #ifndef __PSM_PSEUDO_IPC_H
 #define __PSM_PSEUDO_IPC_H
+#include "task_mgmt.h"
+struct ve_fork_info;
+struct sysinfo;
 int psm_handle_send_pseudo_vefd_ack(struct veos_thread_arg *, int);
 ssize_t psm_pseudo_send_cmd(int, void *, ssize_t);
 int psm_pseudo_recv_cmd(int, void *, int);
@@ -74,9 +77,11 @@ int psm_pseudo_send_sigprocmask_ack(struct ve_signal_mask *,
 		struct veos_thread_arg *, int);
 int psm_pseudo_send_sigpending_ack(sigset_t *, struct veos_thread_arg *, int);
 int psm_pseudo_send_set_worker_ack(struct veos_thread_arg *, int ack_ret);
+int psm_pseudo_send_cpu_mask_ack(struct veos_thread_arg *, int64_t);
 int psm_pseudo_send_stop_user_threads_ack(struct veos_thread_arg *, int);
 int psm_pseudo_send_start_user_threads_ack(struct veos_thread_arg *, int);
 int psm_pseudo_send_get_user_threads_state_ack(struct veos_thread_arg *, int);
 int psm_handle_set_signal_mask_req(struct veos_thread_arg *pti);
 int psm_pseudo_set_signal_mask_ack(struct veos_thread_arg *pti, int ack_ret);
+int psm_pseudo_send_get_proginf_ack(struct veos_thread_arg *, int64_t, struct proginf_v1 *);
 #endif

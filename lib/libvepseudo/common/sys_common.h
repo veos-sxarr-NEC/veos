@@ -131,6 +131,64 @@ typedef struct non_atomic_io_msghdr
 	non_atomic_msg_t *non_atomic_io;
 }non_atomic_msghdr_t;
 
+/* Data structure for PROGINF */
+struct proginf_v1 {
+	short              version;        /* Always set to PROGINF_VERSION */
+	short              arch;           /* Architecuture VE1:0, VE3:1 */
+	unsigned int       padding_1[3];
+	unsigned long long ac_ex;          /* Execution count */
+	unsigned long long ac_vx;          /* Vector execution count */
+	unsigned long long ac_fpec;        /* Floating point data element count */
+	unsigned long long ac_ve;          /* Vector elements count */
+	unsigned long long ac_l1imc;       /* L1 instruction cache miss count */
+	unsigned long long ac_vecc;        /* Vector execution in microseconds */
+	unsigned long long ac_l1iac;       /* L1 instruction cache access count */
+	unsigned long long ac_l1mcc;       /* L1 cache miss in microseconds */
+	unsigned long long ac_l2mcc;       /* L2 cache miss in microseconds */
+	unsigned long long ac_l1omc;       /* L1 operand cache miss count */
+        unsigned long long ac_uxc;         /* User-specified instruction execution count */
+	unsigned long long ac_ve2;         /* Vector elements count 2 */
+	unsigned long long ac_l1oac;       /* L1 operand cache access count */
+        unsigned long long ac_uec;         /* User-specified instruction element count */
+	unsigned long long ac_varec;       /* Vector arithmetic execution in microseconds */
+	unsigned long long ac_l1imcc;      /* L1 instruction cache miss in microseconds */
+	unsigned long long ac_l2mc;        /* L2 cache miss count */
+	unsigned long long ac_vldec;       /* Vector load execution in microseconds */
+	unsigned long long ac_l1omcc;      /* L1 operand cache miss in microseconds */
+	unsigned long long ac_l2ac;        /* L2 cache access count  */
+	unsigned long long ac_pccc;        /* Port conflict in microseconds */
+	unsigned long long ac_ltrc;        /* Load instruction traffic count */
+	unsigned long long ac_brec;        /* Branch execution count */
+        unsigned long long ac_sarcc;       /* Shared resource access clock count in microseconds */
+	unsigned long long ac_vlpc;        /* Vector load packet count */
+	unsigned long long ac_strc;        /* Store instruction traffic count */
+	unsigned long long ac_bpfc;        /* Branch prediction failure count */
+        unsigned long long ac_iphcc;       /* Instruction pipeline hold clock count in microseconds */
+	unsigned long long ac_vlec;        /* Vector load element count */
+	unsigned long long ac_vlxc;        /* Vector load instruction execution count */
+	unsigned long long ac_llvml;       /* LLC vector load cache fill line count */
+	unsigned long long ac_llvme;       /* LLC vector load cache miss element count */
+	unsigned long long ac_llvxc;       /* LLC vector load cache miss instruction
+                                              execution count */
+        unsigned long long ac_llvxc2;      /* LLC vector load cache miss/miss
+                                              on fill instruction execution count */
+	unsigned long long ac_fmaec;       /* Fused multiply add element count */
+	unsigned long long ac_fmaxc;       /* Fused multiply add execution count */
+	unsigned long long ac_ptcc;        /* Power throttling in microseconds */
+	unsigned long long ac_ttcc;        /* Thermal throttling in microseconds */
+	unsigned long long ac_corebitmap;  /* core bitmap */
+	unsigned long long ac_max_nthread; /* Maximum number of threads whose
+                                              state are  "RUNNING" or "WAIT"  at
+                                              the same time */
+	unsigned long long ac_l3vsac;      /* VLD+SLD elements accessing L3 count */
+	unsigned long long ac_l3vsme;      /* L3 VLD+SLD miss-hit element count */
+	unsigned long long ac_l3vsml;      /* L3 VLD+SLD miss-hit cache line count */
+	unsigned long long ac_llvsme;      /* LLC miss-hit element count */
+	unsigned long long ac_llvsml;      /* LLC miss-hit cache line count */
+	unsigned long long padding_2[2];
+};
+
+
 typedef long int ret_t;
 
 void ve_syscall_handler(veos_handle *, int);

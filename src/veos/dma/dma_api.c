@@ -24,7 +24,8 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <signal.h>
-#include <sys/mman.h>
+
+#include <libved.h>
 
 #include "dma.h"
 #include "dma_private.h"
@@ -32,9 +33,8 @@
 #include "dma_reqlist.h"
 #include "dma_intr.h"
 #include "dma_log.h"
-#include "vedma_hw.h"
-#include "ve_mem.h"
 #include "vesync.h"
+#include "align.h"
 
 /**
  * @brief Initialize DMA engine on VE node
@@ -46,8 +46,6 @@
 ve_dma_hdl *ve_dma_open_p(vedl_handle *vh)
 {
 	ve_dma_hdl *ret;
-	uint32_t ctl_status;
-	int i;
 	int err;
 	void *ret_from_helper;
 
@@ -67,26 +65,27 @@ ve_dma_hdl *ve_dma_open_p(vedl_handle *vh)
 	pthread_mutex_init(&ret->mutex, NULL);
 	pthread_mutex_init(&ret->pin_wait_list_mutex, NULL);
 	pthread_cond_init(&ret->pin_wait_list_cond, NULL);
-	memset(&ret->req_entry, 0, sizeof(ret->req_entry));
 	ret->control_regs = vedl_mmap_cnt_reg(vh);
-	if (ret->control_regs == MAP_FAILED) {
+	if (ret->control_regs == NULL) {
 		VE_DMA_CRIT("mmap of node control registers failed");
 		goto err_map_cnt_reg;
 	}
 
-	ctl_status = ve_dma_hw_get_ctlstatus(vh, ret->control_regs);
-	if ((ctl_status & VE_DMA_CTL_STATUS_HALT) == 0) {
-		VE_DMA_WARN("DMA is not halted unexpectedly"
-			   " (%08x). Stop and clear the DMA descriptors.",
-			   ctl_status);
+	if (ve_dma_hw_engine_is_halt(vh, ret->control_regs)) {
+		VE_DMA_WARN("DMA is not halted unexpectedly. "
+			   "Stop and clear the DMA descriptors.");
 		ve_dma__stop_engine(ret);
 	}
-	for (i = 0; i < VE_DMA_NUM_DESC; ++i)
-		ve_dma_hw_clear_dma(vh, ret->control_regs, i);
-	/* read pointer */
-	ret->desc_used_begin = ve_dma_hw_get_readptr(vh, ret->control_regs);
-	/* DMA descriptors are unused yet */
-	ret->desc_num_used = 0;
+	ve_dma_hw_clear_all_dma(vh, ret->control_regs);
+	/* status */
+	ret->dma_engine_usage = (*_veos_arch_ops->arch_dma_alloc_usage)(
+					vh, ret->control_regs);
+	if (ret->dma_engine_usage == NULL) {
+		VE_DMA_CRIT("dma_engine_usage allocation failed");
+		goto err_alloc_status;
+	}
+	(*_veos_arch_ops->arch_dma_init_usage)(vh,
+			ret->control_regs, ret->dma_engine_usage);
 
 	/* start a helper thread */
 	err = pthread_create(&ret->helper, NULL, ve_dma_intr_helper, ret);
@@ -103,7 +102,7 @@ ve_dma_hdl *ve_dma_open_p(vedl_handle *vh)
                 goto err_create_pin_helper;
         }
 	veos_commit_rdawr_order();
-	VE_DMA_DEBUG("DMA engine is opend.");
+	VE_DMA_DEBUG("DMA engine is opened.");
 	return ret;
 err_create_pin_helper:
 	ret->should_stop = 1;
@@ -112,7 +111,10 @@ err_create_pin_helper:
 		VE_DMA_CRIT("Failed to join ve_dma_intr_helper thread. %s",
 		             strerror(err));
 err_create_helper:
-	munmap(ret->control_regs, sizeof(system_common_reg_t));
+	(*_veos_arch_ops->arch_dma_free_usage)(vh,
+		ret->control_regs, ret->dma_engine_usage);
+err_alloc_status:
+	vedl_munmap_common_reg(ret->control_regs);
 err_map_cnt_reg:
 	pthread_mutex_destroy(&ret->mutex);
 	pthread_mutex_destroy(&ret->pin_wait_list_mutex);
@@ -135,9 +137,8 @@ int ve_dma_close_p(ve_dma_hdl *hdl)
 
 	VE_DMA_TRACE("called");
 	pthread_mutex_lock(&hdl->mutex);
-	if (hdl->desc_num_used != 0) {
-		VE_DMA_CRIT("%d descriptors are still used.",
-			    hdl->desc_num_used);
+	if (ve_dma_is_busy(hdl)) {
+		VE_DMA_CRIT("DMA descriptors are still used.");
 		pthread_mutex_unlock(&hdl->mutex);
 		return -EBUSY;
 	}
@@ -167,9 +168,12 @@ int ve_dma_close_p(ve_dma_hdl *hdl)
 		VE_DMA_CRIT("Failed to join ve_dma_intr_helper thread. %s",
 			     strerror(err));
 	pthread_mutex_destroy(&hdl->mutex);
+	
+	(*_veos_arch_ops->arch_dma_free_usage)(hdl->vedl_handle,
+			hdl->control_regs, hdl->dma_engine_usage);
+	vedl_munmap_common_reg(hdl->control_regs);
 	pthread_mutex_destroy(&hdl->pin_wait_list_mutex);
 	pthread_cond_destroy(&hdl->pin_wait_list_cond);
-	munmap(hdl->control_regs, sizeof(system_common_reg_t));
 	free(hdl);
 	VE_DMA_DEBUG("DMA engine is closed.");
 	return 0;
@@ -200,16 +204,11 @@ static int ve_dma_post__check_addr_type(const char *msg, ve_dma_addrtype_t t)
 	case VE_DMA_VEMAA:
 		VE_DMA_TRACE("%s addr type is VE_DMA_VEMAA", msg);
 		return 0;
-	case VE_DMA_VERAA:
-		VE_DMA_TRACE("%s addr type is VE_DMA_VERAA", msg);
-		return 0;
 	case VE_DMA_VHSAA:
 		VE_DMA_TRACE("%s addr type is VE_DMA_VHSAA", msg);
 		return 0;
 	default:
-		VE_DMA_ERROR("%s unsupported addr type (%d)",
-			   msg, t);
-		return -EINVAL;
+		return (*_veos_arch_ops->arch_dma_addr_type_is_valid)(msg, t);
 	}
 }
 
@@ -526,14 +525,10 @@ int ve_dma_req_free(ve_dma_req_hdl *req)
  */
 void ve_dma__stop_engine(ve_dma_hdl *hdl)
 {
-	uint32_t ctl_status;
 	/* note: the caller shall hold hdl->mutex */
-	ve_dma_hw_post_stop(hdl->vedl_handle, hdl->control_regs);
-	while ((ctl_status = ve_dma_hw_get_ctlstatus(hdl->vedl_handle,
-		hdl->control_regs) & VE_DMA_CTL_STATUS_MASK)
-		!= VE_DMA_CTL_STATUS_HALT) {
-		VE_DMA_TRACE("Waiting for DMA halt state (DMA status = %08x)",
-			     ctl_status);
+	ve_dma_hw_post_stop(hdl->control_regs);
+	while (!ve_dma_hw_engine_is_halt(hdl->vedl_handle, hdl->control_regs)) {
+		VE_DMA_TRACE("Waiting for DMA halt state");
 	}
 }
 
@@ -552,7 +547,7 @@ void ve_dma__drain_waiting_list(ve_dma_hdl *hdl)
 	VE_DMA_TRACE("drain the wait queue");
 	posted = ve_dma_reqlist_drain_waiting_list(hdl);
 	if (hdl->should_stop == 0 && posted > 0) {
-		ve_dma_hw_start(hdl->vedl_handle, hdl->control_regs);
+		ve_dma_hw_start(hdl->control_regs);
 		veos_commit_rdawr_order();
 	}
 }
@@ -564,8 +559,6 @@ void ve_dma__drain_waiting_list(ve_dma_hdl *hdl)
  */
 void ve_dma_terminate_all(ve_dma_hdl *hdl)
 {
-	int i;
-
 	VE_DMA_TRACE("called");
 
 	pthread_mutex_lock(&hdl->mutex);
@@ -574,19 +567,7 @@ void ve_dma_terminate_all(ve_dma_hdl *hdl)
 	ve_dma__stop_engine(hdl);
 
 	/* remove all the DMA requests on DMA descriptor table */
-	for (i = 0; i < VE_DMA_NUM_DESC; ++i) {
-		if (hdl->req_entry[i] != NULL) {
-			ve_dma_req_hdl *dh;
-
-			VE_DMA_TRACE("Cancel DMA descriptor %d (request %p)",
-				     i, hdl->req_entry[i]);
-			dh = ve_dma_reqlist_entry_to_req_hdl(hdl->req_entry[i]);
-			ve_dma_reqlist__cancel(dh);
-			pthread_cond_broadcast(&dh->cond);
-		} else {
-			VE_DMA_TRACE("DMA descriptor %d is unused", i);
-		}
-	}
+	(*_veos_arch_ops->arch_dma_cancel_all_posted)(hdl->dma_engine_usage);
 	/* remove all the DMA reqlist entries in the wait queue */
 	while (!list_empty(&hdl->waiting_list)) {
 		ve_dma_req_hdl *dh;
@@ -598,14 +579,18 @@ void ve_dma_terminate_all(ve_dma_hdl *hdl)
 	}
 	VE_DMA_ASSERT(list_empty(&hdl->waiting_list));
 
-	for (i = 0; i < VE_DMA_NUM_DESC; ++i)
-		ve_dma_hw_clear_dma(hdl->vedl_handle, hdl->control_regs, i);
+	ve_dma_hw_clear_all_dma(hdl->vedl_handle, hdl->control_regs);
 	/* reset used desc count */
-	hdl->desc_used_begin = ve_dma_hw_get_readptr(hdl->vedl_handle,
-						     hdl->control_regs);
-	hdl->desc_num_used = 0;
+	(*_veos_arch_ops->arch_dma_init_usage)(hdl->vedl_handle,
+			hdl->control_regs, hdl->dma_engine_usage);
 
 	veos_commit_rdawr_order();
 	pthread_mutex_unlock(&hdl->mutex);
 
+}
+
+int ve_dma_is_busy(const ve_dma_hdl *hdl)
+{
+	return (*_veos_arch_ops->arch_dma_engine_is_busy)(
+				hdl->dma_engine_usage);
 }

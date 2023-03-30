@@ -1,5 +1,5 @@
 /**
-* Copyright (C) 2017-2018 NEC Corporation
+* Copyright (C) 2017-2020 NEC Corporation
 * This file is part of the VEOS.
 *
 * The VEOS is free software; you can redistribute it and/or
@@ -109,6 +109,10 @@
 #define TRAMP_2MB    0x6003ffe00000
 #define TRAMP_64MB   0x600fffe00000
 
+#define VEOS_COREDUMP_HDR_START_RET 0x1
+#define VEOS_COREDUMP_HDR_LAUNCH_REQ 0x2
+#define VEOS_COREDUMP_HDR_LAUNCH_RET 0x4
+
 /**
  * @brief  deletes the common signals from given signal set
  *
@@ -128,36 +132,6 @@ static inline void ve_sigandnsets(sigset_t *dest, const sigset_t *left
 	for (; i < SST_SIZE; i++)
 		d[i] = ((l[i]) & ~(r[i]));
 }
-
-/**
-* @brief This structure saves the VE process execution context information
-*/
-struct ve_ucontext {
-	unsigned long uc_flags;	/*!< flag */
-	struct ve_ucontext *uc_link;	/*!< Pointer to process context */
-	stack_t uc_stack;		/*!< stack used by this context */
-	core_user_reg_t uc_mcontext;	/*!< Stores VE process context */
-	sigset_t   uc_sigmask;	/*!< Signals mask while executing handler */
-};
-
-/**
-* @brief This structure store the information of signal handler frame.
-*
-*	Signal handler frame will be written on VE task stack for saving
-*	the current execution context of the VE task and executing the
-*	signal handler routine. Struct member 'tramp[5]' is currently not
-*	in use and this member should not be removed from this struct to
-*	avoid regression issues.
-*/
-struct sigframe {
-	uint64_t tramp[5];	/*!< Member 'tramp[5]' is currently not in use */
-	char pad[256];          /*!< Pad of 256bytes for SPU coherrency */
-	siginfo_t ve_siginfo;	/*!< Signal information */
-	struct ve_ucontext uc;	/*!< Process context information*/
-	int flag;		/*!< Flag, signal mapped from h/w signal */
-	int signum;		/*!< Signal number being served */
-	char lshm_area[LSHM_SZ]; /*!< Save lshm area */
-};
 
 /**
 * @brief This structure store the information which is passed
@@ -196,6 +170,15 @@ struct ve_corename {
 	int copy_pattern; /*!< copy updated corefile name for local use */
 	int use_all; /*!< use full buffer */
 	char *core_pattern; /*!< pattern contains in core_pattern file */
+};
+
+struct ve_coredump_hdr_comm {
+	uint64_t kind;
+	pid_t pid;
+	uint64_t uid;
+	uint64_t gid;
+	char corefname[PATH_MAX];
+	int r_fd;
 };
 
 /**
@@ -250,12 +233,11 @@ void ve_collect_signal(siginfo_t *, struct ve_sigpending *, int, int *,
 int psm_dequeue_ve_signal(siginfo_t *, struct ve_sigpending *,  sigset_t *,
 			int *, struct ve_task_struct *);
 int on_sig_stack(struct ve_task_struct *);
-int ve_getframe(struct ve_task_struct *, int, vemaa_t *, vemaa_t *,
-						uint64_t *, int *, int *);
+
 void ve_force_sigsegv(int, struct ve_task_struct *);
 int ve_format_core_filename(struct ve_corename *, struct ve_task_struct *);
 int ve_get_signal(struct ve_task_struct *, int *, siginfo_t *);
-int ve_handle_signal(struct ve_task_struct *, int *, int, siginfo_t *);
+
 int psm_do_signal_ve(struct ve_task_struct *);
 void psm_do_sigaction_ve(struct ve_task_struct *, struct ve_sigaction_info *);
 void psm_getold_sas(struct ve_task_struct *, stack_t *);
@@ -270,9 +252,11 @@ void *do_ve_coredump(void *);
 void veos_stopping_thread(void);
 void veos_polling_thread(void);
 int check_kill_permission(pid_t, struct ve_task_struct *, uint64_t, int);
+int psm_recalc_sigpending(struct ve_task_struct *);
 int get_ve_corefile_fd(int);
 bool is_actually_stopped(pid_t);
 bool should_dump_core(struct ve_task_struct *);
 bool is_dumping_core(struct ve_task_struct *);
 bool is_pseudo_stop(pid_t pid);
+int veos_coredump_helper_launcher(void);
 #endif

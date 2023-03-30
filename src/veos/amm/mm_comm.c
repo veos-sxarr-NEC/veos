@@ -32,7 +32,8 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/capability.h>
-#include "ve_hw.h"
+
+#include "ve_memory.h"
 #include "ptrace_req.h"
 #include "ve_mem.h"
 #include "veos_handler.h"
@@ -1134,15 +1135,11 @@ int amm_handle_dma_req(veos_thread_arg_t *pti)
 	/* finds the ve_task_struct based on the pid received from
 	 * pseudo process.
 	 */
-	if ((dma_param.srctype == VE_DMA_VEMAA) ||
-			(dma_param.srctype == VE_DMA_VERAA) ||
-			(dma_param.srctype == VE_DMA_VHSAA) ||
-			(dma_param.dsttype == VE_DMA_VEMAA) ||
-			(dma_param.dsttype == VE_DMA_VERAA) ||
-			(dma_param.dsttype == VE_DMA_VHSAA) ||
-			(dma_param.dsttype == VE_DMA_VEMVA_WO_PROT_CHECK)) {
-		ve_dma_req_ack.has_syscall_retval = true;
-		ve_dma_req_ack.syscall_retval = -EINVAL;
+	if ((srctype != VE_DMA_VEMVA && srctype != VE_DMA_VHVA) ||
+		(dsttype != VE_DMA_VEMVA && dsttype != VE_DMA_VHVA)) {
+		/* DO NOT accept absolute, non-virtual, address */
+		VEOS_ERROR("Unsupported type: DMA SRCTYPE %d, DMA DSTTYPE %d", srctype, dsttype);
+		ret = -EINVAL;
 		goto send_ack;
 	}
 

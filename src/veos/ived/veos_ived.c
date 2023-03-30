@@ -44,6 +44,8 @@
 #include "veos_veshm_ipc.h"
 #include "veos_veshm.h"
 #include "veos_vhshm.h"
+#include "veos_ived_private.h"
+#include "pciatb_api.h"
 #include "ve_swap.h"
 
 #define LOCK_TIMEOUT 10      /* seconds */
@@ -240,6 +242,8 @@ execute_req_from_ived()
 
 		ret = pthread_rwlock_rdlock(&ived_requesting_lock);
 		if (ret != 0 ){
+			if (message_buf != NULL)
+				free(message_buf);
 			veos_abort("Abort a request from IVED.");
 			/* Not return to here */
 		}
@@ -347,7 +351,7 @@ veos_ived_register_osdata()
 	pthread_attr_t pthread_attr;
 
 	vedl_handle *handle;
-	uint64_t pciatb_pgsize, pci_bar01, pci_bar3, pci_bar01_size; 
+	uint64_t pciatb_pgsize, pci_bar01, pci_bar_cr, pci_bar01_size; 
 
 	RpcOsRegister osdata = RPC_OS_REGISTER__INIT;
 	RpcIvedArg ived_arg  = RPC_IVED_ARG__INIT;
@@ -366,11 +370,11 @@ veos_ived_register_osdata()
 		goto err_ret;
 	}
 
-	ret = vedl_get_pci_bar0_address(handle, &pci_bar01);
+	ret = veos_get_pci_memory_window_address(&pci_bar01);
 	if (ret != 0)
 		goto err_ret;
 
-	ret = vedl_get_pci_bar3_address(handle, &pci_bar3);
+	ret = veos_get_pci_crarea_address(&pci_bar_cr);
 	if (ret != 0)
 		goto err_ret;
 
@@ -379,7 +383,7 @@ veos_ived_register_osdata()
 
 	/* Get PCIATB page size. IVED needs to know the size before
 	 * AMM function sets vnode_info->pciattr. */
-	ret = vedl_get_pci_bar0_size(handle, &pci_bar01_size);
+	ret = veos_get_pci_memory_window_size(&pci_bar01_size);
 	if (ret != 0)
 		goto err_ret;
 	if (pci_bar01_size < 128 * SIZE_MB) {
@@ -397,10 +401,10 @@ veos_ived_register_osdata()
 	osdata.socket_name = drv_sock_file;
 	osdata.pciatb_pgsize = pciatb_pgsize;
 	osdata.bar01_addr    = pci_bar01;
-	osdata.bar3_addr     = pci_bar3;
+	osdata.bar_cr_addr     = pci_bar_cr;
 	IVED_DEBUG(log4cat_veos_ived, "Device :%s", osdata.socket_name);
 	IVED_DEBUG(log4cat_veos_ived, "bar01:0x%"PRIx64"", osdata.bar01_addr);
-	IVED_DEBUG(log4cat_veos_ived, "bar3 :0x%"PRIx64"", osdata.bar3_addr);
+	IVED_DEBUG(log4cat_veos_ived, "bar CR :0x%"PRIx64"", osdata.bar_cr_addr);
 
 	ived_arg.subcmd = IVED_OS_REG;
 	ived_arg.register_os_arg = &osdata; 

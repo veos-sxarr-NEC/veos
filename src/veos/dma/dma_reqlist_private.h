@@ -25,6 +25,8 @@
 #include <libved.h>
 #include <time.h>
 
+#include <veos_arch_defs.h>
+
 #include "ve_list.h"
 
 #define BLOCK_LIMIT 256
@@ -73,7 +75,7 @@ struct ve_dma_reqlist_entry {
 	struct ve_dma__addr src;/*!< source */
 	struct ve_dma__addr dst;/*!< destination */
 	uint32_t length;/*!< transfer length in byte */
-	uint64_t status_hw;/*!< the value of the word 0 of DMA descriptor */
+	uint64_t status_hw;/*!< HW-dependent status */
 	enum ve_dma_reqlist_entry_status status;/*!< status of this DMA reqlist entry */
 	int entry;/* 0, 1, ..., VE_DMA_NUM_DESC - 1, or -1 (not posted) */
 	uint64_t opt;

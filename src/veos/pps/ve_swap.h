@@ -29,7 +29,6 @@
 #include "ve_list.h"
 #include "mm_type.h"
 #include "task_mgmt.h"
-#include "ve_hw.h"
 #include "locking_handler.h"
 #include "veos_ipc.h"
 
@@ -119,6 +118,9 @@ enum swap_progress {
 	SWAPPED      /* !< Swap-out completes  */
 };
 
+struct ve_task_struct;
+struct ve_node_struct;
+
 /**
  * This structure contains information of between 
  * VEOS and PPS file handler process.
@@ -163,12 +165,17 @@ int print_pps_mode_info(char, size_t, bool, bool);
 int check_swap_out_in_process(int);
 bool check_swap_in_need_wait(struct ve_node_struct *);
 int64_t veos_pps_get_cns(struct ve_task_struct *, pid_t);
+int veos_check_swapin_interruption(struct ve_task_struct *);
+int allocate_swap_info(pgno_t, struct ve_node_struct *e,
+			struct ve_swapped_virtual **,int , int , int );
+int veos_restore_registered_memory(struct ve_task_struct *,
+		struct ve_swapped_virtual *, size_t );
+int get_new_dimatb_dir(uint64_t, struct ve_task_struct *);
 int recv_pps_file_handler_comm(int, struct ve_swap_file_hdr_comm *);
 int send_pps_file_handler_comm(int, struct ve_swap_file_hdr_comm);
 int get_ve_node_num_from_sock_file(char *);
 int veos_swap_in_user_veshm_pciatb_re_attach(struct ve_task_struct *);
 void del_swapped_owned_veshm_list(struct ve_task_struct *);
 void del_swapped_attach_veshm_list(struct ve_task_struct *);
-int veos_get_pgmod_by_vehva(uint64_t);
 
 #endif

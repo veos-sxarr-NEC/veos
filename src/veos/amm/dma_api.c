@@ -25,13 +25,9 @@
  */
 #include <unistd.h>
 #include <sys/mman.h>
-#include "ve_mem.h"
-#include "mm_common.h"
-#include "ve_memory.h"
 #include "veos.h"
-#include "libved.h"
+#include <libved.h>
 #include "dma.h"
-#include "task_mgmt.h"
 #include "velayout.h"
 
 /**

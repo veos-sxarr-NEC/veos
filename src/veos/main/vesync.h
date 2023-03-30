@@ -28,7 +28,7 @@ int veos_free_pci_bar01_sync_addr(void);
 int veos_commit_rdawr_order(void);
 int veos_invalidate_branch_history(int);
 int veos_sync_w_bar2(void);
-int veos_sync_r_bar01_bar3(void);
+int veos_sync_r_bar01_bar_cr(void);
 int veos_sync_r_bar2(void);
 
 #endif

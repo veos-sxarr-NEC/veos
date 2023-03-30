@@ -11,11 +11,12 @@ libvedma_a_SOURCES = \
 	dma_intr.h \
 	dma_private.h \
 	dma_reqlist.h \
-	dma_log.h \
-	vedma_hw.h
+	dma_reqlist_private.h \
+	dma_log.h
 
 libvedma_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 -D__PCIDEV_ENV \
+	-I$(srcdir)/.. \
 	-I$(srcdir)/../amm \
 	-I$(srcdir)/../psm \
 	-I$(srcdir)/../main \
@@ -23,3 +24,4 @@ libvedma_a_CFLAGS = \
 	-I$(top_srcdir)/src/pseudo \
 	-I$(top_srcdir)/include \
 	-I@prefix@/include
+

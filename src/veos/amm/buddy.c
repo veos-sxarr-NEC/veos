@@ -27,6 +27,7 @@
 #include<stdlib.h>
 #include<string.h>
 #include <math.h>
+#include "ve_memory.h"
 #include "buddy.h"
 #include "ve_mem.h"
 #include "ve_shm.h"

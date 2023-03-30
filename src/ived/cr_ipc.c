@@ -325,7 +325,7 @@ ived_cr_attach(ived_thread_arg_t *pti, RpcCrSubAttach *request)
 	int rpc_reterr = 0;
 
 	int target_os_pid = 0;
-	uint64_t target_bar3 = 0;
+	uint64_t target_bar_cr = 0;
 
 	struct veos_info *os_info = NULL;		/* My OS */
 	struct veos_info *t_os_info = NULL;		/* Target OS */
@@ -380,7 +380,7 @@ ived_cr_attach(ived_thread_arg_t *pti, RpcCrSubAttach *request)
 	}
 
 	target_os_pid = t_os_info->os_pid;
-	target_bar3 = t_os_info->bar3_paddr;
+	target_bar_cr = t_os_info->bar_cr_paddr;
 
 	cr_info = t_proc_info->local_crd[t_crd_number];
 	if (cr_info == NULL){
@@ -436,7 +436,7 @@ ived_cr_attach(ived_thread_arg_t *pti, RpcCrSubAttach *request)
 	} else {
 		/* Remote (VHSAA) */
 		/* A CR page is mapped 2 pages. */
-		rpc_retval = target_bar3 + 
+		rpc_retval = target_bar_cr + 
 			((uint64_t)PGSIZE_4K * 2 * cr_info->cr_page_num);
 	}
 

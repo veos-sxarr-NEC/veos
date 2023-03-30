@@ -24,6 +24,8 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/mman.h>
+#include <veos_arch_defs.h>
+#include <align.h>
 #include <poll.h>
 #include "dma.h"
 #include "dma_private.h"
@@ -31,9 +33,8 @@
 #include "dma_reqlist.h"
 #include "dma_reqlist_private.h"
 #include "dma_log.h"
-#include "vedma_hw.h"
 #include "vesync.h"
-#include "ve_mem.h"
+#include "amm_api.h"
 #include "ve_atomic.h"
 
 #define MIN(a, b) ((a) <= (b) ? (a) : (b))
@@ -58,16 +59,8 @@ static int32_t addrtype_to_pagesize(ve_dma_addrtype_t t)
 		return VE_PAGE_SIZE;
 	case VE_DMA_VHVA:
 		return VH_PAGE_SIZE;
-	case VE_DMA_VEMAA:
-	case VE_DMA_VERAA:
-	case VE_DMA_VHSAA:
-		/*
-		 * It is unnecessary to divide when a physical address is used.
-		 */
-		return VE_DMA_DESC_LEN_MAX;
 	default:
-		VE_DMA_ERROR("Address type is invalid (%d)", t);
-		return -EINVAL;
+		return (*_veos_arch_ops->arch_dma_addrtype_to_pagesize)(t);
 	}
 }
 
@@ -225,20 +218,7 @@ void ve_dma__block_free(vedl_handle *vh, ve_dma__block *blk)
 
 static inline int addr_type_hw(ve_dma_addrtype_t t)
 {
-	switch (t) {
-	case VE_DMA_VHVA:
-	case VE_DMA_VHSAA:
-		return VE_DMA_DESC_ADDR_VHSAA;
-	case VE_DMA_VEMVA:
-	case VE_DMA_VEMAA:
-	case VE_DMA_VEMVA_WO_PROT_CHECK:
-		return VE_DMA_DESC_ADDR_VEMAA;
-	case VE_DMA_VERAA:
-		return VE_DMA_DESC_ADDR_VERAA;
-	default:
-		VE_DMA_ERROR("Invalid address type: %d", t);
-		return -EINVAL;
-	}
+	return _veos_arch_ops->arch_dma_addrtype_to_hwtype(t);
 }
 
 /**
@@ -300,7 +280,6 @@ trans_addr_pin_blk(vedl_handle *vh, pid_t pid, ve_dma_addrtype_t t,
 			err = -errno;
 		break;
 	case VE_DMA_VEMAA:
-	case VE_DMA_VERAA:
 	case VE_DMA_VHSAA:
 		blk->unpin = NULL;
 		blk->pgsz = addrtype_to_pagesize(t);
@@ -355,8 +334,7 @@ trans_addr_pin_blk(vedl_handle *vh, pid_t pid, ve_dma_addrtype_t t,
 		}
 		break;
 	default:
-		VE_DMA_ERROR("Invalid address type: %d", t);
-		err = -EINVAL;
+		err = (*_veos_arch_ops->arch_dma_pin_blk)(vh, pid, t, wr, blk);
 	}
 	if (err) {
 		VE_DMA_ERROR("translate error: vaddr =%p errno(%s)", (void *)blk->vaddr, strerror(-err));
@@ -373,7 +351,7 @@ static uint64_t trans_addr_to_dma(uint64_t vaddr, ve_dma__block *blk)
 
 	if (blk->paddr == NULL)
 		return vaddr;
-	indx = (vaddr - ROUN_DN(blk->vaddr, blk->pgsz)) / blk->pgsz;
+	indx = (vaddr - ROUND_DN(blk->vaddr, blk->pgsz)) / blk->pgsz;
 	if (indx >= blk->npages) {
 		VE_DMA_ERROR("va %p not in block! Good luck...", (void *)vaddr);
 		VE_DMA_ERROR("blk vaddr=%p len=%lu", (void *)blk->vaddr, blk->length);
@@ -383,12 +361,12 @@ static uint64_t trans_addr_to_dma(uint64_t vaddr, ve_dma__block *blk)
 /**
  * @brief add ve_dma_req_hdl for list of pin waiting request in ve_dma_hdl.
  */
-static void add_pin_waiting_list(ve_dma_req_hdl *req_hdl, 
+static void add_pin_waiting_list(ve_dma_req_hdl *req_hdl,
 			ve_dma_addrtype_t srctype, pid_t srcpid, uint64_t srcaddr, ve_dma__block *src_blk,
 			ve_dma_addrtype_t dsttype, pid_t dstpid, uint64_t dstaddr, ve_dma__block *dst_blk,
 			uint64_t length, uint64_t opt, int vh_sock_fd)
 {
-	ve_dma_hdl *hdl = req_hdl->engine; 
+	ve_dma_hdl *hdl = req_hdl->engine;
 
 	req_hdl->waiting_src.type = srctype;
 	req_hdl->waiting_src.pid = srcpid;
@@ -409,7 +387,7 @@ static void add_pin_waiting_list(ve_dma_req_hdl *req_hdl,
 }
 
 /**
- * @brief Check a connection to the target OS 
+ * @brief Check a connection to the target OS
  */
 static int check_socket(int vh_sock_fd)
 {
@@ -548,7 +526,7 @@ int64_t ve_dma_reqlist_make(ve_dma_req_hdl *hdl,
 		}
 		if (((opt & VE_DMA_OPT_SYNC_API) != 0) || (dsttype != VE_DMA_VHVA))
 			list_add_tail(&dst_blk->list, &hdl->ptrans_dst);
-	}	
+	}
 	pgsz_dst = dst_blk->pgsz;
 	next_vdst = dst_blk->vaddr + dst_blk->length;
 
@@ -565,7 +543,7 @@ int64_t ve_dma_reqlist_make(ve_dma_req_hdl *hdl,
 
 	while (offset < length) {
 		ve_dma_reqlist_entry *e = NULL;
-		
+
 		if ((opt & VE_DMA_OPT_SYNC_API) == 0) {
 			vhblk_count = 0;
 			if ((srctype == VE_DMA_VHVA) && (srcaddr + offset >= next_vsrc))
@@ -662,9 +640,8 @@ int64_t ve_dma_reqlist_make(ve_dma_req_hdl *hdl,
 			//
 			
 			if ((e != NULL) &&
-			    (e->src.addr + e->length == src_phys) &&
-			    (e->dst.addr + e->length == dst_phys) &&
-			    (e->length + e_length <= VE_DMA_DESC_LEN_MAX)) {
+				(*_veos_arch_ops->arch_dma_request_mergeable)(
+					e, src_phys, dst_phys, e_length)) {
 				/* Merged. Extend e. */
 				e->length += e_length;
 				VE_DMA_DEBUG("req merged. length=%d", e->length);
@@ -791,11 +768,11 @@ cancel:
 	pthread_mutex_unlock(&dma_hdl->mutex);
 	if ((opt & VE_DMA_OPT_SYNC_API) == 0) {
 		vhblk_count = 0;
-		if (src_blk && (srctype == VE_DMA_VHVA)){ 
+		if (src_blk && (srctype == VE_DMA_VHVA)){
 			ve_dma__block_free(vh, src_blk);
 			vhblk_count++;
 		}
-		if (dst_blk && (dsttype == VE_DMA_VHVA)){ 
+		if (dst_blk && (dsttype == VE_DMA_VHVA)){
 			ve_dma__block_free(vh, dst_blk);
 			vhblk_count++;
 		}
@@ -804,7 +781,6 @@ cancel:
 		pthread_cond_signal(&dma_hdl->pin_wait_list_cond);
 		pthread_mutex_unlock(&dma_hdl->pin_wait_list_mutex);
 	}
-	
 	return -1;
 }
 
@@ -899,63 +875,9 @@ ve_dma_status_t ve_dma_reqlist_test(ve_dma_req_hdl *hdl)
 	return ret;
 }
 
-/**
- * @brief Post a DMA reqlist entry on a free DMA descriptor
- *
- * @param[in,out] e DMA reqlist entry
- *
- * @return 0 on success. Non-zero on failure.
- *         When no free descriptors available remain, return -EBUSY.
- *         If an error occurs, return neither 0 nor -EBUSY.
- *
- */
-int ve_dma_reqlist__entry_post(ve_dma_reqlist_entry *e)
+static int ve_dma_reqlist__entry_post(ve_dma_reqlist_entry *e)
 {
-	ve_dma_hdl *hdl;
-	int entry;
-	int ret;
-	int is_last;
-	int is_sync, is_ro, is_ido;
-	VE_DMA_TRACE("called (%p)", e);
-
-	hdl = e->req_head->engine;
-	if (hdl->should_stop) {
-		VE_DMA_ERROR("DMA engine is now closing");
-		return -ENXIO;
-	}
-
-	VE_DMA_TRACE("%d entries are used", hdl->desc_num_used);
-	if (hdl->desc_num_used >= (VE_DMA_NUM_DESC - 1)) {
-		VE_DMA_TRACE("DMA descriptor is full");
-		return -EBUSY;
-	}
-	entry = (hdl->desc_used_begin + hdl->desc_num_used) % VE_DMA_NUM_DESC;
-	VE_DMA_TRACE("DMA request %p is posted as entry %d", e, entry);
-	hdl->req_entry[entry] = e;
-	e->entry = entry;
-
-	is_last = (e->req_head->reqlist.prev == &e->list);
-	is_sync = (e->opt & VE_DMA_OPT_SYNC);
-	is_ro	= (e->opt & VE_DMA_OPT_RO);
-	is_ido	= (e->opt & VE_DMA_OPT_IDO);
-
-	ret = ve_dma_hw_post_dma(hdl->vedl_handle, hdl->control_regs, entry,
-				 e->src.type_hw, e->src.addr, e->dst.type_hw,
-				 e->dst.addr, e->length, is_last && is_sync,
-				 is_ro, is_ido);
-
-	if (ret != 0) {
-		VE_DMA_ERROR("DMA post error (entry = %d, request = %p)",
-			     entry, e);
-		/* cancel this entry */
-		e->entry = -1;
-		hdl->req_entry[entry] = NULL;
-	} else {
-		e->status = VE_DMA_ENTRY_ONGOING;
-		++hdl->desc_num_used;
-	}
-
-	return ret;
+	return (*_veos_arch_ops->arch_dma_reqlist__entry_post)(e);
 }
 
 /**
@@ -965,7 +887,7 @@ int ve_dma_reqlist__entry_post(ve_dma_reqlist_entry *e)
  *
  * @return 0 on success, Non-zero on failure.
  */
-int ve_dma_reqlist_post(ve_dma_req_hdl *req)
+static int ve_dma_reqlist_post(ve_dma_req_hdl *req)
 {
 	/*
 	 * note: a caller shall hold req->engine->mutex.
@@ -1045,7 +967,7 @@ static int ve_dma_post_start(ve_dma_req_hdl *req)
 		goto err_post;
 
 	/* start DMA engine */
-	ve_dma_hw_start(hdl->vedl_handle, hdl->control_regs);
+	ve_dma_hw_start(hdl->control_regs);
 
 err_post:
 	veos_commit_rdawr_order();
@@ -1091,63 +1013,6 @@ int ve_dma_reqlist_drain_waiting_list(ve_dma_hdl *hdl)
 }
 
 /**
- * @brief Free DMA descriptor between desc_used_begin and readptr
- *
- * @param[in,out] dh DMA handle
- * @param readptr Read pointer value of DMA control register
- */
-void ve_dma_free_used_desc(ve_dma_hdl *dh, int readptr)
-{
-	while (dh->req_entry[dh->desc_used_begin] == NULL &&
-	       dh->desc_num_used > 0 &&
-	       dh->desc_used_begin != readptr) {
-		VE_DMA_TRACE("DMA descriptor #%d is freed.",
-			     dh->desc_used_begin);
-		--dh->desc_num_used;
-		++dh->desc_used_begin;
-		if (dh->desc_used_begin == VE_DMA_NUM_DESC)
-			dh->desc_used_begin = 0;
-	}
-}
-
-/**
- * @brief Finish a DMA request specified by DMA reqlist entry
- *
- *        Finish a DMA reqlist entry, updating its status, and DMA handle.
- *        After this function, desc_num_used and desc_used_begin in
- *        DMA handle can be updated.
- *
- * @param[in,out] e DMA reqlist entry
- * @param status Word 0 in the corresponding DMA descriptor
- * @param readptr Read pointer value of DMA control register
- */
-void ve_dma_finish_reqlist_entry(ve_dma_reqlist_entry *e, uint64_t status,
-				 int readptr)
-{
-	/* note: a caller shall hold dh->mutex */
-	int entry = e->entry;
-	ve_dma_hdl *dh = e->req_head->engine;
-	VE_DMA_TRACE("called");
-	VE_DMA_TRACE("request %p (on #%d): status = 0x%lx", e, entry, status);
-	e->status_hw = status;
-	if (status & VE_DMA_DESC_EXCEPTION_MASK) {
-		e->status = VE_DMA_ENTRY_ERROR;
-	} else if (status & VE_DMA_DESC_STATUS_COMPLETED) {
-		e->status = VE_DMA_ENTRY_COMPLETED;
-	} else {
-		e->status = VE_DMA_ENTRY_CANCELED;
-	}
-	VE_DMA_TRACE("Status of request %p <- %d", e, e->status);
-	e->entry = -1;
-	dh->req_entry[entry] = NULL;
-	VE_DMA_TRACE("desc_used_begin = %d, desc_num_used = %d",
-		     dh->desc_used_begin, dh->desc_num_used);
-	ve_dma_free_used_desc(dh, readptr);
-	VE_DMA_TRACE("desc_used_begin = %d, desc_num_used = %d",
-		     dh->desc_used_begin, dh->desc_num_used);
-}
-
-/**
  * @brief Cancel a DMA request
  *
  *        Remove correspond DMA reqlist entries from wait queue,
@@ -1157,73 +1022,7 @@ void ve_dma_finish_reqlist_entry(ve_dma_reqlist_entry *e, uint64_t status,
  */
 void ve_dma_reqlist__cancel(ve_dma_req_hdl *req)
 {
-	/*
-	 * note: a caller shall hold req->engine->mutex and
-	 *  the DMA engine shall be stopped.
-	 */
-	struct list_head *p, *tmp;
-	ve_dma_hdl *hdl = req->engine;
-	vedl_handle *vh = hdl->vedl_handle;
-
-	VE_DMA_TRACE("called");
-	int readptr;
-	readptr = ve_dma_hw_get_readptr(vh, hdl->control_regs);
-
-	/* similar to ve_dma_reqlist_test with a little difference */
-	list_for_each_safe(p, tmp, &req->reqlist) {
-		ve_dma_reqlist_entry *e;
-
-		e = list_entry(p, ve_dma_reqlist_entry, list);
-		if (e->status < VE_DMA_ENTRY_ONGOING) {
-			VE_DMA_TRACE("request %p is not posted yet.", e);
-			list_del(&e->waiting_list);
-			e->status = VE_DMA_ENTRY_CANCELED;
-		} else if (e->status == VE_DMA_ENTRY_ONGOING) {
-			/* already posted: cancel it. */
-			VE_DMA_TRACE("request %p is on descriptor #%d",
-				     e, e->entry);
-			if (e->entry < 0 || e->entry >= VE_DMA_NUM_DESC) {
-				VE_DMA_CRIT("descriptor #%d is invalid",
-					    e->entry);
-				return;
-			}
-			uint64_t status_hw;
-			status_hw = ve_dma_hw_desc_status(vh,
-							  hdl->control_regs,
-							  e->entry);
-			if (status_hw & VE_DMA_DESC_STATUS_PREPARED) {
-				ve_dma_hw_nullify_dma(hdl->vedl_handle,
-					hdl->control_regs, e->entry);
-			}
-			ve_dma_finish_reqlist_entry(e, status_hw, readptr);
-		} else {
-			VE_DMA_TRACE("request %p has been already finished "
-				     "(status = %d).", e, e->status);
-		}
-		if (e->src_block) {
-			if (e->src_block->type == VE_DMA_VHVA) {
-			/* If there is a block structure, unpin is always done.
-		 	 * so decriment the count.*/
-				ve_atomic_dec(&hdl->blk_count);
-				VE_DMA_DEBUG("blk_count %d", hdl->blk_count);
-			}
-			ve_dma__block_free(vh, e->src_block);
-			e->src_block = NULL;
-		}
-		if (e->dst_block) {
-			if (e->dst_block->type == VE_DMA_VHVA) {
-			/* If there is a block structure, unpin is always done.
-		 	 * so decriment the count.*/
-				ve_atomic_dec(&hdl->blk_count);
-				VE_DMA_DEBUG("blk_count %d", hdl->blk_count);
-			}
-			ve_dma__block_free(vh, e->dst_block);
-			e->dst_block = NULL;
-		}
-	}
-	ve_dma__dec_ipc_sync_nolock(req);
-	req->comp = 1;
-	req->cancel = 1;
+	(*_veos_arch_ops->arch_dma_reqlist_cancel)(req);
 }
 
 /**
@@ -1272,10 +1071,8 @@ void ve_dma__terminate_nolock(ve_dma_req_hdl *req)
 	/* if one or more free descriptors exist, use them. */
 	ve_dma_reqlist_drain_waiting_list(hdl);
 	/* restart */
-	VE_DMA_TRACE("%d descriptors are used from #%d", hdl->desc_num_used,
-		     hdl->desc_used_begin);
-	if (hdl->should_stop == 0 && hdl->desc_num_used > 0)
-		ve_dma_hw_start(hdl->vedl_handle, hdl->control_regs);
+	if (hdl->should_stop == 0 && ve_dma_is_busy(hdl))
+		ve_dma_hw_start(hdl->control_regs);
 	pthread_cond_broadcast(&req->cond);
 }
 

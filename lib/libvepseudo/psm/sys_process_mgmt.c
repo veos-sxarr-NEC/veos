@@ -49,6 +49,8 @@
 int tid_counter = -1;
 pthread_mutex_t readproc_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+extern cpu_set_t ve_affinity_mask;
+
 /**
  * @brief Return struct tid_info array index corresponding to the thread ID.
  *
@@ -402,7 +404,7 @@ static void thread_dummy_func(void *thread_args)
 
 	g_handle = child_handle;
 
-	global_tid_info[index].vefd = g_handle->ve_handle->vefd;
+	global_tid_info[index].vefd = vedl_get_fd(g_handle->ve_handle);
 	global_tid_info[index].veos_hndl = g_handle;
 
 	/* Update global_tid_info containing tid(s) */
@@ -414,7 +416,7 @@ static void thread_dummy_func(void *thread_args)
 	ve_clone_info.child_pid = global_tid_info[index].tid_val;
 
 	PSEUDO_DEBUG("TID struct vefd %d",
-			g_handle->ve_handle->vefd);
+			vedl_get_fd(g_handle->ve_handle));
 
 	/* Request VEOS to perform cloning */
 	retval = pseudo_psm_send_clone_req(child_handle->veos_sock_fd, ve_clone_info,
@@ -1161,7 +1163,7 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 			/* Set the offset of VH Child */
 			vedl_set_syscall_area_offset(handle->ve_handle, offset);
 		} else {
-			munmap(handle->ve_handle->lshm_addr, PAGE_SIZE_4KB);
+			munmap(vedl_get_shm_lhm_addr(handle->ve_handle), PAGE_SIZE_4KB);
 
 			PSEUDO_DEBUG("Closing parent's threads fd in forked child");
 			for (index = 0; index < VEOS_MAX_VE_THREADS; index++) {
@@ -1213,7 +1215,7 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 				sizeof(global_tid_info) - sizeof(struct tid_info));
 		tid_counter = 0;
 		/* Update global tid array for main thread */
-		global_tid_info[0].vefd = g_handle->ve_handle->vefd;
+		global_tid_info[0].vefd = vedl_get_fd(g_handle->ve_handle);
 		global_tid_info[0].veos_hndl = g_handle;
 		global_tid_info[0].tid_val = getpid();
 		global_tid_info[0].flag = clone_args[0];
@@ -1225,7 +1227,7 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 
 		PSEUDO_DEBUG("TID struct vefd : %d, VE driver fd %d",
 				global_tid_info[0].vefd,
-				g_handle->ve_handle->vefd);
+				vedl_get_fd(g_handle->ve_handle));
 
 		PSEUDO_DEBUG("handle: %p", handle);
 
@@ -1364,9 +1366,6 @@ ret_t ve_do_fork(uint64_t clone_args[], char *syscall_name, veos_handle *handle)
 
 		retval = 0;
 		*shared_var = DO_FORK_SUCCESS;
-
-		/* Free the VH buffer of acc IO */
-		sys_accelerated_free_vh_buf();
 
 		/* Handle return of the fork/vfork system call
 		 * Call exception handler with new handle
@@ -1954,7 +1953,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 				syscall(SYS_gettid),
 				getpid(), vefd, global_tid_info[0].tid_val);
 	} else {
-		vefd = handle->ve_handle->vefd;
+		vefd = vedl_get_fd(handle->ve_handle);
 		PSEUDO_DEBUG("PID %d Saving its vefd %d",
 				getpid(), vefd);
 	}
@@ -4016,6 +4015,7 @@ ret_t ve_sched_setaffinity(int syscall_num, char *syscall_name, veos_handle *han
 	pid_t pid = -1;
 	size_t cpusetsize = -1;
 	cpu_set_t mask;
+	int num_of_core = -1;
 
 	PSEUDO_TRACE("Entering");
 	PSEUDO_DEBUG("%s is called", syscall_name);
@@ -4053,7 +4053,29 @@ ret_t ve_sched_setaffinity(int syscall_num, char *syscall_name, veos_handle *han
 		retval = -EFAULT;
 		goto hndl_return;
 	}
+	/* skip the check for job scheduler given affinity mask as VE_CORE_LIMIT
+	 * is not defined in this case */
+	if (CPU_COUNT(&ve_affinity_mask) == 0)
+		goto skip_job_scheduler_check;
 
+	num_of_core = vedl_get_num_of_core(handle->ve_handle);
+	if (0 > num_of_core) {
+		PSEUDO_ERROR("sched_setaffinity() failure: failed to get "
+							"number of VE cores");
+		retval = -EINVAL;
+		goto hndl_return;
+	}
+	for (int i = 0; i < num_of_core; i++) {
+		if (!CPU_ISSET(i, &mask))
+			continue;
+		if (!CPU_ISSET(i, &ve_affinity_mask)) {
+			PSEUDO_DEBUG("CPU %d is not allowed by job scheduler", i);
+			PSEUDO_ERROR("CPU %d is not allowed by job scheduler", i);
+			retval = -EINVAL;
+			goto hndl_return;
+		}
+	}
+skip_job_scheduler_check:
 	/* interact with PSM to set the affinity of the VE process.
 	*/
 	retval = pseudo_psm_send_setaffinity_req(handle->veos_sock_fd, pid, mask);

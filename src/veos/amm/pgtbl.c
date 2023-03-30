@@ -27,15 +27,23 @@
 #include <sys/mman.h>
 #include "ve_shm.h"
 #include "ve_mem.h"
+#include <mman_ve.h>
 #include "mm_common.h"
 #include "veos.h"
 #include "libved.h"
 #include "dma.h"
 #include "task_signal.h"
+#include "task_sched.h"
 #include "dmaatb_api.h"
 #include "vehva_mgmt.h"
 #include "veos_ived.h"
+#include <veos_arch_defs.h>
+#include "ve_memory.h"
+#include "pagetable.h"
+#include "ve_memory_def.h"
 
+static void __dump_dmaatb(FILE *, veos_dmaatb_reg_t *);
+static int copy_entry(veos_atb_entry_t *, veos_atb_entry_t *, int, int, int, struct ve_mm_struct *);
 
 /**
 * @brief Dump the information present in page table(ATB).
@@ -50,14 +58,14 @@ void amm_dump_atb(struct ve_task_struct *tsk)
 	atb_reg_t *atb = &tsk->p_ve_mm->atb[0];
 
 	/* Loop for very directory for ATB */
-	for (dir_cntr = 0; dir_cntr < ATB_DIR_NUM; dir_cntr++) {
+	for (dir_cntr = 0; dir_cntr < VEOS_ATB_DIR_NUM; dir_cntr++) {
 		/* Check entries only when directory entry is valid */
 		if (ps_isvalid(&(atb->dir[dir_cntr]))) {
 			VEOS_DEBUG("%d : Partial Space Offset %p PGMOD %s",
 					dir_cntr,
 					(void *)atb->dir[dir_cntr].data,
 					pgmod_to_pgstr(ps_getpgsz(&(atb->dir[dir_cntr]))));
-			for (entry_cntr = 0; entry_cntr < ATB_ENTRY_MAX_SIZE;
+			for (entry_cntr = 0; entry_cntr < VEOS_ATB_ENTRY_MAX_SIZE;
 					entry_cntr++) {
 				/* Check if page entries is valid */
 				if (pg_isvalid(&(atb->entry[dir_cntr][entry_cntr]))) {
@@ -102,14 +110,14 @@ void amm_dump_dmaatb(struct ve_task_struct *tsk, bool node)
 		fprintf(fd, "                TASK(%d)\n",
 				tsk->pid);
 #endif
-		__dump_dmaatb(fd, &tsk->p_ve_mm->dmaatb);
+		__dump_dmaatb(fd, tsk->p_ve_mm->dmaatb);
 	}
 	if (node) {
 #ifdef DEBUG
 		fprintf(fd, "                NODE\n");
 #endif
 		VEOS_DEBUG("Dumping DMAATB of Node");
-		__dump_dmaatb(fd, &vnode_info->dmaatb);
+		__dump_dmaatb(fd, vnode_info->dmaatb);
 	}
 }
 
@@ -119,50 +127,9 @@ void amm_dump_dmaatb(struct ve_task_struct *tsk, bool node)
  * @param[in] fd Pointer to FILE
  * @param[in] dmaatb Pointer to DMAATB
  */
-void __dump_dmaatb(FILE *fd, dmaatb_reg_t *dmaatb)
+static void __dump_dmaatb(FILE *fd, veos_dmaatb_reg_t *dmaatb)
 {
-	int dir_cntr = 0;
-	int entry_cntr = 0;
-
-#ifdef DEBUG
-	fprintf(fd,
-			"\n-------------------------------------------------------\n");
-	fprintf(fd,
-			"DMAATBDIRNO    PSNUM\n");
-	fprintf(fd,
-			"\n-------------------------------------------------------\n");
-#endif
-
-	/* Loop for very directory for ATB */
-	for (dir_cntr = 0; dir_cntr < DMAATB_DIR_NUM; dir_cntr++) {
-		/* Check entries only when directory entry is valid */
-		if (ps_isvalid(&(dmaatb->dir[dir_cntr]))) {
-#ifdef DEBUG
-			fprintf(fd, "%5d%10lx\n", dir_cntr,
-					dmaatb->dir[dir_cntr].data
-					& 0xFFFFFFF00000);
-#endif
-			VEOS_DEBUG("%d : Partial Space Offset %p JID: %ld",
-					dir_cntr,
-					(void *)dmaatb->dir[dir_cntr].data,
-					ps_getjid(&(dmaatb->dir[dir_cntr])));
-			for (entry_cntr = 0; entry_cntr < DMAATB_ENTRY_MAX_SIZE;
-					entry_cntr++) {
-#ifdef DEBUG
-				fprintf(fd, "page_no \n");
-				fprintf(fd, "%d\n", entry_cntr);
-#endif
-				/* Check if page entries is valid */
-				if (pg_isvalid(&(dmaatb->entry[dir_cntr][entry_cntr]))) {
-					VEOS_DEBUG("%d : %d :PB Address %p",
-							dir_cntr, entry_cntr, (void *)
-							dmaatb->entry[dir_cntr][entry_cntr].data);
-				}
-			} /* end entry loop */
-		} else {
-			VEOS_TRACE("DMAATB DIR:%d Invalid", dir_cntr);
-		}
-	}
+	(*_veos_arch_ops->arch_amm__dump_dmaatb)(fd, dmaatb);
 }
 /**
 * @brief This function will validate the given directory(ATB/DMAATB).
@@ -173,69 +140,34 @@ void __dump_dmaatb(FILE *fd, dmaatb_reg_t *dmaatb)
 * @param[in] jid JID in partial space directory.
 * @param[in] pgmod page mode to be set.
 */
-void __validate_pgd(void *dt, dir_t dir, int psnum, int jid, int pgmod)
+static void __validate_pgd(atb_reg_t *dt, dir_t dir, int psnum, int pgmod)
 {
-	int ps_entry = 0;
-	atb_dir_t *pgd = NULL;
-	atb_entry_t *pte = NULL;
 	VEOS_TRACE("invoked");
 
-	VEOS_TRACE("dt(%p), dir(%d), psnum(%d), jid(%d), pgmod(%s)",
-			dt, dir, psnum, jid, pgmod_to_pgstr(pgmod));
+	VEOS_TRACE("dt(%p), dir(%d), psnum(%d), pgmod(%s)",
+			dt, dir, psnum, pgmod_to_pgstr(pgmod));
 
-	if (jid < 0) {
-		pgd = &((atb_reg_t *)dt)->dir[dir];
-		pte = ((atb_reg_t *)dt)->entry[dir];
+	veos_atb_dir_t *pgd = &dt->dir[dir];
+	veos_atb_entry_t *pte = dt->entry[dir];
 
-		/* partial space directory */
-		ps_setpsnum(pgd, psnum, pgmod);
-		ps_setpgsz(pgd, pgmod);
-		ps_valid(pgd);
+	/* partial space directory */
+	ps_setpsnum(pgd, psnum, pgmod);
+	ps_setpgsz(pgd, pgmod);
+	ps_valid(pgd);
 
-		/* partial space page table (PSPT) */
-		for (ps_entry = 0; ps_entry <
-			     ATB_ENTRY_MAX_SIZE; ps_entry++)
-			pg_invalid(&pte[ps_entry]);
-	} else {
-		pgd = &((dmaatb_reg_t *)dt)->dir[dir];
-		pte = ((dmaatb_reg_t *)dt)->entry[dir];
-
-		/* partial space directory */
-		ps_setpsnum(pgd, psnum, pgmod);
-		ps_setjid(pgd, jid);
-		ps_setpgsz(pgd, pgmod);
-		ps_valid(pgd);
-
-		/*For dmaatb only*/
-		if (pgmod != PG_4K) {
-			/*Will be used in case of DMAATB only*/
-			atb_dir_t *pgd_node = NULL;
-			/*Will be used in case of DMAATB only*/
-			atb_entry_t *pte_node = NULL;
-			struct ve_node_struct *vnode = VE_NODE(0);
-
-			/* partial space directory */
-			pgd_node = &vnode->dmaatb.dir[dir];
-			pte_node = vnode->dmaatb.entry[dir];
-
-			ps_setpsnum(pgd_node, psnum, pgmod);
-			ps_setjid(pgd_node, jid);
-			ps_setpgsz(pgd_node, pgmod);
-			ps_valid(pgd_node);
-
-			for (ps_entry = 0; ps_entry <
-					ATB_ENTRY_MAX_SIZE; ps_entry++)
-				pg_invalid(&pte_node[ps_entry]);
-		}
-
-		/* partial space page table (PSPT) */
-		for (ps_entry = 0; ps_entry <
-				ATB_ENTRY_MAX_SIZE; ps_entry++)
-			pg_invalid(&pte[ps_entry]);
-	}
+	/* partial space page table (PSPT) */
+	for (int ps_entry = 0; ps_entry < VEOS_ATB_ENTRY_MAX_SIZE; ps_entry++)
+		pg_invalid(&pte[ps_entry]);
 	VEOS_TRACE("returned");
 
 	return;
+}
+
+static void __validate_dmapgd(veos_dmaatb_reg_t *dt, dir_t dir, int psnum,
+				int jid, int pgmod)
+{
+	(*_veos_arch_ops->arch_amm__validate_dma_pgd)(dt,
+					dir, psnum, jid, pgmod);
 }
 
 /**
@@ -303,7 +235,7 @@ int amm_do_vemva_init_atb(vemva_t vaddr, int pgmod,
 	for (index = 0; index < vnode->numa_count; index++)
 		memcpy(&(mm->atb[index]), &temp_atb[index], sizeof(atb_reg_t));
 
-	if( 0 == psm_sync_hw_regs(tsk, _ATB, true, -1, 1))
+	if( 0 == psm_sync_hw_regs_atb(tsk, true, -1, 1, tsk->atb_dirty | (1UL << dir_num)))
         {
                 VEOS_DEBUG("Syncing ATB");
                 ret = veos_update_atb(tsk->core_set, &dir_num, 1, tsk);
@@ -339,10 +271,10 @@ dir_t __get_pgd(vemva_t vaddr, void *dt, int jid, bool inval)
 {
 	dir_t ps_entry = 0;
 	int atb_num = 0;
-	int psnum = 0;		/* partial space # generated from vaddr */
+	int psno = 0;		/* partial space # generated from vaddr */
 	int psnum_dir = 0;	/* partial space # generated from dir[] entry */
 	int pgmod = 0;		/* Page size flag from dir[] entry */
-	atb_dir_t *atbp = NULL;
+	veos_atb_dir_t *atbp = NULL;
 	int unused = -1;	/* unused partial space # */
 	struct ve_node_struct *vnode = VE_NODE(0);
 	int noc = -1;
@@ -353,15 +285,16 @@ dir_t __get_pgd(vemva_t vaddr, void *dt, int jid, bool inval)
 
 	VEOS_DEBUG("%d number of cores available", noc);
 
-	ps_entry = (0 > jid) ? 0 :
-			(((uint64_t)vaddr < VEHVA_DIR0_END) ? 0 :
-			 noc);
+	if (0 <= jid) {
+		/* DMA pagetable */
+		return (*_veos_arch_ops->arch_amm__get_dma_pgd)(vaddr,
+							jid, inval);
+	}
+	/* operate (CPU main memory) page table */
+	ps_entry = 0;
+	atb_num = VEOS_ATB_DIR_NUM;
 
-	atb_num = (0 > jid) ? ATB_DIR_NUM : ((uint64_t)vaddr <
-			VEHVA_DIR0_END) ? noc : DMAATB_DIR_NUM;
-
-	atbp = (0 > jid) ? &((atb_reg_t *)dt)->dir[ps_entry] :
-		&vnode->dmaatb.dir[ps_entry];
+	atbp = &((atb_reg_t *)dt)->dir[ps_entry];
 
 	VEOS_DEBUG("vemva(%lx), dt(%p)", vaddr, atbp);
 	VEOS_TRACE("iterating page tables");
@@ -370,19 +303,12 @@ dir_t __get_pgd(vemva_t vaddr, void *dt, int jid, bool inval)
 		if (ps_isvalid(atbp)) {
 			/* If atbp is DMAATB, check JID. */
 			VEOS_TRACE("pgd[%p] is valid", atbp);
-			if (!(0 > jid)) {
-				VEOS_TRACE("match job id of pgd");
-				if (ps_getjid(atbp) != jid) {
-					atbp++;
-					continue;
-				}
-			}
 
 			pgmod = ps_getpgsz(atbp);
-			psnum = psnum(vaddr, pgmod);
+			psno = psnum(vaddr, pgmod);
 			/* psnum check */
 			psnum_dir = ps_getps(atbp, pgmod);
-			if (psnum_dir == psnum) {
+			if (psnum_dir == psno) {
 				VEOS_TRACE("returned %d", ps_entry);
 				return ps_entry;
 			}
@@ -437,9 +363,9 @@ void invalidate_atb(atb_reg_t *atb)
 	VEOS_TRACE("invoked");
 	VEOS_DEBUG("atb(%p)", atb);
 	memset(atb, 0, sizeof(atb_reg_t));
-	for (dirno = 0; dirno < ATB_DIR_NUM; dirno++) {
+	for (dirno = 0; dirno < VEOS_ATB_DIR_NUM; dirno++) {
 		ps_invalid(&(atb->dir[dirno]));
-		for (entry = 0; entry < ATB_ENTRY_MAX_SIZE; entry++)
+		for (entry = 0; entry < VEOS_ATB_ENTRY_MAX_SIZE; entry++)
 			pg_invalid(&(atb->entry[dirno][entry]));
 	}
 	VEOS_TRACE("returning");
@@ -452,33 +378,9 @@ void invalidate_atb(atb_reg_t *atb)
 *
 * @param[in] dmaatb reference to the page table(DMAATB).
 */
-void invalidate_dmaatb(dmaatb_reg_t *dmaatb)
+void invalidate_dmaatb(veos_dmaatb_reg_t *dmaatb)
 {
-	dir_t dirno = 0;
-	ent_t entry = 0;
-
-	VEOS_TRACE("invoked");
-	VEOS_DEBUG("dmaatb(%p)", dmaatb);
-	/*
-	 * Initialize the DMAATB structure for new allocation
-	 */
-	memset(dmaatb, 0, sizeof(dmaatb_reg_t));
-
-	VEOS_TRACE("iterate dma page tables");
-	for (dirno = 0; dirno < DMAATB_DIR_NUM; dirno++) {
-		ps_invalid(&(dmaatb->dir[dirno]));
-		for (entry = 0; entry < DMAATB_ENTRY_MAX_SIZE; entry++) {
-			pg_invalid(&(dmaatb->entry[dirno][entry]));
-			VEOS_TRACE("dma pgd[%d] and value(0x%lx)",
-				dirno, dmaatb->dir[dirno].data);
-			VEOS_TRACE("dma pte[%d][%d] and value(%lx)",
-				dirno, entry,
-				dmaatb->entry[dirno][entry].data);
-		}
-	}
-	VEOS_TRACE("iteration ends");
-	VEOS_TRACE("returning");
-	return;
+	(*_veos_arch_ops->arch_amm_invalidate_dmaatb)(dmaatb);
 }
 
 /**
@@ -499,7 +401,7 @@ void invalidate_veshm_pte(atb_reg_t *new_atb, struct veshm_struct *veshm)
 	VEOS_DEBUG("atb(%p) and veshm map(%p)",
 		new_atb, veshm);
 	VEOS_TRACE("page table itertaion starts");
-	for (dir_count = 0; dir_count < ATB_DIR_NUM; dir_count++) {
+	for (dir_count = 0; dir_count < VESHM_NUM_PAGE_DIR; dir_count++) {
 		dir_num = __get_pgd(veshm[dir_count].vemva_base,
 				new_atb, -1, false);
 		if (0 > dir_num)
@@ -550,8 +452,8 @@ int amm_copy_atb_private(struct ve_mm_struct *mm_old, struct ve_mm_struct *mm,
 	int pgmod = 0;
 	int ret = 0;
 	int i = 0;
-	atb_entry_t *new_pte[VE_MAX_NUMA_NODE];
-	atb_entry_t *old_pte[VE_MAX_NUMA_NODE];
+	veos_atb_entry_t *new_pte[VE_MAX_NUMA_NODE];
+	veos_atb_entry_t *old_pte[VE_MAX_NUMA_NODE];
 	struct ve_node_struct *vnode = VE_NODE(0);
 	int mp_num = 0;
 	pgno_t pgno = 0;
@@ -566,14 +468,14 @@ int amm_copy_atb_private(struct ve_mm_struct *mm_old, struct ve_mm_struct *mm,
 	}
 
 	VEOS_TRACE("iterate and copy pte's");
-	for (dirno = 0; dirno < ATB_DIR_NUM; dirno++) {
+	for (dirno = 0; dirno < VEOS_ATB_DIR_NUM; dirno++) {
 		if (ps_isvalid(&(new_atb[0].dir[dirno]))) {
 			pgmod = ps_getpgsz(&(new_atb[0].dir[dirno]));
 			for (i = 0; i < vnode->numa_count; i++) {
 				new_pte[i] = new_atb[i].entry[dirno];
 				old_pte[i] = old_atb[i].entry[dirno];
 			}
-			for (ent = 0; ent < ATB_ENTRY_MAX_SIZE; ent++) {
+			for (ent = 0; ent < VEOS_ATB_ENTRY_MAX_SIZE; ent++) {
 				VEOS_TRACE("valid old pte[%d][%d] with val %lx",
 					dirno, ent, old_pte[0][ent].data);
 				VEOS_TRACE("valid new pte[%d][%d] with val %lx",
@@ -632,8 +534,8 @@ void amm_atb_cleanup(atb_reg_t *new_atb, int dirno, int ent)
 {
 	int dir_idx = 0;
 	int ent_idx = 0;
-	int ent_loop = ATB_ENTRY_MAX_SIZE;
-	atb_entry_t *new_pte = NULL;
+	int ent_loop = VEOS_ATB_ENTRY_MAX_SIZE;
+	veos_atb_entry_t *new_pte = NULL;
 	pgno_t pgno = 0;
 
 	VEOS_TRACE("invoked");
@@ -676,7 +578,7 @@ void amm_copy_atb_vfork(atb_reg_t *old_atb,
 			atb_reg_t *new_atb, struct veshm_struct *veshm)
 {
 	int dirno = 0, ent = 0;
-	atb_entry_t *new_pte[VE_MAX_NUMA_NODE];
+	veos_atb_entry_t *new_pte[VE_MAX_NUMA_NODE];
 	int i = 0;
 	uint64_t op_flg = 0;
 	pgno_t pgno = 0;
@@ -692,10 +594,10 @@ void amm_copy_atb_vfork(atb_reg_t *old_atb,
 
 	/* copy all entries as it is and then increase
 	 * the ref count of all pages*/
-	for (dirno = 0; dirno < ATB_DIR_NUM; dirno++) {
+	for (dirno = 0; dirno < VEOS_ATB_DIR_NUM; dirno++) {
 		if (ps_isvalid(&(new_atb[0].dir[dirno]))) {
 			new_pte[0] = new_atb[0].entry[dirno];
-			for (ent = 0; ent < ATB_ENTRY_MAX_SIZE; ent++) {
+			for (ent = 0; ent < VEOS_ATB_ENTRY_MAX_SIZE; ent++) {
 				VEOS_TRACE("valid new pte[%d][%d] with val %lx",
 					dirno, ent, new_pte[0][ent].data);
 				/**
@@ -749,7 +651,7 @@ void amm_copy_atb_vfork(atb_reg_t *old_atb,
 *
 * @return On success return 0 and negative of errno on failure.
 */
-int copy_entry(atb_entry_t *new_pte, atb_entry_t *old_pte,
+static int copy_entry(veos_atb_entry_t *new_pte, veos_atb_entry_t *old_pte,
 		int pgmod, int mempolicy, int numa_node,
 		struct ve_mm_struct *mm)
 {
@@ -943,8 +845,8 @@ dir_t validate_vemva(vemva_t vaddr, int rw, pgno_t pgno,
 	dir_t dir_num = -1;
 
 	uint8_t type = VE_ADDR_VEMAA;
-	atb_dir_t *pgd = NULL;
-	atb_entry_t *pte = NULL;
+	veos_atb_dir_t *pgd = NULL;
+	veos_atb_entry_t *pte = NULL;
 
 	struct ve_node_struct *vnode = VE_NODE(0);
 	int i = 0;
@@ -978,7 +880,7 @@ dir_t validate_vemva(vemva_t vaddr, int rw, pgno_t pgno,
 			VEOS_DEBUG("pgd[%d] is invalid",
 					dir_num);
 			__validate_pgd(&((atb_reg_t *)pdt)[i],
-					dir_num, psoff, -1, pgmod);
+					dir_num, psoff, pgmod);
 		} else {
 			VEOS_DEBUG("pgd[%d] is valid", dir_num);
 		}
@@ -1027,7 +929,7 @@ error:
  * @param[in] vaddr VE virtual address.
  * @param[in] rw memory protection to be set.
  * @param[in] pgno VE physical page.
- * @param[in] pdt  Page Descriptor Table.
+ * @param[in] mm mm_struct
  * @param[in] pgmod VE physical page mode.
  * @param[in] type VE physical page type to be set.
  * @param[in] jid jid of given process.
@@ -1039,106 +941,12 @@ error:
  *	   negative of errno on failure.
  */
 dir_t validate_vehva(vemva_t vaddr, int rw, pgno_t pgno,
-		void *pdt, int pgmod, uint8_t type,
+		struct ve_mm_struct *mm, int pgmod, uint8_t type,
 		jid_t jid, uint16_t vehva_flag,
 		int numa_node)
 {
-	ret_t ret = 0;
-	uint64_t  psoff = 0;
-	uint64_t pgoff = 0;
-	dir_t dir_num = -1;
-	struct ve_mm_struct *mm = NULL;
-
-	atb_dir_t *pgd = NULL;
-	atb_entry_t *pte = NULL;
-
-	psoff = psnum(vaddr, pgmod);
-
-	if (jid < 0) {
-		VEOS_ERROR("Invalid jid %d", jid);
-		ret = -EINVAL;
-		goto error;
-	}
-	/*
-	 * Check for node structure to find Directory
-	 * w.r.t vehva.
-	 */
-	if (pgmod == PG_4K) {
-		dir_num = 0; /*syscall Dir*/
-	} else {
-		dir_num =  __get_pgd(vaddr, pdt, jid, true);
-		if (dir_num < 0) {
-			VEOS_DEBUG("no page directory for vehva %lx", vaddr);
-			ret = -EINVAL;
-			goto error;
-		}
-	}
-	/*
-	 * Setting DMAATB Directory entries
-	 */
-	pgoff = pgentry(vaddr, pgmod);
-
-	VEOS_DEBUG("psoff %lx pgoff %lx pgmod = %d type %d",
-		psoff, pgoff, pgmod, type);
-	pgd = &((dmaatb_reg_t *)pdt)->dir[dir_num];
-	pte = ((dmaatb_reg_t *)pdt)->entry[dir_num];
-
-	if (!ps_isvalid(pgd)) {
-		VEOS_DEBUG("pgd[%d] is invalid",
-				dir_num);
-		__validate_pgd(pdt, dir_num, psoff, jid, pgmod);
-	} else {
-		VEOS_DEBUG("pgd[%d] is valid", dir_num);
-	}
-
-	if (pg_isvalid(&pte[pgoff])) {
-		if (vehva_flag & VEHVA_MAP_FIXED) {
-			pg_unsetro(&pte[pgoff]);
-			pg_unsetido(&pte[pgoff]);
-			pg_unsetprot(&pte[pgoff]);
-			pg_unsettype(&pte[pgoff]);
-			pg_clearpfn(&pte[pgoff]);
-			pg_invalid(&pte[pgoff]);
-		} else {
-			VEOS_DEBUG("pte[%ld] is valid for addr(%lx)"
-					"with fixed map",
-					pgoff, vaddr);
-			ret =  -ENOMEM;
-			goto error;
-		}
-	}
-
-	VEOS_DEBUG("validate dma pte[%ld] with pgnum %ld", pgoff, pgno);
-	pg_setpb(&pte[pgoff], pgno, pgmod);
-	if (!((vaddr >= VEHVA_4K_START) &&
-				(vaddr < VEHVA_4K_END)))
-		hw_dma_map[dir_num].count++;
-	VEOS_DEBUG("dma map pgd[%d] count is %lu",
-			dir_num, hw_dma_map[dir_num].count);
-
-	pg_valid(&pte[pgoff]);
-
-	/* DMAATB use LCC. So bypass bit setting unnecessary. */
-	if (rw == 0)
-		pg_setprot(&pte[pgoff]);
-	else if (-1 == rw)
-		pg_invalid(&pte[pgoff]);
-
-	pg_setro(&pte[pgoff]);
-	pg_setido(&pte[pgoff]);
-	pg_settype(&pte[pgoff], type);
-
-	mm = (struct ve_mm_struct *)container_of(pdt,
-			struct ve_mm_struct, dmaatb);
-	dir_num = sync_node_dmaatb_dir(vaddr, mm, dir_num, jid);
-	if (0 > dir_num) {
-		VEOS_DEBUG("no page directory for vehva %lx", vaddr);
-		ret = dir_num;
-		goto error;
-	}
-	ret = dir_num;
-error:
-	return ret;
+	return (*_veos_arch_ops->arch_amm_validate_vehva)(vaddr,
+			rw, pgno, mm, pgmod, type, jid, vehva_flag, numa_node);
 }
 /**
 * @brief This function translate's the VE Virtual address
@@ -1174,7 +982,7 @@ vemaa_t __veos_virt_to_phy(vemva_t vaddr, atb_reg_t *atb,
 		*pgmod = pgmod_dir;
 
 	pgent = pgentry(vaddr, pgmod_dir);
-	pgoff = (reg_t)vaddr & ((pgmod_dir == PG_2M) ?
+	pgoff = (ve_reg_t)vaddr & ((pgmod_dir == PG_2M) ?
 			POFFMASK : POFFMASK_H);
 
 	if (!pg_isvalid(&(atb->entry[dir_num][pgent]))) {
@@ -1273,7 +1081,7 @@ dir_t invalidate_vemva(vemva_t vaddr, void *pdt)
 	uint64_t pgoff = 0;
 	dir_t dir_tsk = 0, dir_num = 0;
 	int pgmod = 0;
-	atb_entry_t *pte;
+	veos_atb_entry_t *pte;
 	struct ve_node_struct *vnode = VE_NODE(0);
 	int i = 0;
 
@@ -1333,107 +1141,9 @@ out:
 * @return On success it will return (DMATAB) directory number
 *	and negative of errno on failure.
 */
-dir_t invalidate_vehva(vemva_t vaddr, void *pdt, jid_t jid)
+dir_t invalidate_vehva(vehva_t vaddr, struct ve_mm_struct *mm, jid_t jid)
 {
-	uint64_t pgoff = 0;
-	pgno_t pb = 0;
-	int pg_type = 0;
-	vemaa_t vemaa = 0;
-	dir_t dir_tsk = 0, dir_num = 0;
-	int pgmod = 0;
-	atb_dir_t *pgd = NULL, *node_pgd = NULL;
-	atb_entry_t *pte, *node_pte = NULL;
-	struct ve_node_struct *vnode = VE_NODE(0);
-	int ret;
-
-	VEOS_TRACE("invoked");
-	VEOS_TRACE("vehva %lx for pdt %p",
-			vaddr, pdt);
-
-	if (jid < 0) {
-		VEOS_ERROR("Invalid jid %d", jid);
-		dir_num = -EINVAL;
-		return dir_num;
-	}
-
-	dir_num =  __get_pgd(vaddr, pdt, jid, false);
-	if ((dir_num < 0) && !((vaddr >= VEHVA_4K_START) &&
-					(vaddr < VEHVA_4K_END))) {
-		dir_num = -EINVAL;
-		VEOS_DEBUG("Error (%s) in getting pgd for vehva %lx",
-				strerror(dir_num), vaddr);
-		return dir_num;
-	} else if ((dir_num < 0)) {
-		dir_tsk = dir_num = 0;
-	} else {
-		if ((vaddr >= VEHVA_4K_START) &&
-				(vaddr < VEHVA_4K_END))
-			dir_tsk = 0;
-		else
-			dir_tsk = dir_num;
-		node_pgd = &vnode->dmaatb.dir[dir_num];
-		node_pte = vnode->dmaatb.entry[dir_num];
-	}
-
-	pgmod = ps_getpgsz(&((dmaatb_reg_t *)pdt)->dir[dir_tsk]);
-	pgoff = pgentry(vaddr, pgmod);
-
-	VEOS_DEBUG("%s VEHVA 0x%lx is mapped to pgoff %lx",
-			pgmod_to_pgstr(pgmod), vaddr, pgoff);
-
-	pgd = &((dmaatb_reg_t *)pdt)->dir[dir_tsk];
-	pte = ((dmaatb_reg_t *)pdt)->entry[dir_tsk];
-
-	if (!pg_isvalid(&pte[pgoff])) {
-		VEOS_DEBUG("Invalid pte %ld associated with vemva %lx",
-			pgoff, vaddr);
-		dir_num = -EINVAL;
-		goto out;
-	}
-
-	/* DMAATB use LCC. So bypass bit unsetting unnecessary. */
-	pg_unsetro(&pte[pgoff]);
-	pg_unsetido(&pte[pgoff]);
-	pg_unsettype(&pte[pgoff]);
-	pg_clearpfn(&pte[pgoff]);
-	pg_invalid(&pte[pgoff]);
-	pg_unsetprot(&pte[pgoff]);
-
-	if (node_pgd) {
-		pg_type = pg_gettype(&node_pte[pgoff]);
-		if (pg_type == VE_ADDR_VEMAA) {
-			VEOS_DEBUG("Decrementing pages ref count");
-			pb = pg_getpb(&node_pte[pgoff], pgmod);
-			vemaa = pbaddr(pb, pgmod);
-			VEOS_DEBUG("vemaa = 0x%lx", vemaa);
-			ret = amm_put_page(vemaa);
-			if ((ret < 0) && (ret != -EBUSY)) {
-				dir_num = -EINVAL;
-				goto out;
-			}
-		}
-
-		pg_unsetro(&node_pte[pgoff]);
-		pg_unsetido(&node_pte[pgoff]);
-		pg_invalid(&node_pte[pgoff]);
-		pg_unsetprot(&node_pte[pgoff]);
-		pg_unsettype(&node_pte[pgoff]);
-		pg_clearpfn(&node_pte[pgoff]);
-
-		if (!((vaddr >= VEHVA_4K_START) &&
-					(vaddr < VEHVA_4K_END))) {
-			hw_dma_map[dir_num].count--;
-			if (!hw_dma_map[dir_num].count) {
-				ps_clrdir(pgd);
-				ps_invalid(pgd);
-				ps_clrdir(node_pgd);
-				ps_invalid(node_pgd);
-			}
-		}
-	}
-out:
-	VEOS_TRACE("returned");
-	return dir_num;
+	return (*_veos_arch_ops->arch_amm_invalidate_vehva)(vaddr, mm, jid);
 }
 
 /**
@@ -1445,8 +1155,8 @@ out:
 void invalidate_pgd(atb_reg_t *atb, dir_t dir_num)
 {
 	int ent = 0;
-	atb_dir_t *pgd = NULL;
-	atb_entry_t *pte = NULL;
+	veos_atb_dir_t *pgd = NULL;
+	veos_atb_entry_t *pte = NULL;
 
 	VEOS_TRACE("invoked");
 	VEOS_TRACE("invalidate pgd %d for atb(%p)", dir_num, atb);
@@ -1455,7 +1165,7 @@ void invalidate_pgd(atb_reg_t *atb, dir_t dir_num)
 	pte = atb->entry[dir_num];
 
 	if (ps_isvalid(pgd)) {
-		for (ent = 0; ent < ATB_ENTRY_MAX_SIZE; ent++) {
+		for (ent = 0; ent < VEOS_ATB_ENTRY_MAX_SIZE; ent++) {
 			/* Check if page entries is valid */
 			if (pg_isvalid(&pte[ent]) ||
 					pg_getpb(&pte[ent], PG_2M))
@@ -1520,25 +1230,23 @@ int64_t replace_page(vemva_t vemva, struct ve_task_struct *tsk)
 	new_ve_page = VE_PAGE(vnode, new_pg);
 	new_ve_page->owner = tsk->group_leader;
 
-	for (i = 0; i < vnode->numa_count; i++) {
-		if (vnode->partitioning_mode == 1) {
-			pdt = &tsk->p_ve_mm->atb[i];
-			if (i > 0) {
-				/* Apply update of atb[0] by __replace_page() to atb[1]. */
-				pg_clearpfn(&(pdt->entry[dir_num][pgoff]));
-				pg_setpb(&(pdt->entry[dir_num][pgoff]), new_pg, PG_2M);
-			}
-			mp_num = (int)paddr2mpnum(pbaddr(new_pg, PG_2M),
-						numa_sys_info.numa_mem_blk_sz,
-						numa_sys_info.first_mem_node);
-			if (i != mp_num)
-				pg_setbypass(&(pdt->entry[dir_num][pgoff]));
-			else
-				pg_unsetbypass(&(pdt->entry[dir_num][pgoff]));
-		}
+	for (i = 1; i < vnode->numa_count; i++) {
+		pdt = &tsk->p_ve_mm->atb[i];
+		/* Apply update of atb[0] by __replace_page() to atb[1]. */
+		pg_clearpfn(&(pdt->entry[dir_num][pgoff]));
+		pg_setpb(&(pdt->entry[dir_num][pgoff]), new_pg, PG_2M);
 
+		if (vnode->partitioning_mode != 1)
+			continue;
+		mp_num = (int)paddr2mpnum(pbaddr(new_pg, PG_2M),
+				numa_sys_info.numa_mem_blk_sz,
+				numa_sys_info.first_mem_node);
+		if (i != mp_num)
+			pg_setbypass(&(pdt->entry[dir_num][pgoff]));
+		else
+			pg_unsetbypass(&(pdt->entry[dir_num][pgoff]));
 	}
-	if(0 == psm_sync_hw_regs(tsk, _ATB, true, -1, 1))
+	if(0 == psm_sync_hw_regs_atb(tsk, true, -1, 1, tsk->atb_dirty | (1UL << dir_num)))
         {
                 VEOS_DEBUG("Syncing ATB");
                 if(-1 == veos_update_atb(tsk->core_set, &dir_num, 1, tsk))
@@ -1563,7 +1271,7 @@ int64_t replace_page(vemva_t vemva, struct ve_task_struct *tsk)
 */
 void validate_pgd(atb_reg_t *atb, dir_t dir, int psnum, int pgmod)
 {
-	__validate_pgd((void *)atb, dir, psnum, -1, pgmod);
+	__validate_pgd(atb, dir, psnum, pgmod);
 	return;
 }
 
@@ -1576,10 +1284,10 @@ void validate_pgd(atb_reg_t *atb, dir_t dir, int psnum, int pgmod)
 * @param[in] jid JID of VE process.
 * @param[in] pgmod page mode.
 */
-void validate_dmapgd(dmaatb_reg_t *dmaatb,
+void validate_dmapgd(veos_dmaatb_reg_t *dmaatb,
 		dir_t dir_num, int psnum, int jid, int pgmod)
 {
-	__validate_pgd((void *)dmaatb, dir_num, psnum, jid, pgmod);
+	__validate_dmapgd(dmaatb, dir_num, psnum, jid, pgmod);
 	return;
 }
 
@@ -1598,17 +1306,18 @@ int __veos_get_pgmode(uint8_t type, struct ve_task_struct *tsk, uint64_t vaddr)
 	int ret = 0;
 	dir_t dir_num = 0;
 	uint64_t pgoff = 0;
-	atb_entry_t *pte = NULL;
+	veos_atb_entry_t *pte = NULL;
 
 	VEOS_TRACE("invoked");
 	VEOS_DEBUG("invoked to get tsk:pid(%d) addr %lx with type %x",
 			tsk->pid, vaddr, type);
 
-	void *dt = (type == VE_ADDR_VEMVA) ? (void *)&tsk->p_ve_mm->atb[0] :
-		(void *)&tsk->p_ve_mm->dmaatb;
-	int jid = (type == VE_ADDR_VEMVA) ?  -1 : tsk->jid;
+	if (type != VE_ADDR_VEMVA) {
+		veos_abort("unexpectec address type %d", (int)type);
+	}
+	void *dt = (void *)&tsk->p_ve_mm->atb[0];
 
-	dir_num = __get_pgd(vaddr, dt, jid, false);
+	dir_num = __get_pgd(vaddr, dt, -1, false);
 	if (0 > dir_num) {
 		ret = -EINVAL;
 		VEOS_DEBUG("Error (%s) in getting pgd for vemva %lx",
@@ -1616,16 +1325,13 @@ int __veos_get_pgmode(uint8_t type, struct ve_task_struct *tsk, uint64_t vaddr)
 		goto out;
 	}
 
-	ret = (type == VE_ADDR_VEMVA) ? ps_getpgsz(&((atb_reg_t *)dt)->
-			dir[dir_num]) : ps_getpgsz(&((dmaatb_reg_t *)dt)->
-				dir[dir_num]);
-	pte = (0 > jid) ? ((atb_reg_t *)dt)->entry[dir_num] :
-		((dmaatb_reg_t *)dt)->entry[dir_num];
+	ret = ps_getpgsz(&((atb_reg_t *)dt)-> dir[dir_num]);
+	pte = ((atb_reg_t *)dt)->entry[dir_num];
 
 	pgoff = pgentry(vaddr, ret);
 
 	if (!pg_isvalid(&pte[pgoff])) {
-		if ((0 > jid) && pg_getpb(&pte[pgoff], PG_2M)) {
+		if (pg_getpb(&pte[pgoff], PG_2M)) {
 			goto out;
 		} else {
 			VEOS_DEBUG("Invalid pte %ld associated with vemva %lx",
@@ -1680,9 +1386,15 @@ int veos_get_pgmode(uint8_t type, pid_t pid, uint64_t vaddr)
 
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
-	ret = __veos_get_pgmode(type, tsk, vaddr);
+	if (type == VE_ADDR_VEHVA) {
+		ret = ((*_veos_arch_ops->arch_amm_veos_get_pgmode_vehva)
+							(tsk, vaddr));
+	} else {
+		ret = __veos_get_pgmode(type, tsk, vaddr);
+	}
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock,
 			UNLOCK, "Failed to release thread-group-mm-lock");
+	VEOS_DEBUG("page mode is (ret) %d, vaddr is 0x%lx", ret, vaddr);
 
 	put_ve_task_struct(tsk);
 	VEOS_TRACE("exiting");
@@ -1699,7 +1411,7 @@ int veos_get_pgmode(uint8_t type, pid_t pid, uint64_t vaddr)
 *
 * @return on success return new page number and negative of errno on failure.
 */
-pgno_t __replace_page(atb_entry_t *pte, struct ve_mm_struct *mm, int numa_node)
+pgno_t __replace_page(veos_atb_entry_t *pte, struct ve_mm_struct *mm, int numa_node)
 {
 	int mempolicy = mm->mem_policy;
 	ret_t ret = 0, shmrm = 0, found = 0;

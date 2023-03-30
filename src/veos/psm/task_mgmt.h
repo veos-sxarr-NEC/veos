@@ -35,11 +35,10 @@
 #include "stdbool.h"
 #include "veos.h"
 #include "ve_list.h"
-#include "ve_hw.h"
 #include "libved.h"
-#include "cr_api.h"
-#include "sys/time.h"
+//#include "cr_api.h"
 #include "mm_type.h"
+#include "comm_request.h"
 #include "psm_defs.h"
 
 #define VE_MVL 256
@@ -66,9 +65,6 @@
 #define VE_PROC_PRIORITY_MAX		0
 #define VE_PROC_PRIORITY_MIN		0
 
-#define VE_ACCT_VERSION		3
-#define NEW_VE_ACCT_VERSION	14
-
 #define MAX_SWAP_PROCESS 256
 
 /**
@@ -89,12 +85,13 @@
  * context of user registers of processes.
  */
 #define MAX_SR 64
-#define PMR_CONTEXT_LOOP 22
 #define PMR_CONTEXT_PSW 0
 #define PMR_CONTEXT_PMRR 1
 #define PMR_CONTEXT_PMCR0 2
 #define PMR_CONTEXT_PMCR3 5
 #define PMR_CONTEXT_PMCR4 6
+#define PMR_CONTEXT_PMC16 22
+#define PROGINF_VERSION 1
 /**
  * This macro will check if bit of bitmap is set or not.
  */
@@ -265,65 +262,28 @@ enum acct_data {
 #define PMMR_MASK	0xFFFFFFFF
 #define PMMR_SHIFT	0xF000000000000000
 #define PMC_REG		16
-#define CHK_OVRFLW      0x00ffffffffffffff
 
 /**
- * @brief Accouting structure to dump on an accountiing file.
+ * @brief Additional proginf information
  */
-struct ve_acct {
-	/* Existing accounting fields(VE Specific) as per v3 */
-	char            ac_flag;                /*!< Flags */
-	char            ac_version;             /*!< Always set to ACCT_VERSION */
-	__u16           ac_tty;                 /*!< Control Terminal */
-	__u32           ac_exitcode;            /*!< Exitcode */
-	__u32           ac_uid;                 /*!< Real User ID */
-	__u32           ac_gid;                 /*!< Real Group ID */
-	__u32           ac_pid;                 /*!< Process ID */
-	__u32           ac_ppid;                /*!< Parent Process ID */
-	__u32           ac_btime;               /*!< Process Creation Time */
-	float           ac_etime;               /*!< Elapsed Time */
-	comp_t           ac_utime;               /*!< User Time */
-	comp_t           ac_stime;               /*!< System Time */
-	comp_t           ac_mem;                 /*!< Average Memory Usage */
-	comp_t           ac_io;                  /*!< Chars Transferred */
-	comp_t           ac_rw;                  /*!< Blocks Read or Written */
-	comp_t           ac_minflt;              /*!< Minor Pagefaults */
-	comp_t           ac_majflt;              /*!< Major Pagefaults */
-	comp_t           ac_swaps;               /*!< Number of Swaps */
-	char            ac_comm[ACCT_COMM];     /*!< Command Name */
-	/* Additional VE process accouting fields for accounting file. */
-	__u32           ac_sid;         /* session ID */
-	__u32           ac_timeslice;   /* timeslice [μs] */
-	__u16           ac_max_nthread;/* max number of thread */
-	__u16           ac_numanode;    /* the number of NUMA node */
-	double           ac_total_mem;   /* VE's total memory usage in clicks */
-	__u64           ac_maxmem;      /* VE's max memory usage [kb] */
-	__u64           ac_syscall;     /* the number of systemcall */
-	double           ac_transdata;   /* data transfer amount between VE-VH [kb] */
-	__u64           ac_ex;          /* Execution count */
-	__u64           ac_vx;          /* Vector execution count */
-	__u64           ac_fpec;        /* Floating point data element count */
-	__u64           ac_ve;          /* Vector elements count */
-	__u64           ac_l1lmc;       /* L1 instruction cache miss count */
-	__u64           ac_vecc;        /* Vector execution clock count */
-	__u64           ac_l1mcc;       /* L1 cache miss clock count */
-	__u64           ac_l2mcc;       /* L2 cache miss clock count */
-	__u64           ac_ve2;         /* Vector elements count 2 */
-	__u64           ac_varec;       /* Vector arithmetic execution clock count */
-	__u64           ac_l1lmcc;      /* L1 instruction cache miss clock count */
-	__u64           ac_vldec;       /* Vector load execution clock count */
-	__u64           ac_l1omcc;      /* L1 operand cache miss clock count */
-	__u64           ac_pccc;        /* Port conflict clock count */
-	__u64           ac_ltrc;        /* Load instruction traffic count */
-	__u64           ac_vldcc;       /* Vector load delayed clock count */
-	__u64           ac_strc;        /* Store instruction traffic count */
-	__u64           ac_vlec;        /* Vector load element count */
-	__u64           ac_vlcme;       /* Vector load cache miss element count */
-	__u64           ac_vlcme2;      /* Vector load cache miss element count 2 */
-	__u64           ac_fmaec;       /* Fused multiply add element count */
-	__u64           ac_ptcc;        /* Power throttling clock count */
-	__u64           ac_ttcc;        /* Thermal throttling clock count */
-
+struct ve_proginf_v1 {
+	unsigned long long ac_l1iac;       /* L1 instruction cache access count */
+	unsigned long long ac_l1omc;       /* L1 operand cache miss count */
+	unsigned long long ac_uxc;         /* User-specified instruction execution count */
+	unsigned long long ac_l1oac;       /* L1 operand cache access count */
+	unsigned long long ac_uec;         /* User-specified instruction element count */
+	unsigned long long ac_l2mc;        /* L2 cache miss count */
+	unsigned long long ac_l2ac;        /* L2 cache access count  */
+	unsigned long long ac_brec;        /* Branch execution count */
+	unsigned long long ac_sarcc;       /* Shared resource access clock count in microseconds*/
+	unsigned long long ac_bpfc;        /* Branch prediction failure count */
+	unsigned long long ac_iphcc;       /* Instruction pipeline hold clock count in microseconds*/
+	unsigned long long ac_vlxc;        /* Vector load instruction execution count */
+	unsigned long long ac_llvxc;       /* LLC vector load cache miss instruction
+					      execution count */
+	unsigned long long ac_llvxc2;      /* LLC vector load cache miss/miss
+					      on fill instruction execution count */
+	unsigned long long ac_fmaxc;       /* Fused multiply add execution count */
 };
 
 /**
@@ -334,7 +294,10 @@ struct pacct_struct {
 	__u32 ac_exitcode; /*!< task exit code passed to the exit system call */
 	unsigned long ac_mem; /*!< Memory usage */
 	cputime_t ac_utime; /*!< Time spend by the process while scheduled on VE core */
-	struct ve_acct acct_info;	/* VE task accounting information */
+	unsigned long long max_thread;
+	struct ve_acct *acct_info;	/* VE task accounting information */
+	struct ve_proginf_v1 ve_proginf; /* To store additional PMC values which do not
+					    exist for accounting */
 };
 
 /**
@@ -350,8 +313,8 @@ struct ve_core_struct {
 	int node_num; /*!< Node Id of this VE Core*/
 	volatile int num_ve_proc; /*!< Number of VE process on this core */
 	volatile int nr_active; /*!< Number of active tasks on core */
-	core_user_reg_t *usr_regs_addr; /*!< Core user registers */
-	core_system_reg_t *sys_regs_addr; /*!< Core system registers */
+	vedl_user_reg_handle *usr_regs; /*!< Core user registers */
+	vedl_sys_reg_handle *sys_regs; /*!< Core system registers */
 	pthread_rwlock_t ve_core_lock; /*!< Mutex Lock for per core while ADD/DEL of a VE task */
 	volatile enum context_switch scheduling_status; /*!< VE core scheduling status */
 	uint64_t busy_time; /*!< Core execution time */
@@ -362,6 +325,9 @@ struct ve_core_struct {
 	uint64_t nr_switches; /*!< Number of context switches on core */
 	sem_t core_sem; /* Semaphore for performing scheduling on core */
 	int numa_node; /* !< NUMA node to which this core belongs. */
+        uint64_t pwr_throttle_cnt;/*Power throttle counter*/
+        uint64_t current_PMC14;/*Current value of register PMC14*/
+        uint64_t previous_PMC14;/*Previous value of register PMC14*/
 };
 
 /**
@@ -401,14 +367,7 @@ struct ve_sigqueue {
 	siginfo_t info;		/*!< Stores signal information */
 };
 
-/**
-* @brief User DMA structure
-*/
-struct ve_udma {
-	dma_desc_t dmades[2][DMA_DSCR_ENTRY_SIZE];	 /*!< DMA descriptor table */
-	dma_control_t dmactl[2];	/*!< DMA control register */
-};
-
+struct ve_udma;
 
 /**
  * VE process flags.
@@ -432,13 +391,19 @@ struct ve_ptrace_info {
 	uint64_t ptrace_message;/*!< Ptrace event message */
 };
 
+struct ve_thread_struct {
+	uint64_t EXS;
+	void *arch_user_regs;
+};
+
 /**
  * @brief VE process task struct
  */
 struct ve_task_struct {
 	int *thread_sched_count; /*!< Number of threads in thread group currently scheduled on core*/
 	uint64_t *thread_sched_bitmap;
-	bool atb_dirty;
+	uint64_t atb_dirty;
+	uint64_t *thread_core_bitmap;	/*!< Core bitmap to get ac_corebitmap for process accounting */
 	bool crd_dirty;
 	bool invalidate_branch_history; /*! True, do. False, no need */
 	int32_t *core_dma_desc; /*!< Core ID to be assigned to the task */
@@ -463,7 +428,7 @@ struct ve_task_struct {
 	enum swap_status sstatus; /*!< Process sub-status of STOP status */
 	struct ve_core_struct *p_ve_core; /*!< Pointer to VE core this task is assigned */
 	struct ve_task_struct *next; /*!< Pointer to next ve_task on this Core */
-	core_user_reg_t *p_ve_thread; /*!< VE core related information and state of this task */
+	struct ve_thread_struct *p_ve_thread; /*!< VE core related information and state of this task */
 	bool reg_dirty; /*!< register dirty or not */
 	struct ve_mm_struct *p_ve_mm; /*!< VE Pages required for this process on VE */
 	struct ve_task_struct *parent; /*!< Pointer to its VE parent process */
@@ -549,8 +514,8 @@ struct ve_task_struct {
 	pid_t tgid;		/*!< VE process's thread group ID */
 	pid_t sid;		/*!< VE process's session ID */
 	unsigned short tty;		/*!< VE process's tty ID */
-	uint64_t initial_pmc_pmmr[16];	/* initial PMC/PMMR counter register values */
-	uint64_t pmc_pmmr[16];		/* updated PMC/PMMR counter register */
+	uint64_t *initial_pmc_pmmr;	/* initial PMC/PMMR counter register values */
+	uint64_t *pmc_pmmr;		/* updated PMC/PMMR counter register */
 	int zombie_partial_cleanup;	/* Zombie VE process cleanup state */
 	uint64_t core_set;		/* Set of core where ATB update is needed */
 	bool ve_set_next_thread_worker;         /* Flag to indicate that create the next thread as worker */
@@ -558,6 +523,8 @@ struct ve_task_struct {
 	bool ve_task_worker_belongs_chg;          /* Flag to change parent thread of worker */
 	bool ve_task_have_worker;               /* Flag whether it have worker thread */
 	struct ve_task_struct *ve_worker_thread; /* Pointer to worker thread */
+	bool vlfa_wait;		/*!< for VE3 hardware issue */
+	cpu_set_t job_scheduler_cpus_allowed;	/* cpu affinity mask as allowed by job scheduler */
 	enum VE_SCHED_STATE ve_sched_state; /* Flag whether it should be removed from scheduling */
 };
 
@@ -588,6 +555,62 @@ struct halt_ve_cores_info {
 	int flag; /*!< Flag if 1 indicate single core also 0 multiple */
 };
 
+/* Data structure for PROGINF */
+struct proginf_v1 {
+	short              version;        /* Always set to PROGINF_VERSION */
+	short              arch;           /* Architecuture VE1:0, VE3:1 */
+	unsigned int       padding_1[3];
+	unsigned long long ac_ex;          /* Execution count */
+	unsigned long long ac_vx;          /* Vector execution count */
+	unsigned long long ac_fpec;        /* Floating point data element count */
+	unsigned long long ac_ve;          /* Vector elements count */
+	unsigned long long ac_l1imc;       /* L1 instruction cache miss count */
+	unsigned long long ac_vecc;        /* Vector execution in microseconds */
+	unsigned long long ac_l1iac;       /* L1 instruction cache access count */
+	unsigned long long ac_l1mcc;       /* L1 cache miss in microseconds */
+	unsigned long long ac_l2mcc;       /* L2 cache miss in microseconds */
+	unsigned long long ac_l1omc;       /* L1 operand cache miss count */
+        unsigned long long ac_uxc;         /* User-specified instruction execution count */
+	unsigned long long ac_ve2;         /* Vector elements count 2 */
+	unsigned long long ac_l1oac;       /* L1 operand cache access count */
+        unsigned long long ac_uec;         /* User-specified instruction element count */
+	unsigned long long ac_varec;       /* Vector arithmetic execution in microseconds */
+	unsigned long long ac_l1imcc;      /* L1 instruction cache miss in microseconds */
+	unsigned long long ac_l2mc;        /* L2 cache miss count */
+	unsigned long long ac_vldec;       /* Vector load execution in microseconds */
+	unsigned long long ac_l1omcc;      /* L1 operand cache miss in microseconds */
+	unsigned long long ac_l2ac;        /* L2 cache access count  */
+	unsigned long long ac_pccc;        /* Port conflict in microseconds */
+	unsigned long long ac_ltrc;        /* Load instruction traffic count */
+	unsigned long long ac_brec;        /* Branch execution count */
+        unsigned long long ac_sarcc;       /* Shared resource access clock count in microseconds*/
+	unsigned long long ac_vlpc;       /* Vector load packet count */
+	unsigned long long ac_strc;        /* Store instruction traffic count */
+	unsigned long long ac_bpfc;        /* Branch prediction failure count */
+        unsigned long long ac_iphcc;       /* Instruction pipeline hold clock count in microseconds*/
+	unsigned long long ac_vlec;        /* Vector load element count */
+	unsigned long long ac_vlxc;        /* Vector load instruction execution count */
+	unsigned long long ac_llvml;       /* LLC vector load cache fill line count */
+	unsigned long long ac_llvme;       /* LLC vector load cache miss element count */
+	unsigned long long ac_llvxc;       /* LLC vector load cache miss instruction
+                                              execution count */
+        unsigned long long ac_llvxc2;      /* LLC vector load cache miss/miss
+                                              on fill instruction execution count */
+	unsigned long long ac_fmaec;       /* Fused multiply add element count */
+	unsigned long long ac_fmaxc;       /* Fused multiply add execution count */
+	unsigned long long ac_ptcc;        /* Power throttling in microseconds */
+	unsigned long long ac_ttcc;        /* Thermal throttling in microseconds */
+	unsigned long long ac_corebitmap;  /* core bitmap */
+	unsigned long long ac_max_nthread; /* Maximum number of threads whose
+					      state are  "RUNNING" or "WAIT"  at
+					      the same time */
+	unsigned long long ac_l3vsac;      /* VLD+SLD elements accessing L3 count */
+	unsigned long long ac_l3vsme;      /* L3 VLD+SLD miss-hit element count */
+	unsigned long long ac_l3vsml;      /* L3 VLD+SLD miss-hit cache line count */
+	unsigned long long ac_llvsme;      /* LLC miss-hit element count */
+	unsigned long long ac_llvsml;      /* LLC miss-hit cache line count */
+	unsigned long long padding_2[2];
+};
 
 /**
 * @brief Check if task is thread group leader
@@ -644,10 +667,11 @@ int get_ve_task_struct_zombie(struct ve_task_struct *);
 void put_ve_task_struct(struct ve_task_struct *);
 void set_state(struct ve_task_struct *);
 struct ve_task_struct *alloc_ve_task_struct_node(void);
-core_user_reg_t *alloc_ve_thread_struct_node(void);
+struct ve_thread_struct *alloc_ve_thread_struct_node(void);
+void free_ve_thread_struct(struct ve_thread_struct *);
 struct sighand_struct *alloc_ve_sighand_struct_node(void);
 struct ve_task_struct current;
-int update_ve_thread_node(struct ve_context_info *, core_user_reg_t *);
+int update_ve_thread_node(const struct ve_context_info *, struct ve_thread_struct *);
 int psm_handle_start_ve_request(struct veos_thread_arg *, int);
 int psm_handle_block_request(pid_t);
 int psm_handle_un_block_request(struct ve_task_struct *, bool, bool);
@@ -670,9 +694,8 @@ int psm_handle_do_acct_ve(char *);
 void psm_acct_collect(int, struct ve_task_struct *);
 void veos_acct_ve_proc(struct ve_task_struct *);
 int alloc_ve_task_data(struct ve_task_struct *);
-int amm_init_dmaatb(dmaatb_reg_t *);
-int psm_handle_set_reg_req(struct ve_task_struct *, usr_reg_name_t, reg_t, int64_t);
-void psm_st_rst_context(struct ve_task_struct *, reg_t *, reg_t *, bool);
+int psm_handle_set_reg_req(struct ve_task_struct *, ve_usr_reg_name_t, ve_reg_t, int64_t);
+void psm_st_rst_context(struct ve_task_struct *, ve_reg_t *, ve_reg_t *, bool);
 void psm_set_task_state(struct ve_task_struct *, enum proc_state);
 void psm_do_process_cleanup(struct ve_task_struct *, struct ve_task_struct *, int);
 int psm_get_regval(struct ve_task_struct *, int, int *, uint64_t *);
@@ -689,7 +712,15 @@ void psm_delete_zombie_task(struct ve_task_struct *);
 struct ve_task_struct*  checkpid_in_zombie_list(int pid);
 int psm_change_parent_ve_task_worker(struct ve_task_struct *, struct ve_task_struct *);
 int64_t psm_handle_set_next_thread_worker_request(pid_t);
+int psm_handle_set_cpu_mask_request(pid_t pid, cpu_set_t ve_mask);
 int64_t psm_handle_stop_user_threads_request(pid_t);
 int64_t psm_handle_start_user_threads_request(pid_t);
 int64_t psm_handle_get_user_threads_state_request(pid_t);
+uint64_t psm_current_run_wait_thread_count(struct ve_task_struct *);
+void psm_max_run_wait_thread_count(struct ve_task_struct *, uint64_t);
+void get_performance_register_for_proginf(struct ve_task_struct *, struct proginf_v1 *);
+void collect_proginf_data(struct ve_task_struct *, struct proginf_v1 *);
+comp_t veos_encode_comp_t(unsigned long long);
+unsigned long long veos_usec_to_AHZ(unsigned long long);
+int alloc_pmc_pmmr(struct ve_task_struct *);
 #endif

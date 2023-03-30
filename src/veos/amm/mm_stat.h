@@ -45,5 +45,5 @@ bool check_flag(vemva_t, uint64_t, struct ve_mm_struct *);
 int veos_numa_meminfo(struct velib_meminfo *, size_t);
 int veos_get_mempolicy(struct ve_task_struct *);
 int veos_set_mempolicy(struct ve_task_struct *, int);
-
+int veos_get_dma_space_swappable_size(struct ve_task_struct *, unsigned long *);
 #endif

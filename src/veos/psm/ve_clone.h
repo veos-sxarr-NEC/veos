@@ -1,5 +1,5 @@
 /**
-* Copyright (C) 2017-2018 NEC Corporation
+* Copyright (C) 2017-2020 NEC Corporation
 * This file is part of the VEOS.
 *
 * The VEOS is free software; you can redistribute it and/or
@@ -31,14 +31,12 @@
 #define REQUEST_FOR_PROCESS_SHARED	1
 #define REQUEST_FOR_PROCESS_PRIVATE	2
 
-/* Setting last 6 bits of PEF to 0 by bitwise &*/
-#define PSW_PEF_RST		(~0x3f)
 
 #define task_thread_info(task)  ((struct thread_info *)(task)->stack)
 #define task_stack_page(task)   ((task)->stack)
 
 int arch_dup_ve_task_struct(struct ve_task_struct *, struct ve_task_struct *);
-int arch_dup_ve_thread_struct(core_user_reg_t *, core_user_reg_t *);
+int arch_dup_ve_thread_struct(struct ve_thread_struct *, const struct ve_thread_struct *);
 struct ve_thread_struct *alloc_ve_thread_info_node();
 struct ve_task_struct *dup_ve_task_struct(struct ve_task_struct *);
 int copy_ve_mm(struct ve_task_struct *, unsigned long,

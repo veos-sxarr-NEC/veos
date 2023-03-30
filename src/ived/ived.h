@@ -109,7 +109,7 @@ struct veos_info{
 	pid_t	os_pid;
 	int	node_stat;		/*!< VEOS status (running|stop) */
 	uint64_t bar01_paddr;		/*!< start address of bar01 */
-	uint64_t bar3_paddr;		/*!< start address of bar3 */
+	uint64_t bar_cr_paddr;		/*!< start address of bar CR */
 	uint64_t pciatb_pgsize;		/*!< PCIATB page size in byte */
 	char	*drv_socket_name;	/*!< Device name corresponding to a VEOS */
 	int	veos_sock;		/*!< Socket of VEOS for IVED request */

@@ -54,7 +54,7 @@ ret_t ve_cr(veos_handle *handle, uint64_t *args)
 	ProtobufCBinaryData bin_data;
 	PseudoVeosMessage *reply_msg = NULL;
 	struct cr_args cr_args;
-	reg_t retval = 0;
+	ret_t retval = 0;
 	int ret;
 
 	cr_args.subcmd = args[0];

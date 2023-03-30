@@ -13,6 +13,7 @@ libvepps_a_CFLAGS = \
 
 libvepps_a_CPPFLAGS = \
 	-I@prefix@/include \
+	-I$(srcdir)/.. \
 	-I$(srcdir)/../main \
 	-I$(srcdir)/../amm \
 	-I$(srcdir)/../psm \

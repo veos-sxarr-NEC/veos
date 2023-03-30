@@ -39,7 +39,8 @@
 							4K page mode*/
 #define VEHVA_2MB       ((uint64_t)1 << 4)	/*!< PAGE MODE for VESHM 2MB*/
 #define VEHVA_64MB      ((uint64_t)1 << 5)	/*!< PAGE MODE for VESHM 64MB*/
-#define VEHVA_4K	((uint64_t)1 << 6)	/*!< PAGE MODE for VESHM 64MB*/
+#define VEHVA_256MB	((uint64_t)1 << 12)	/*!< PAGE MODE for VESHM 256MB*/
+#define VEHVA_4K	((uint64_t)1 << 6)	/*!< PAGE MODE for VESHM 4KB*/
 
 #define VEHVA_DMA_CNT_REG ((uint64_t)1 << 7)	/*!< vehva for DMA control
 							register */
@@ -51,8 +52,7 @@
 							table H*/
 
 /*VEHVA Layout*/
-#define VEHVA_4K_START		0x000000000000	/*!< Start of 4K region*/
-#define VEHVA_4K_END		0x000003ffffff	/*!< End of 4K region*/
+/* TODO: architecture dependent */
 #define VEVHA_SYS_COM_START	0x000000001000	/*!< Start of system commmon
 							register region.*/
 #define VEVHA_SYS_COM_END	0x000000002fff	/*!< End of system commmon
@@ -69,10 +69,6 @@
 							table region of H */
 #define DMA_DESC_H_END		0x000000005fff	/*!< End of DMA descriptor
 							table region of H */
-#define VEHVA_2M_START		0x008800000000	/*!< Start of 2M region*/
-#define VEHVA_2M_END		0x008fffffffff	/*!< End of 2M region*/
-#define VEHVA_64M_START		0x070000000000	/*!< Start of 64M region*/
-#define VEHVA_64M_END		0x07ffffffffff	/*!< End of 64M region*/
 #define VEHVA_DIR0_END		0x0000000fffff	/*!< END of 4K region*/
 
 /* Conversion macros */
@@ -91,7 +87,6 @@
 #define CR_END_ENTRY		255
 
 #define VESHM_START_ENTRY	0
-#define VESHM_END_ENTRY		(DMAATB_ENTRY_MAX_SIZE*DMAATB_DIR_NUM)
 /**
 * @brief This flag is used to specify,
 * if bits have to be marked in VEHVA handling or not.

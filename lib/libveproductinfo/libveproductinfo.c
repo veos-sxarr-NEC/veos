@@ -41,10 +41,13 @@
 #include "productinfo.h"
 #include "sysve_os.h"
 
-#define CORRESPOND_TABLE "/etc/opt/nec/ve/mmm/info/ve_hw_spec.yaml"
+#define VE1_CORRESPOND_TABLE "/etc/opt/nec/ve/mmm/info/ve_hw_spec.yaml"
+#define VE3_CORRESPOND_TABLE "/etc/opt/nec/ve3/mmm/info/ve3_hw_spec.yaml"
 
 /* About 3 times "ve<model>_<type>" string */
 #define MODEL_TYPE_SIZE 20
+/* About 2 times CORRESPOND_TABLE string */
+#define CORRESPOND_TABLE_SIZE 60
 
 /**
  * @brief This function gets VE product neme from VE model, type and a correspondence table.
@@ -79,7 +82,7 @@ int get_ve_product_name(char *model, char *type, char *buffer, size_t size)
 	int ret = 0;
 	int fd = -1;
 	ssize_t count = 0;
-	const char *filepath = CORRESPOND_TABLE;
+	char *filepath = NULL;
 	char *tmp_buffer = NULL;
 	char *ve_model_type = NULL;
 	char *p, *adr, *saveptr;
@@ -103,10 +106,39 @@ int get_ve_product_name(char *model, char *type, char *buffer, size_t size)
 	}
 	memset(ve_model_type, '\0', sizeof(char)*MODEL_TYPE_SIZE);
 
-	fd = open(filepath, O_RDONLY | O_NOFOLLOW);
+	/* type & model newline character rewriting */
+	p = strchr(type, '\n');
+	if (p != NULL) {
+		*p = '\0';
+	}
+
+	p = strchr(model, '\n');
+	if(p != NULL) {
+		*p = '\0';
+	}
+
+	/* Preparation search word */
+	strncat(ve_model_type, "ve", 3);
+	strncat(ve_model_type, model, (MODEL_TYPE_SIZE-5)/2);
+	strncat(ve_model_type, "_", 2);
+	strncat(ve_model_type, type, (MODEL_TYPE_SIZE-5)/2);
+	strncat(ve_model_type, ":", 2);
+
+	/* About 2 times CORRESPOND_TABLE string */
+	filepath = (char*)malloc(sizeof(char)*CORRESPOND_TABLE_SIZE);
+	if (filepath == NULL) {
+		ret = -ENOMEM;
+		goto hndl_return;
+	}
+	memset(filepath, '\0', sizeof(char)*CORRESPOND_TABLE_SIZE);
+
+	/* VE1_CORRESPOND_TABLE */ 
+	fd = open(VE1_CORRESPOND_TABLE, O_RDONLY | O_NOFOLLOW);
 	if (fd < 0) {
 		ret = -ENOENT;
 		goto hndl_return;
+	} else {
+		strncpy(filepath, VE1_CORRESPOND_TABLE, CORRESPOND_TABLE_SIZE-1);
 	}
 
 	if (stat(filepath, &stat_buffer) != 0) {
@@ -120,31 +152,47 @@ int get_ve_product_name(char *model, char *type, char *buffer, size_t size)
 		goto hndl_close;
 	}
 	memset(tmp_buffer, '\0', stat_buffer.st_size + 1);
-
+	
 	count = read(fd, tmp_buffer, stat_buffer.st_size);
 	if (count < 0) {
 		ret = -ENOENT;
 		goto hndl_close;
 	}
 
-	p = strchr(type, '\n');
-	if(p != NULL)
-	{
-		*p = '\0';
+	adr = strstr(tmp_buffer, "product_info:");
+	if (adr == NULL) {
+		ret = -ENODEV;
+		goto hndl_close;
+	}
+	adr = strstr(adr, ve_model_type);
+	if (adr != NULL) {
+		adr = strstr(adr, "name: ");
+		adr = strtok_r(adr, "\n", &saveptr);
+		/* The meaning of "+6" is to skip "name: " in "name: xxxxxx". */
+		strncpy(buffer, adr+6, size/sizeof(char)-1);
+		goto hndl_close;
+	}
+	
+	if (close(fd) != 0) {
+		ret = -errno;
+		goto hndl_return;
 	}
 
-	p = strchr(model, '\n');
-	if(p != NULL)
-	{
-		*p = '\0';
+	/* VE3_CORRESPOND_TABLE */
+	fd = open(VE3_CORRESPOND_TABLE, O_RDONLY | O_NOFOLLOW);
+        if (fd < 0) {
+		ret = -ENOENT;
+		goto hndl_return;
+	} else {
+		strncpy(filepath, VE3_CORRESPOND_TABLE, CORRESPOND_TABLE_SIZE-1);
 	}
 
-	strncat(ve_model_type, "ve", 3);
-	strncat(ve_model_type, model, (MODEL_TYPE_SIZE-5)/2);
-	strncat(ve_model_type, "_", 2);
-	strncat(ve_model_type, type, (MODEL_TYPE_SIZE-5)/2);
-	strncat(ve_model_type, ":", 2);
-
+	count = read(fd, tmp_buffer, stat_buffer.st_size);
+	if (count < 0) {
+		ret = -ENOENT;
+		goto hndl_close;
+	}
+	
 	adr = strstr(tmp_buffer, "product_info:");
 	if (adr == NULL) {
 		ret = -ENODEV;
@@ -157,7 +205,6 @@ int get_ve_product_name(char *model, char *type, char *buffer, size_t size)
 	}
 	adr = strstr(adr, "name: ");
 	adr = strtok_r(adr, "\n", &saveptr);
-
 	/* The meaning of "+6" is to skip "name: " in "name: xxxxxx". */
 	strncpy(buffer, adr+6, size/sizeof(char)-1);
 
@@ -168,6 +215,8 @@ hndl_close:
 
 hndl_return:
 	free(ve_model_type);
+	free(filepath);
 	free(tmp_buffer);
 	return ret;
 }
+

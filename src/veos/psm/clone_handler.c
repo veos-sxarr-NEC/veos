@@ -31,17 +31,17 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/shm.h>
-#include "ve_hw.h"
+
 #include "task_mgmt.h"
 #include "ve_clone.h"
-#include "mm_common.h"
 #include "task_signal.h"
 #include "velayout.h"
-#include "veos_ived.h"
 #include "task_sched.h"
 #include "ve_mem.h"
 #include "cr_api.h"
 #include "locking_handler.h"
+
+#include <veos_arch_defs.h>
 
 /**
  * @brief Updates task thread_struct based on values received from
@@ -55,8 +55,8 @@
  * @internal
  * @author PSMG / MP-MT
  */
-int update_ve_thread_node(struct ve_context_info *context_info,
-			core_user_reg_t *thread_struct)
+int update_ve_thread_node(const struct ve_context_info *context_info,
+			struct ve_thread_struct *thread_struct)
 {
 	int retval = -1;
 
@@ -67,17 +67,10 @@ int update_ve_thread_node(struct ve_context_info *context_info,
 		goto hndl_return;
 	}
 
-	VEOS_DEBUG("\tIC: %lx SP: %lx SZ: %lx",
-			context_info->IC,
-			context_info->SP, context_info->SZ);
+	/* set program counter, stack pointer and frame pointer */
+	(*_veos_arch_ops->arch_psm_update_thread_struct)(thread_struct->arch_user_regs,
+						context_info);
 
-	thread_struct->IC = context_info->IC;
-	thread_struct->SR[8] = context_info->SZ;
-	thread_struct->SR[11] = context_info->SP;
-	thread_struct->SR[01] = 0;
-
-	/* Set arithmetic mode to nearest even*/
-	SET_ARITHMETIC_MODE(thread_struct, PSW_AM_RN)
 	retval = 0;
 
 hndl_return:
@@ -128,7 +121,8 @@ hndl_return:
  * @internal
  * @author PSMG / MP-MT
  */
-int arch_dup_ve_thread_struct(core_user_reg_t *dst, core_user_reg_t *src)
+int arch_dup_ve_thread_struct(struct ve_thread_struct *dst,
+				const struct ve_thread_struct *src)
 {
 	int retval = -1;
 
@@ -138,8 +132,9 @@ int arch_dup_ve_thread_struct(core_user_reg_t *dst, core_user_reg_t *src)
 		VEOS_ERROR("NULL argument received");
 		goto hndl_return;
 	}
-
-	*dst = *src;
+	dst->EXS = src->EXS;
+	(*_veos_arch_ops->arch_psm_copy_user_regs_in_thread_struct)(
+				dst->arch_user_regs, src->arch_user_regs);
 	retval = 0;
 
 hndl_return:
@@ -161,6 +156,7 @@ hndl_return:
 struct ve_task_struct *dup_ve_task_struct(struct ve_task_struct *current)
 {
 	struct ve_task_struct *task = NULL;
+	int retval = -1;
 
 	VEOS_TRACE("Entering");
 
@@ -183,11 +179,19 @@ struct ve_task_struct *dup_ve_task_struct(struct ve_task_struct *current)
 		goto free_tsk_1;
 	}
 
+	/* Allocate memory for pmc_pmmr and initial_pmc_pmmr variables
+	 * of ve_task_struct */
+	retval = alloc_pmc_pmmr(task);
+	if (retval != 0) {
+		VEOS_ERROR("Failed to allocate memory for PMC PMMR");
+		goto free_tsk_1;
+	}
+
 	/* allocate ve_thread_struct structure */
 	task->p_ve_thread = alloc_ve_thread_struct_node();
 	if (!task->p_ve_thread) {
 		VEOS_ERROR("Failed to allocate memory to thread structure");
-		goto free_tsk_1;
+		goto free_pmc_pmmr;
 	}
 
 	if (0 != pthread_mutex_init(&(task->offset_lock), NULL)) {
@@ -198,7 +202,9 @@ struct ve_task_struct *dup_ve_task_struct(struct ve_task_struct *current)
 	VEOS_TRACE("Exiting");
 	return task;
 free_tsk_2:
-	free(task->p_ve_thread);
+	free_ve_thread_struct(task->p_ve_thread);
+free_pmc_pmmr:
+	(*_veos_arch_ops->arch_psm_free_pmc_pmmr)(task);
 free_tsk_1:
 	free(task);
 hndl_return:
@@ -264,7 +270,7 @@ int copy_ve_mm(struct ve_task_struct *current, unsigned long clone_flags,
 					REQUEST_FOR_PROCESS_SHARED,
 					current->numa_node);
 		new_tsk->p_ve_mm = mm;
-		new_tsk->atb_dirty = true;
+		new_tsk->atb_dirty = 0xffffffff;
 		new_tsk->crd_dirty = true;
 		retval = 0;
 		goto hndl_return;
@@ -313,7 +319,7 @@ int copy_ve_thread(struct ve_task_struct *current,
 {
 	int retval = -ENOMEM;
 	struct ve_task_struct *task_on_core = NULL;
-	reg_t pef_rst_mask = PSW_PEF_RST;
+	ve_reg_t pef_rst_mask = (*_veos_arch_ops->arch_psm_clear_PEF_in_PSW_mask)();
 	ve_dma_status_t dma_status = 0;
 	struct ve_node_struct *p_ve_node = NULL;
 	pid_t veos_pid = getpid();
@@ -336,10 +342,12 @@ int copy_ve_thread(struct ve_task_struct *current,
 		VEOS_DEBUG("Task %d is currently scheduled on core",
 				current->pid);
 		/* Fetching Register values using VE driver handle */
-		dma_status = ve_dma_xfer_p_va(p_ve_node->dh,  VE_DMA_VERAA, veos_pid,
-				PSM_CTXSW_CREG_VERAA(current->p_ve_core->phys_core_num),
-				VE_DMA_VHVA, veos_pid, (uint64_t)new_tsk->p_ve_thread,
-				PSM_CTXSW_CREG_SIZE);
+		dma_status = (*_veos_arch_ops
+				->arch_psm_save_context_from_core_reg)(
+					p_ve_node->dh,
+					current->p_ve_core->phys_core_num,
+					veos_pid,
+					new_tsk->p_ve_thread->arch_user_regs);
 		if (dma_status != VE_DMA_STATUS_OK) {
 			VEOS_ERROR("Failed to get the register values");
 			pthread_rwlock_lock_unlock(&(VE_CORE(current->node_id,
@@ -350,9 +358,16 @@ int copy_ve_thread(struct ve_task_struct *current,
 			goto hndl_return;
 		} else {
 			/*Setting PEF bits to 0 in child*/
-			new_tsk->p_ve_thread->PSW &= pef_rst_mask;
+			ve_reg_t oldpsw = (*_veos_arch_ops->
+				arch_psm_get_PSW_from_thread_struct)(
+					new_tsk->p_ve_thread->arch_user_regs);
+			(*_veos_arch_ops->arch_psm_set_PSW_on_thread_struct)(
+				new_tsk->p_ve_thread->arch_user_regs,
+				oldpsw & pef_rst_mask);
 			update_accounting_data(current, ACCT_TRANSDATA,
-					PSM_CTXSW_CREG_SIZE / (double)1024);
+				(*_veos_arch_ops
+					->arch_psm_get_context_size)() /
+					(double)1024);
 		}
 	} else {
 		VEOS_DEBUG("Copying parent's (%d) p_ve_thread",	current->pid);
@@ -371,20 +386,18 @@ int copy_ve_thread(struct ve_task_struct *current,
 		"Failed to release core lock");
 
 	if (clone_flags & CLONE_SETTLS)
-		new_tsk->p_ve_thread->SR[14] = new_tsk->p_ve_thread->SR[5];
+		(*_veos_arch_ops->arch_psm_set_child_tls_desc)(
+				new_tsk->p_ve_thread->arch_user_regs,
+				new_tsk->p_ve_thread->arch_user_regs);
 
 	if (sp)
-		new_tsk->p_ve_thread->SR[11] = sp;
+		(*_veos_arch_ops->arch_psm_set_stack_pointer_on_thread_struct)(
+				new_tsk->p_ve_thread->arch_user_regs, sp);
 
-	VEOS_DEBUG("IC : %lx \tSR08 : %lx\tSR11 : %lx\t"
-			"SR10 : %lx SR12 : %lx SR13 : %lx SR14: %lx",
-			new_tsk->p_ve_thread->IC,
-			new_tsk->p_ve_thread->SR[8],
-			new_tsk->p_ve_thread->SR[11],
-			new_tsk->p_ve_thread->SR[10],
-			new_tsk->p_ve_thread->SR[12],
-			new_tsk->p_ve_thread->SR[13],
-			new_tsk->p_ve_thread->SR[14]);
+	VEOS_DEBUG("IC : %lx",
+		(*_veos_arch_ops->
+			arch_psm_get_program_counter_from_thread_struct)(
+				new_tsk->p_ve_thread->arch_user_regs));
 	retval = 0;
 
 hndl_return:
@@ -448,6 +461,10 @@ int copy_ve_sighand(struct ve_task_struct *current,
 			sizeof(new_task->sighand->action));
 	memcpy(new_task->sighand->rlim, current->sighand->rlim,
 			sizeof(new_task->sighand->rlim));
+	if (!(clone_flags & CLONE_THREAD)) {
+		VEOS_DEBUG("Reinitialization for maximum threads");
+		(*_veos_arch_ops->arch_psm_reinitialize_acct)(new_task);
+	}
 
 	retval = 0;
 
@@ -542,9 +559,8 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 {
 	struct ve_task_struct *new_task = NULL;
 	struct ve_core_struct *p_ve_core = NULL;
-	reg_t regdata = 0;
+	ve_reg_t regdata = 0;
 	int retval = -1, ret = -1;
-	int i = 0;
 
 	VEOS_TRACE("Entering");
 
@@ -631,7 +647,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 		 "Failed to acquire core lock");
 	if (current->reg_dirty == true) {
 		psm_halt_ve_core(p_ve_core->node_num, p_ve_core->core_num,
-				&regdata, false);
+				&regdata, false, true);
 		psm_save_current_user_context(current);
 	}
 	pthread_rwlock_lock_unlock
@@ -639,8 +655,11 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 		 "Failed to release core lock");
 
 	/*copy parent's PMMR,PMC data to child process*/
-	for(i = 0; i < PMC_REG; i++)
-		new_task->initial_pmc_pmmr[i] = current->p_ve_thread->PMC[i];
+	//for(i = 0; i < PMC_REG; i++)
+	//	new_task->initial_pmc_pmmr[i] =
+	//		(*_veos_arch_ops->arch_get_parent_pmmr_pmc)(current->p_ve_thread->arch_user_regs, i);
+		// new_task->initial_pmc_pmmr[i] = current->p_ve_thread->arch_user_regs->PMC[i];
+	(*_veos_arch_ops->arch_psm_initialize_pmc)(new_task, current);
 
 	if (!(clone_flags & CLONE_THREAD)) {
 		VEOS_DEBUG("Setting private members in child to NULL");
@@ -658,8 +677,7 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 		new_task->ipc_sync = NULL;
 		new_task->thread_sched_count = NULL;
 		new_task->thread_sched_bitmap = NULL;
-		new_task->sighand->pacct.acct_info.ac_max_nthread = 0;
-		new_task->sighand->pacct.acct_info.ac_syscall = 0;
+		new_task->thread_core_bitmap = NULL;
 	}
 
 	if (clone_flags & CLONE_VFORK) {
@@ -706,8 +724,8 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 		new_task->group_leader = current->group_leader;
 		new_task->ipc_sync = new_task->group_leader->ipc_sync;
 		new_task->parent = current->parent;
-		new_task->p_ve_thread->SR[11] = stack_start;
-
+		(*_veos_arch_ops->arch_psm_set_stack_pointer_on_thread_struct)(
+			new_task->p_ve_thread->arch_user_regs, stack_start);
 	} else {
 
 		/*CR process dump file name*/
@@ -828,7 +846,8 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	/* Set return value registers for new_task
 	 * Set SR00 to "0" as new process gets return value as "0"
 	 */
-	new_task->p_ve_thread->SR[0] = 0;
+	(*_veos_arch_ops->arch_psm_set_retval_on_thread_struct)(
+			new_task->p_ve_thread->arch_user_regs, 0);
 	new_task->p_ve_thread->EXS = 0;
 	fork_info->offset = new_task->offset;
 
@@ -897,7 +916,7 @@ free_new_task:
 		VEOS_DEBUG("Failed to destroy offset lock, return value %d",
 				-ret);
 	}
-	free(new_task->p_ve_thread);
+	free_ve_thread_struct(new_task->p_ve_thread);
 	free(new_task);
 	VEOS_TRACE("Exiting");
 	errno = -retval;
@@ -1162,10 +1181,11 @@ int do_ve_fork(unsigned long clone_flags,
 		"Failed to release VE node mutex lock");
 
 	/*Update the thread offset in the libc thread descriptor area (TP + 0x18)*/
-	retval = amm_dma_xfer(VE_DMA_VHVA, (uint64_t)(&(new_task->offset)),
-			getpid(), VE_DMA_VEMVA,
-			(uint64_t)(new_task->p_ve_thread->SR[14]+0x18),
-			fork_info->child_pid, sizeof(uint64_t), 0);
+	retval = (*_veos_arch_ops->
+			arch_psm_set_thread_descriptor_area_on_stack)(
+				getpid(),
+				new_task->offset, fork_info->child_pid,
+				new_task->p_ve_thread->arch_user_regs);
 	if (0 > retval) {
 		VEOS_ERROR("Failed to update TLS offset");
 		VEOS_DEBUG("Updation of TLS offset for child(pid:%d) failed",

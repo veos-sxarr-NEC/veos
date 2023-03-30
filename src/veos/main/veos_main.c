@@ -37,6 +37,8 @@
 #include <sys/mman.h>
 #include <log4c.h>
 #include <libudev.h>
+
+#include <veos_arch_defs.h>
 #include <pwd.h>
 #include <grp.h>
 #include "veos.h"
@@ -51,6 +53,7 @@
 #include "config.h"
 #include "vesync.h"
 #include "ve_swap.h"
+#include "ve_mem.h"
 #include "veos_sock.h"
 
 #define IPC_QUEUE_LEN 20
@@ -68,6 +71,7 @@ pthread_rwlock_t handling_request_lock;
 /* Condition variable to wait update of terminate_flag */
 int opt_ived = 0; /* -i specified. */
 unsigned int opt_pcisync = 0; /* --pcisync? specified. */
+int opt_rordering = 1;   /* enable relaxed ordering */
 /* VE Initial task struct */
 struct ve_task_struct ve_init_task = VE_INIT_TASK(ve_init_task);
 pthread_rwlock_t init_task_lock;
@@ -75,11 +79,14 @@ int64_t veos_timer_interval = PSM_TIMER_INTERVAL_SECS * 1000000000 +
 						PSM_TIMER_INTERVAL_NSECS;
 int64_t veos_time_slice = PSM_TIME_SLICE_SECS * 1000000 +
 						(PSM_TIME_SLICE_NSECS / 1000);
+/*Power Throttle Logging Interval set to One hour in secs*/
+int64_t power_throttle_log_interval = PSM_POWER_THROTTLING_LOG_INTERVAL;
 pthread_rwlock_t veos_scheduler_lock; /*protects time-slice and timer-interval*/
 int no_update_os_state = 0;
 struct ve_node_struct ve_node; /* the VE node */
 struct ve_node_struct *p_ve_node_global = &ve_node; /* the pointer to VE node */
 static char veos_abort_message[VE_ABORT_CAUSE_BUF_SIZE];
+int skip_memclear_flag = 0;
 static siginfo_t r_sig_info;
 static int signal_received_flag = false;
 
@@ -113,14 +120,19 @@ void veos_terminate_node_core(int abnormal)
 	}
 
 	p_ve_node = &ve_node;
+	/* acquiring semaphore for node */
+	if (-1 == sem_wait(&p_ve_node->node_sem)) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+			"Node semaphore lock failed");
+	}
 	/* Removing VE system load */
 	list_for_each_safe(p, q, &(p_ve_node->ve_sys_load_head)) {
 		struct ve_sys_load *tmp =
 			list_entry(p, struct ve_sys_load, list);
 		free(tmp);
 	}
-	if (munmap(VE_NODE(0)->cnt_regs_addr,
-			sizeof(system_common_reg_t)) != 0) {
+	sem_post(&p_ve_node->node_sem);
+	if (vedl_munmap_common_reg(VE_NODE(0)->cnt_regs) != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 			"Unmapping common register failed");
 	}
@@ -135,14 +147,12 @@ void veos_terminate_node_core(int abnormal)
 		p_ve_core = p_ve_node->p_ve_core[core_loop];
 		if (p_ve_core == NULL)
 			continue;
-		if (munmap(p_ve_core->usr_regs_addr,
-				sizeof(core_user_reg_t)) != 0) {
+		if (vedl_munmap_usr_reg(p_ve_core->usr_regs) != 0) {
 			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 				"Unmapping user register failed: core %d",
 				core_loop);
 		}
-		if (munmap(p_ve_core->sys_regs_addr,
-				sizeof(core_system_reg_t)) != 0) {
+		if (vedl_munmap_sys_reg(p_ve_core->sys_regs) != 0) {
 			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 				"Unmapping system register failed: core %d",
 				core_loop);
@@ -193,6 +203,8 @@ void veos_terminate_node_core(int abnormal)
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 				"Failed to destroy init task read-write lock");
 	}
+	(*_veos_arch_ops->arch_free_veos_pci_dma_pgtables)(p_ve_node->pciatb,
+						p_ve_node->dmaatb);
 
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_DEBUG, "Out Func");
 }
@@ -432,6 +444,7 @@ static int veos_cleanup(void)
 		goto hndl_error_dma;
 	}
 
+	(*_veos_arch_ops->arch_turn_on_clock_gating)();
 	retval = 0;
 
 	if (opt_ived != 0) {
@@ -693,6 +706,8 @@ int main(int argc, char *argv[])
 			{"ve-swap-file-max",  required_argument, NULL,  0 },
 			{"ve-swap-file-user", required_argument, NULL,  0 },
 			{"ve-swap-file-group",required_argument, NULL,  0 },
+			{"skip-memclear",     no_argument,       NULL,  0 },
+			{"disable-rordering", no_argument,       NULL,  0 },
 			{"help",              no_argument,       NULL, 'h'},
 			{"sock",              required_argument, NULL, 's'},
 			{"dev",               required_argument, NULL, 'd'},
@@ -701,11 +716,12 @@ int main(int argc, char *argv[])
 			{"timer-interval",    required_argument, NULL, 't'},
 			{"time-slice",        required_argument, NULL, 'T'},
 			{"version",           no_argument,       NULL, 'V'},
+                        {"power-throttle-log-interval",  required_argument, NULL, 'p'},
 			{0, 0, 0, 0}
 			};
 
 	/* Parse the options */
-	while ((s = getopt_long(argc, argv, "hs:d:i:m:t:T:V", long_options,
+	while ((s = getopt_long(argc, argv, "hs:d:i:m:t:T:V:p", long_options,
 							&index)) != -1) {
 		switch (s) {
 		case 's':
@@ -754,6 +770,18 @@ int main(int argc, char *argv[])
 			}
 			veos_time_slice *= 1000;
 			break;
+                case 'p':/*Power Throttle Logging Interval*/
+                        power_throttle_log_interval = veos_convert_sched_options(optarg,
+					PSM_POWER_THROTTLING_LOG_INTERVAL_MIN,
+					PSM_POWER_THROTTLING_LOG_INTERVAL_MAX);
+                        if (power_throttle_log_interval == -1) {
+                                fprintf(stderr,
+                                        "-p/--power-throttle-log-interval "
+							"option error\n");
+                                exit(EXIT_FAILURE);
+                        }
+                        break;
+
 		case 0:
 			if ((index == OPT_PCISYNC1) ||
 						(index == OPT_PCISYNC2) ||
@@ -838,6 +866,12 @@ int main(int argc, char *argv[])
 				}else{
 					pps_file_gid = grp->gr_gid;
 				}
+				break;
+			} else if (index == OPT_SKIPMEMCLEAR) {
+				skip_memclear_flag = 1;
+				break;
+			} else if (index == OPT_DRORDERING) {
+				opt_rordering = 0;
 				break;
 			} else {
 				fprintf(stderr, "Wrong option specified\n");
@@ -996,6 +1030,9 @@ int main(int argc, char *argv[])
 					"Time slice is %ld ms",
 					veos_time_slice / 1000);
 
+	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
+				"Power Throttle log interval is %ld sec",
+				power_throttle_log_interval );
 	if (opt_clean != 0) {
 		fprintf(stderr, "Cleaning up resources ...\n");
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
@@ -1012,6 +1049,9 @@ int main(int argc, char *argv[])
 
 	fprintf(stderr, "Initializing VEOS ...\n");
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO, "Initializing VEOS ...");
+	if (skip_memclear_flag)
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_INFO,
+						"Skip clearing VE memory");
 
 	/* remove veos socket file if it already exist. */
 	remove(veos_sock_file);
@@ -1038,6 +1078,13 @@ int main(int argc, char *argv[])
 				"Initializing Partial Process Swapping failed");
 		retval = 1;
 		goto hndl_termination;
+	}
+
+        if (veos_coredump_helper_launcher() != 0) {
+                VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+                                "Start coredump_helper launcher failed");
+                retval = 1;
+                goto hndl_termination;
 	}
 
 	if (veos_init_pci_sync() != 0) {
@@ -1249,6 +1296,9 @@ hndl_sem:
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 		       "Failed to destroy semaphore terminate_sem: %s",
 		       strerror(errno));
+	if (_veos_arch_ops){
+		(*_veos_arch_ops->arch_main_free_node_arch_dep_data)(&ve_node);
+	}
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
 	log4c_fini();
 	exit(retval);

@@ -2,6 +2,7 @@
 usr/lib/binfmt.d/ve.conf
 .@sysconfdir@/ve-os-launcher.d/ve-ived.options
 .@sysconfdir@/ve-os-launcher.d/veos_timer.options
+.@sysconfdir@/ve-os-launcher.d/veos_power_throttle.options
 .@ve_bindir@/*
 .@prefix@/sbin/*
 .@ve_libexecdir@/*

@@ -29,6 +29,7 @@
 #include <libudev.h>
 #include "libved.h"
 #include "libvepseudo.h"
+#include <veos_arch_defs.h>
 #include "veos_defs.h"
 #include "sysve_os.h"
 #include "comm_request.h"
@@ -40,13 +41,7 @@
 #include "ve_swap_request.h"
 #include "productinfo.h"
 
-#define VE_VEHVA_SYS_COM_REG_PAGE0_ADDR       0x000000001000
-#define VE_VEHVA_SYS_COM_REG_PAGE1_ADDR       0x000000002000
-#define VE_VEHVA_DMACTL_E_ADDR                0x000000003010
-#define VE_VEHVA_DMADES_E_ADDR                0x000000004000
-
 #define REG_MASK_ALL 0xffffffffffffffff
-#define REG_MASK_PSW 0x8000000000000000
 
 #define MAX_PCISYNC_REG_NUM                   3
 
@@ -306,26 +301,9 @@ int ve_sys_get_fixed_vehva(veos_handle *handle, uint64_t region,
 
 	VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_TRACE, "In Func");
 
-	switch (region) {
-	case VE_VEHVA_SYS_COM_REG_PAGE0:
-		mapping = VE_VEHVA_SYS_COM_REG_PAGE0_ADDR;
-		break;
-	case VE_VEHVA_SYS_COM_REG_PAGE1:
-		mapping = VE_VEHVA_SYS_COM_REG_PAGE1_ADDR;
-		break;
-	case VE_VEHVA_DMACTL_E:
-		mapping = VE_VEHVA_DMACTL_E_ADDR;
-		break;
-	case VE_VEHVA_DMADES_E:
-		mapping = VE_VEHVA_DMADES_E_ADDR;
-		break;
-	default:
-		VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_ERROR,
-							"Invalid region");
-		ret = -EINVAL;
+	ret = (*_veos_arch_ops->arch_get_fixed_vehva)(region, &mapping);
+	if (ret < 0)
 		return ret;
-		break;
-	}
 
 	if (ve_send_data(handle, (uint64_t)vehva, sizeof(uint64_t),
 							&mapping) != 0) {
@@ -358,10 +336,17 @@ int ve_sys_set_user_reg(veos_handle *handle, uint64_t reg, uint64_t value)
 	int ret = 0;
 	int64_t mask = 0;
 	int regid = -1;
+	const char *name;
 
 	PSEUDO_TRACE("Entering");
 
 	regid = ve_sys_map_reg(reg);
+	if ( (reg >= VE_REGID_PMC16) && (reg <= VE_REGID_PMC20)) {
+		name = vedl_get_arch_class_name(handle->ve_handle);
+		if(strncmp(name, "ve3", 3)) {
+			regid = -1;
+		}
+	}
 
 	if (regid == -1) {
 		PSEUDO_ERROR("Invalid register %lu was specified", reg);
@@ -371,8 +356,8 @@ int ve_sys_set_user_reg(veos_handle *handle, uint64_t reg, uint64_t value)
 
 	PSEUDO_DEBUG("reg %lu maps to regid %d", reg, regid);
 
-	if (regid == PSW) {
-		mask = REG_MASK_PSW;
+	if (regid == VE_USR_PSW) {
+		mask = (*_veos_arch_ops->arch_set_PSW_bitmask)();
 	} else {
 		mask = REG_MASK_ALL;
 	}
@@ -520,13 +505,15 @@ static int ve_sys_map_reg(uint64_t reg)
 	VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_TRACE, "In Func");
 
 	if (reg == VE_REGID_PSW) {
-		regid = PSW;
+		regid = VE_USR_PSW;
 	} else if (reg == VE_REGID_PMMR){
-		regid = PMMR;
+		regid = VE_USR_PMMR;
 	} else if (reg <= VE_REGID_PMCR3) {
-		regid = PMCR00 + (reg - VE_REGID_PMCR0);
+		regid = VE_USR_PMCR00 + (reg - VE_REGID_PMCR0);
 	} else if (reg <= VE_REGID_PMC15) {
-		regid = PMC00 + (reg - VE_REGID_PMC0);
+		regid = VE_USR_PMC00 + (reg - VE_REGID_PMC0);
+	} else if ( (reg >= VE_REGID_PMC16) && (reg <= VE_REGID_PMC20)) {
+		regid = VE_USR_PMC16 + (reg - VE_REGID_PMC16);
 	}
 
 	VE_LOG(CAT_PSEUDO_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
@@ -808,6 +795,73 @@ ve_sys_get_mns(veos_handle *handle, uint64_t buff)
 	if (ret != 0) {
 		retval = -EFAULT;
 		PSEUDO_ERROR("Faild to send mns %s", strerror(-ret));
+	}
+
+handle_unpacked:
+	pseudo_veos_message__free_unpacked(reply_msg, NULL);
+
+handle_return:
+	PSEUDO_TRACE("Exiting");
+	return retval;
+}
+
+/**
+ * @brief This function requests veos to get the proginf information
+ *
+ * @param [in] handle VEOS handle of pseudo process.
+ * @param [in] version Data structure version.
+ * @param [in] buff buffer to store the proginf information.
+ * @return 0 on Success, -errno on failure.
+ */
+int64_t
+ve_sys_get_proginf_data(veos_handle *handle, uint64_t version, uint64_t buff)
+{
+	int64_t retval = 0;
+	int ret;
+	PseudoVeosMessage *reply_msg = NULL;
+	struct proginf_v1 proginf_data;
+	ProtobufCBinaryData data;
+	const char *name;
+
+	PSEUDO_TRACE("Entering");
+
+	if (buff == 0) {
+		retval = -EFAULT;
+		goto handle_return;
+	}
+	name = vedl_get_arch_class_name(handle->ve_handle);
+	if(!strncmp(name, "ve1", 3)) {
+		retval = -ENOTSUP;
+		goto handle_return;
+	}
+	PSEUDO_DEBUG("Request CMD_GET_PROGINF_DATA from %ld",
+					syscall(SYS_gettid));
+	data.len = sizeof(int);
+	data.data = (uint8_t *)&version;
+	retval = ve_request_veos(handle, CMD_GET_PROGINF_DATA,
+						&data, &reply_msg);
+	PSEUDO_DEBUG("VEOS return %ld against CMD_GET_PROGINF_DATA from %ld",
+						retval, syscall(SYS_gettid));
+	if (retval < 0) {
+		PSEUDO_ERROR("Failed to communicate VEOS about CMD_GET_PROGINF_DATA");
+		if (reply_msg == NULL)
+			goto handle_return;
+		else
+			goto handle_unpacked;
+	}
+	if (reply_msg->has_pseudo_msg != true) {
+		PSEUDO_ERROR("Responce against CMD_GET_PROGINF_DATA is invalid");
+		retval = -ECANCELED;
+		goto handle_unpacked;
+	}
+	memcpy(&proginf_data, reply_msg->pseudo_msg.data,
+				sizeof(struct proginf_v1));
+
+	ret = ve_send_data(handle, buff, sizeof(struct proginf_v1),
+						&proginf_data);
+	if (ret != 0) {
+		retval = -EFAULT;
+		PSEUDO_ERROR("Failed to send proginf data %s", strerror(-ret));
 	}
 
 handle_unpacked:

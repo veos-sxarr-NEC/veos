@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -25,11 +25,14 @@
  */
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
+
+#include <veos_arch_defs.h>
 #include "ve_mem.h"
 #include "libved.h"
 #include "mm_type.h"
 #include "cr_api.h"
-
+#include "task_sched.h"
 
 /**
 * @brief This simple func to compaire to elements.
@@ -105,6 +108,7 @@ int amm_dump_cr_reg_process(char *file, int cr_cluster_no)
 		ret = -errno;
 		VEOS_CRIT("Error (%s) while allocating CR cluster object",
 				 strerror(-ret));
+		fclose(fp);
 		return ret;
 	}
 
@@ -194,24 +198,7 @@ int amm_dump_cr_reg_node(char *filename)
 */
 int amm_init_cr_reg(void)
 {
-	int ret = 0;
-	cr_cluster_t cr_arr[32] = { { {CR_INIT_VAL}, {CR_INIT_VAL} } };
-	vedl_handle *handle = VE_HANDLE(0);
-	off_t offset = VE_CR_CLUSTER_OFF(0);
-	system_common_reg_t *to = VE_CORE_CNT_REG_ADDR(0);
-
-	VEOS_TRACE("invoked");
-
-	memset(cr_arr, 0, sizeof(cr_arr));
-	ret = vedl_set_cnt_reg_words(handle, to, offset,
-			cr_arr, sizeof(cr_arr));
-	if (ret < 0) {
-		VEOS_DEBUG("Failed in initializing CR cluster to zero.");
-		veos_abort("Fail to initialize cr data");
-	}
-
-	VEOS_TRACE("retured(%d)", ret);
-	return ret;
+	return (*_veos_arch_ops->arch_amm_init_cr_reg)();
 }
 
 /**
@@ -475,23 +462,8 @@ int veos_dump_cr(struct ve_task_struct *tsk, uint64_t mode_flag)
 */
 int amm_set_crd(crd_t *crd, int crd_entry, int core_id, size_t size)
 {
-	int ret = 0;
-	vedl_handle *handle = VE_HANDLE(0);
-
-	VEOS_TRACE("invoked with crd (%p) crd_entry (%d) core (%d) size(%ld)",
-			crd, crd_entry, core_id, size);
-
-	off_t offset = VE_CRD_OFF(crd_entry); /*Offset of CRD*/;
-	core_system_reg_t *to = VE_CORE_SYS_REG_ADDR(0, core_id);
-
-	ret = vedl_set_sys_reg_words(handle, to, offset,
-				&crd[crd_entry], size);
-	if (0 > ret) {
-		VEOS_DEBUG("Error (%s) to set crd crd entry",
-				strerror(-ret));
-	}
-	VEOS_TRACE("returned with %d", ret);
-	return ret;
+	return (*_veos_arch_ops->arch_amm_set_crd)(crd, crd_entry,
+					core_id, size);
 }
 
 /**
@@ -1478,17 +1450,10 @@ err_return1:
 int veos_free_cr_page(uint64_t cr_page)
 {
 	int ret = 0;
-	cr_cluster_t cr_data = { {0} };
-	vedl_handle *handle = VE_HANDLE(0);
 	struct ve_node_struct *vnode = VE_NODE(0);
-	system_common_reg_t *to = VE_CORE_CNT_REG_ADDR(0);
-	off_t offset = VE_CR_CLUSTER_OFF(cr_page);
 
 	VEOS_TRACE("invoked");
 	VEOS_DEBUG("freeing  cr page %ld", cr_page);
-
-
-	memset(&cr_data, 0, sizeof(cr_cluster_t));
 
 	if (cr_page >= MAX_CR_PAGE_PER_NODE) {
 		ret  = -EINVAL;
@@ -1522,8 +1487,7 @@ int veos_free_cr_page(uint64_t cr_page)
 	VEOS_DEBUG("total %u CR pages are in use", (vnode->cr_th_pg + vnode->cr_mpi_pg));
 
 	/*free the content of cr page*/
-	ret = vedl_set_cnt_reg_words(handle, to, offset,
-			&cr_data, sizeof(cr_cluster_t));
+	ret = (*_veos_arch_ops->arch_amm__clear_cr_cluster)(cr_page);
 	if (ret < 0) {
 		VEOS_DEBUG("failed to initialize content of CR page(%ld)", cr_page);
 		veos_abort("CR cluster regs sync failed");
@@ -1592,11 +1556,8 @@ int veos_save_cr(struct ve_task_struct *tsk)
 	int ret = 0;
 	int crd_no = 0;
 	int cr_pg = -1;
-	off_t offset = 0;
 	struct ve_mm_struct *mm = NULL;
 	struct ve_node_struct *vnode = VE_NODE(0);
-	vedl_handle *handle = VE_HANDLE(0);
-	system_common_reg_t *from = VE_CORE_CNT_REG_ADDR(0);
 
 	VEOS_TRACE("invoked");
 	VEOS_DEBUG("invoked with pid (%d)", tsk->pid);
@@ -1625,11 +1586,9 @@ int veos_save_cr(struct ve_task_struct *tsk)
 				cr_pg = cr_getpg(&mm->crd[crd_no]);
 				VEOS_DEBUG("freeing cr page (%d) for tsk:pid(%d)", cr_pg, tsk->pid);
 				/*save the content of cr pages into mm struct*/
-				offset = VE_CR_CLUSTER_OFF(cr_pg);
-				VEOS_DEBUG("save CR contents from %p to %lx of size %lx",
-					from, offset, sizeof(cr_cluster_t));
-				ret = vedl_get_cnt_reg_words(handle, from, offset,
-						&mm->cr_data[crd_no], sizeof(cr_cluster_t));
+				ret = (*_veos_arch_ops->
+					arch_amm__save_cr_cluster)(cr_pg,
+						&mm->cr_data[crd_no]);
 				if (0 > ret) {
 					VEOS_DEBUG("Error(%s) while saving CR cluster %d",
 							strerror(-ret), cr_pg);
@@ -1685,10 +1644,7 @@ int veos_restore_cr(struct ve_task_struct *tsk)
 	int t_cr_th_pg = 0;
 	int crd_no = 0;
 	crd_t crd_tmp[MAX_CRD_PER_CORE] = { {0} };
-	off_t offset = 0;
 	struct ve_node_struct *vnode = VE_NODE(0);
-	vedl_handle *handle = VE_HANDLE(0);
-	system_common_reg_t *to = VE_CORE_CNT_REG_ADDR(0);
 	struct ve_mm_struct *mm = tsk->p_ve_mm;
 	cr_cluster_t *cr_data = NULL;
 
@@ -1750,11 +1706,9 @@ int veos_restore_cr(struct ve_task_struct *tsk)
 						mm->crd_type[crd_no] = THREAD;
 
 					/*restore cr date in cr pages*/
-					offset = VE_CR_CLUSTER_OFF(ret);
-					VEOS_DEBUG("save CR contents from %p to %lx of size %lx",
-						&cr_data[crd_no], offset, sizeof(cr_cluster_t));
-					ret = vedl_set_cnt_reg_words(handle, to, offset,
-							&cr_data[crd_no], sizeof(cr_cluster_t));
+					ret = (*_veos_arch_ops->
+						arch_amm__restore_cr_cluster)(
+							ret, &cr_data[crd_no]);
 					if (0 > ret) {
 						VEOS_DEBUG("Error (%s) while set crd words",
 								strerror(-ret));
@@ -1804,4 +1758,16 @@ void veos_set_crd_context(struct ve_task_struct *tsk)
 	veos_set_crd(tsk, 0, MAX_CRD_PER_CORE, true, false);
 
 	VEOS_TRACE("returned");
+}
+
+/**
+ * @brief Get the address of CR area in PCI space
+ *
+ * @param[out] addrp Pointer to store an address
+ *
+ * @return zero upon success; negative upon failure.
+ */
+int veos_get_pci_crarea_address(uint64_t *addrp)
+{
+	return (*_veos_arch_ops->arch_amm_get_pci_crarea_address)(addrp);
 }

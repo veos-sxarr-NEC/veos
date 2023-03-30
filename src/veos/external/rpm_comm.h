@@ -35,13 +35,18 @@
 #define VMFLAGS_LENGTH  81
 #define VE_MAX_REGVALS  64
 #define MAX_CORE_IN_HEX  4
+#define MAX_CORE_IN_HEX_V3 \
+	((VE_LIB_MAX_CORE_PER_NODE_V3 + VE_MAX_NUMA_NODE - 1) / VE_MAX_NUMA_NODE)
 #define VE_EINVAL_COREID 514
 #define VE_EINVAL_NUMAID 515
 #define PACKET_COUNT 4
 #define VEO_PROCESS_EXIST       515     /*!< Identifier for VEO API PID */
 #define VE_VALID_THREAD         516     /*!< Identifier for process/thread */
 #define NS_DIV 2
-
+#define VE_EINVAL_DEVICE        -2      /*!< Error number for unsupported device */
+#define VE_LIB_MAX_CORE_PER_NODE_V2 16
+#define VE_LIB_MAX_CORE_PER_NODE_V3 32
+#define VERSION_V3_STRING "3.0.0"
 extern log4c_category_t *cat_os_pps;
 
 #define PPS_INFO(category, fmt, ...) \
@@ -82,6 +87,9 @@ enum veos_rpm_subcmd {
 	VE_SWAP_OUT,
 	VE_SWAP_IN,
 	VE_SWAP_GET_CNS,
+	VE_STAT_INFO_V3,
+	VE_NUMA_INFO_V3,
+	VE_GET_ARCH,
 	VE_VEOSCTL_GET_PARAM,
 	VE_VEOSCTL_SET_PARAM,
 	VE_RPM_INVALID = -1,
@@ -331,12 +339,12 @@ struct ve_loadavg {
  * @brief Structure to get overall information about VE processes
  */
 struct velib_statinfo {
-	unsigned long long user[VE_MAX_CORE_PER_NODE];	/*!<
+	unsigned long long user[VE_LIB_MAX_CORE_PER_NODE_V2];	/*!<
 							 * Amount of time CPU has
 							 * spent executing normal
 							 * processes in user mode
 							 */
-	unsigned long long idle[VE_MAX_CORE_PER_NODE];	/*!<
+	unsigned long long idle[VE_LIB_MAX_CORE_PER_NODE_V2];	/*!<
 							 * Amount of time CPU has
 							 * spent executing twiddling
 							 * thumbs
@@ -529,6 +537,56 @@ struct ve_cns_info {
 	struct ve_ns_info_proc info[MAX_SWAP_PROCESS / NS_DIV];
 };
 
+/**
+ * @brief Structure to get overall information about VE processes
+ */
+struct velib_statinfo_v3 {
+        unsigned long long user[VE_LIB_MAX_CORE_PER_NODE_V3];   /*!<
+                                                         * Amount of time CPU has
+                                                         * spent executing normal
+                                                         * processes in user mode
+                                                         */
+        unsigned long long idle[VE_LIB_MAX_CORE_PER_NODE_V3];   /*!<
+                                                         * Amount of time CPU has
+                                                         * spent executing twiddling
+                                                         * thumbs
+                                                         */
+        unsigned int ctxt;                              /*!<
+                                                         * The total number of context
+                                                         * switches across all CPUs
+                                                         */
+        unsigned int running;                           /*!<
+                                                         * The total number of
+                                                         * runnable threads
+                                                         */
+        unsigned int blocked;                           /*!<
+                                                         * The number of processes
+                                                         * currently blocked,
+                                                         * waiting for I/O to complete
+                                                         */
+        unsigned long btime;                            /*!<
+                                                         * The time at which the
+                                                         * VE nodes were booted
+                                                         */
+        unsigned int processes;                         /*!<
+                                                         * The number of processes
+                                                         * and threads created
+                                                         */
+};
+
+/**
+ * * @brief Structure to get the NUMA information for given VE node
+ * */
+struct ve_numa_stat_v3 {
+        int tot_numa_nodes;             /*!< NUMA node count */
+        char ve_cores[VE_MAX_NUMA_NODE][MAX_CORE_IN_HEX_V3];/*!< list of cores in
+                                                         *each NUMA node */
+        unsigned long long mem_size[VE_MAX_NUMA_NODE];  /*!< Memory size of each
+                                                         *NUMA node */
+        unsigned long long mem_free[VE_MAX_NUMA_NODE];  /*!< Free memory in each
+                                                         *NUMA node */
+};
+
 int veos_write_buf(int, void *, int);
 int veos_rpm_send_cmd_ack(int, uint8_t *, int64_t, int64_t);
 int rpm_handle_getpriority_req(struct veos_thread_arg *);
@@ -562,6 +620,9 @@ int rpm_handle_ve_swapstatusinfo_req(struct veos_thread_arg *pti);
 int rpm_handle_ve_swapnodeinfo_req(struct veos_thread_arg *pti);
 int rpm_handle_ve_swapinfo_req(struct veos_thread_arg *pti); 
 int rpm_handle_ve_get_cns_req(struct veos_thread_arg *);
+int rpm_handle_stat_req_v3(struct veos_thread_arg *);
+int rpm_handle_numa_info_req_v3(struct veos_thread_arg *pti);
+int rpm_handle_arch_info_req(struct veos_thread_arg *);
 int rpm_handle_veosctl_get_req(struct veos_thread_arg *pti);
 int rpm_handle_veosctl_set_req(struct veos_thread_arg *pti);
 #endif

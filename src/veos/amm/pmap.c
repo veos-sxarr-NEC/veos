@@ -36,7 +36,9 @@
 #include <sys/types.h>
 #include <sys/mman.h>
 #include <errno.h>
+#include "ve_memory.h"
 #include "pmap.h"
+#include "ve_memory_def.h"
 
 /**
  * @brief To get the file permission.
@@ -590,7 +592,7 @@ void final_pmap(struct _psuedo_pmap *pvemap,
  *
  * @return number of VE memory map counts.
  */
-int parse_psuedopmap(struct _psuedo_pmap *pmap,
+int parse_pseudopmap(struct _psuedo_pmap *pmap,
 		struct _valid_atbdir *pve_dir,
 		struct _psuedo_pmap **pvemap,
 		int count, int ve_count,
@@ -696,7 +698,7 @@ int parse_valid_atbdir(struct _valid_atbdir **ve_atb,
 
 	VEOS_TRACE("In Func");
 	atbobj = (*ve_atb);
-	for (; dir_cntr < ATB_DIR_NUM; dir_cntr++) {
+	for (; dir_cntr < VEOS_ATB_DIR_NUM; dir_cntr++) {
 		if (ps_isvalid(&(atb->dir[dir_cntr]))) {
 			if (NULL == atbobj) {
 				atbobj = (struct _valid_atbdir *)
@@ -838,7 +840,7 @@ int fill_maps(struct _psuedo_pmap **pmap,
 		(*pmap) = (psuedo_map *)((char *)(*pmap) +
 				(sizeof(psuedo_map) * (nentry-1)));
 		(*pmap)->mapname[0] = '\0';
-		nfields = sscanf(buf, "%lx-%lx %4s %lx %5s %ld %s",
+		nfields = sscanf(buf, "%lx-%lx %4s %lx %5s %lu %s",
 				&(*pmap)->begin,
 				&(*pmap)->end,
 				(*pmap)->perm,
@@ -934,7 +936,7 @@ int get_vepmap(struct _psuedo_pmap **pvemap,
 		goto end;
 	}
 
-	nve = parse_psuedopmap(pmap, pve_atb, pvemap, nentry, ve_entry, tsk);
+	nve = parse_pseudopmap(pmap, pve_atb, pvemap, nentry, ve_entry, tsk);
 	if (0 >= nve) {
 		VEOS_DEBUG("No ve pmap from pseudo pmap");
 		pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock,

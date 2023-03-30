@@ -38,9 +38,12 @@
 #define CHANGE_MASK_64MB  0xFFFFFFFFFC000000ULL
 
 int sys_accelerated_io_init(veos_handle *, void **, uint64_t *, void *,
-				uint64_t *, int);
+				uint64_t *);
 int sys_accelerated_io_register_dmaatb(veos_handle *, void *, uint64_t *,
-				void *, uint64_t *, int);
+				void *, uint64_t *);
+int sys_accelerated_io_unregister_dmaatb(veos_handle *, uint64_t,
+				uint64_t);
+int sys_accelerated_io_free_vh_buf(veos_handle *, uint64_t);
 void sys_accelerated_unregister_ve_buf_vehva(veos_handle *);
 void sys_accelerated_free_vh_buf(void);
 #endif

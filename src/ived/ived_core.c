@@ -216,7 +216,7 @@ dump_os_info(struct veos_info *os_info)
 		   ", BAR3:0x%"PRIx64"",
 		   os_info->pciatb_pgsize,
 		   os_info->bar01_paddr,
-		   os_info->bar3_paddr);
+		   os_info->bar_cr_paddr);
 	return(0);
 }
 

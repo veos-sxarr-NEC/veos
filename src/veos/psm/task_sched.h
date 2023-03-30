@@ -27,17 +27,14 @@
 
 #include <stdio.h>
 #include <stdbool.h>
-#include "ve_hw.h"
+#if 0 /* TODO: remove */
 #include "dmaatb_api.h"
 #include "task_signal.h"
+#endif
 #include "task_mgmt.h"
 
-#define ASSIGN_RETRY_CNT	8
+#define ASSIGN_RETRY_CNT	13
 #define ASSIGN_RETRY_DELAY	1000	/* Retry interval in nanoseconds */
-#define VE_UDMA_OFFSET_OF_DMACTL(i) (offsetof(core_system_reg_t, dmactl[(i)]))
-#define VE_UDMA_OFFSET_OF_DMADESC(i) (offsetof(core_system_reg_t, dmades[(i)]))
-#define VE_CORE_OFFSET_OF_JIDR (offsetof(core_system_reg_t, JIDR))
-#define VE_CORE_OFFSET_OF_DIDR (offsetof(core_system_reg_t, DIDR))
 
 #define VE_UDMA_CTL_STATUS_HALT	(2)
 #define VE_UDMA_CTL_PERM_START	(1)
@@ -54,13 +51,6 @@
 #define MILLI_SECONDS (1000 * NANO_SECONDS)
 #define MICRO_SECONDS (1000 * 1000 * NANO_SECONDS)
 
-#define PSM_CTXSW_CREG_VERAA(phys_core_num) (\
-	PCI_BAR2_CREG_SIZE * phys_core_num)
-
-#define PSM_CTXSW_CREG_SIZE (\
-	offsetof(core_user_reg_t, VR) +\
-	sizeof(((core_user_reg_t *)NULL)->VR))
-
 #define SECONDS 1
 #define DIR_CNT 32
 /* "PSM_TIMER_INTERVAL_SECS" timer interval in which
@@ -75,7 +65,12 @@
 #define PSM_TIME_SLICE_NSECS 0
 #define PSM_TIME_SLICE_MIN_MLSECS 1
 #define PSM_TIME_SLICE_MAX_MLSECS 60000
-
+/*Power thottle Logging interval by default 1 hour,
+ * Maximum 4 hour and Minimun half an hour */
+#define PSM_POWER_THROTTLING_LOG_INTERVAL 3600
+#define PSM_POWER_THROTTLING_LOG_INTERVAL_MIN 60
+#define PSM_POWER_THROTTLING_LOG_INTERVAL_MAX 86400
+#define ONE_HOUR_INTERVAL 3600
 typedef enum {
 	_DMAATB = 0,
 	_ATB,
@@ -87,10 +82,15 @@ extern int64_t veos_timer_interval;
 /* "veos_time_slice" Time slice, in micro seconds. */
 extern int64_t veos_time_slice;
 
+/* Power Throttle logging interval in seconds*/
+extern int64_t power_throttle_log_interval;
+/* To record the first power throttling event occured in any VE core */
+extern bool first_power_throttling_occured;
+
 int psm_alloc_udma_context_region(struct ve_task_struct *);
 int psm_free_udma_context_region(struct ve_task_struct *);
 bool psm_compare_jid(struct ve_task_struct *, struct ve_task_struct *);
-bool psm_check_sched_jid_core(uint64_t *, struct ve_task_struct *, regs_t, reg_t *);
+bool psm_check_sched_jid_core(uint64_t *, struct ve_task_struct *, regs_t, ve_reg_t *);
 bool psm_check_udma_desc(struct ve_task_struct *);
 int psm_stop_udma(int, uint8_t);
 int psm_save_udma_context(struct ve_task_struct *, int);
@@ -98,13 +98,9 @@ int psm_restore_udma_context(struct ve_task_struct *ve_task, int);
 int __psm_restore_udma_context(struct ve_task_struct *, int, bool);
 int psm_start_udma(int, uint8_t);
 void psm_wake_up_scheduler(struct ve_core_struct *, bool);
-int psm_set_jdid(struct ve_task_struct *);
-int psm_halt_ve_core(int, int, reg_t *, bool);
+int psm_halt_ve_core(int, int, ve_reg_t *, bool, bool);
 int psm_start_ve_core(int, int);
 void psm_sched_interval_handler(union sigval);
-int psm_udma_no_migration(struct ve_task_struct *);
-int psm_udma_do_migration(struct ve_task_struct *, uint64_t);
-int psm_process_dma_migration(struct ve_task_struct*);
 void psm_save_current_user_context(struct ve_task_struct *);
 struct ve_task_struct* psm_find_next_task_to_schedule(
 		struct ve_core_struct *);
@@ -115,8 +111,9 @@ int schedule_task_on_ve_node_ve_core(struct ve_task_struct *,
 		struct ve_task_struct *,
 		bool, bool);
 int veos_update_atb(uint64_t, int16_t*, int, struct ve_task_struct *);
-int veos_update_dmaatb(uint64_t, void *, int, int, struct ve_task_struct *, reg_t *);
+int veos_update_dmaatb(uint64_t, veos_dmaatb_reg_t *, int, int, struct ve_task_struct *, ve_reg_t *);
 int psm_sync_hw_regs(struct ve_task_struct *, regs_t, bool, int, int);
+int psm_sync_hw_regs_atb(struct ve_task_struct *, bool, int, int, uint64_t);
 void psm_find_sched_new_task_on_core(struct ve_core_struct *, bool, bool);
 int psm_check_rebalance_condition(struct ve_core_struct *, int);
 void psm_rebalance_task_to_core(struct ve_core_struct *);

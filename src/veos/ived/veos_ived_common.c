@@ -39,6 +39,7 @@
 #include "ived_common.h"
 #include "veos_ived.h"
 #include "ived_ipc.h"
+#include "veos_ived_private.h"
 
 /**
  * @brief Initialize log4cat_pseudo_ived.

@@ -32,9 +32,14 @@
 #include <errno.h>
 #include <sys/uio.h>
 #include <sys/capability.h>
+#include <libved.h>
+
+#include <veos_arch_defs.h>
+
 #include "ve_mem.h"
 #include "ptrace_req.h"
 #include "task_mgmt.h"
+#include "task_sched.h"
 #include "task_signal.h"
 #include "velayout.h"
 #include "psm_stat.h"
@@ -57,11 +62,21 @@ pthread_mutex_t readproc_mutex = PTHREAD_MUTEX_INITIALIZER;
 int psm_ve_start_process(struct ve_task_struct *p_ve_task)
 {
 	int retval = -1;
+	uint64_t max_nthread_count = 0;
 
 	VEOS_TRACE("Entering");
 
 	if (!p_ve_task)
 		goto hndl_return;
+
+	/*Check consistency of registers*/
+	retval = (*_veos_arch_ops->arch_psm_check_reg_consistency)(p_ve_task);
+	if(retval < 0){
+		VEOS_ERROR("Unable to start process with PID: %d,"
+				"registers are not consistent", p_ve_task->pid);
+		goto hndl_return;
+	}
+
 
 	/* Acquire core lock as we can update number of active task on core */
 	pthread_rwlock_lock_unlock(&(p_ve_task->p_ve_core->ve_core_lock),
@@ -93,8 +108,23 @@ int psm_ve_start_process(struct ve_task_struct *p_ve_task)
 	/* Release task lock */
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK,
 			"Failed to release task lock");
+
+	pthread_mutex_lock_unlock(&p_ve_task->p_ve_mm->thread_group_mm_lock,
+			LOCK, "Failed to acquire mm-thread-group-lock");
+	max_nthread_count = psm_current_run_wait_thread_count(p_ve_task);
+	pthread_mutex_lock_unlock(&p_ve_task->p_ve_mm->thread_group_mm_lock,
+			UNLOCK, "Failed to release mm-thread-group-lock");
+
+	pthread_mutex_lock_unlock(&(p_ve_task->sighand->siglock), LOCK,
+			"Failed to acquire task sighand lock [PID: %d]",
+			p_ve_task->pid);
+	psm_max_run_wait_thread_count(p_ve_task, max_nthread_count);
+	pthread_mutex_lock_unlock(&(p_ve_task->sighand->siglock), UNLOCK,
+			"Failed to release task sighand lock  [PID: %d]",
+			p_ve_task->pid);
+
 	pthread_rwlock_lock_unlock(&(p_ve_task->p_ve_core->ve_core_lock),
-				UNLOCK,	"Failed to release core lock");
+			UNLOCK,	"Failed to release core lock");
 	retval = 0;
 hndl_return:
 	VEOS_TRACE("Exiting");
@@ -112,7 +142,7 @@ int psm_ve_stop_process(struct ve_task_struct *p_ve_task)
 {
 	int retval = -1;
 	struct ve_core_struct *p_ve_core = NULL;
-	reg_t regdata = 0;
+	ve_reg_t regdata = 0;
 
 	VEOS_TRACE("Entering");
 
@@ -154,8 +184,8 @@ int psm_ve_stop_process(struct ve_task_struct *p_ve_task)
 	if (p_ve_core->curr_ve_task == p_ve_task && p_ve_task->reg_dirty) {
 		VEOS_DEBUG("Get process %d context from core %d",
 				p_ve_task->pid, p_ve_core->core_num);
-		psm_halt_ve_core(p_ve_core->node_num
-				,p_ve_core->core_num, &regdata, false);
+		psm_halt_ve_core(p_ve_core->node_num,
+				p_ve_core->core_num, &regdata, false, true);
 		psm_save_current_user_context(p_ve_task);
 	}
 	pthread_mutex_lock_unlock(&p_ve_task->p_ve_mm->thread_group_mm_lock,
@@ -425,62 +455,6 @@ hndl_return:
 }
 
 /**
- * @brief Get the offset of VE register.
- *
- * @param[in] reg VE user register
- *
- * @return offset on success, -1 on failure.
- */
-off_t psm_get_reg_offset(usr_reg_name_t reg)
-{
-	switch ((usr_reg_name_t)reg) {
-	case USRCC:
-		VEOS_DEBUG("offset of USRCC");
-		return (offsetof(core_user_reg_t, USRCC));
-	case PSW:
-		VEOS_DEBUG("offset of PSW");
-		return (offsetof(core_user_reg_t, PSW));
-	case EXS:
-		VEOS_DEBUG("offset of EXS");
-		return (offsetof(core_user_reg_t, EXS));
-	case IC:
-		VEOS_DEBUG("offset of IC");
-		return (offsetof(core_user_reg_t, IC));
-	case ICE:
-		VEOS_DEBUG("offset of ICE");
-		return (offsetof(core_user_reg_t, ICE));
-	case VIXR:
-		VEOS_DEBUG("offset of VIXR");
-		return (offsetof(core_user_reg_t, VIXR));
-	case VL:
-		VEOS_DEBUG("offset of VL");
-		return (offsetof(core_user_reg_t, VL));
-	case SAR:
-		VEOS_DEBUG("offset of SAR");
-		return (offsetof(core_user_reg_t, SAR));
-	case PMMR:
-		VEOS_DEBUG("offset of PMMR");
-		return (offsetof(core_user_reg_t, PMMR));
-	default:
-		if ((reg >= PMCR00) && (reg <= PMCR04)) {
-			VEOS_DEBUG("offset of PMCR[%02d]", reg - PMCR00);
-			return (offsetof(core_user_reg_t, PMCR[reg - PMCR00]));
-		}
-		if ((reg >= PMC00) && (reg <= PMC15)) {
-			VEOS_DEBUG("offset of PMC[%02d]", reg - PMC00);
-			return (offsetof(core_user_reg_t, PMC[reg - PMC00]));
-		}
-		if ((reg >= SR00) && (reg <= SR63)) {
-			VEOS_DEBUG("offset of SR[%02d]", reg - SR00);
-			return (offsetof(core_user_reg_t, SR[reg - SR00]));
-		}
-
-		VEOS_DEBUG("usr_reg: no such a register(%d).", reg);
-	}
-	return -1;
-}
-
-/**
  * @brief Read the content from the given VE register of the tracee
  * process.
  *
@@ -502,7 +476,7 @@ int psm_ptrace_peekuser(struct ve_task_struct *p_ve_task, uint64_t addr,
 		goto hndl_return;
 
 	/* Find the offset of the given VE register */
-	reg_offset = psm_get_reg_offset((usr_reg_name_t)addr);
+	reg_offset = (*_veos_arch_ops->arch_psm_get_reg_offset)((ve_usr_reg_name_t)addr);
 	if (-1 == reg_offset) {
 		VEOS_DEBUG("Reg: %ld offset not found", addr);
 		goto hndl_return;
@@ -511,8 +485,12 @@ int psm_ptrace_peekuser(struct ve_task_struct *p_ve_task, uint64_t addr,
 	/* Get the content of VE register maintained in VE task struct */
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK,
 			"Failed to acquire task lock");
-	memcpy(data, (void *)((void *)(p_ve_task->p_ve_thread) + reg_offset),
-			sizeof(reg_t));
+	if((ve_usr_reg_name_t)addr == VE_USR_EXS)
+		*(ve_reg_t*)data = p_ve_task->p_ve_thread->EXS;
+	else {
+		memcpy(data, (void *)((char *)p_ve_task->p_ve_thread->arch_user_regs + reg_offset),
+			sizeof(ve_reg_t));
+	}
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK,
 			"Failed to release task lock");
 
@@ -544,7 +522,7 @@ int psm_ptrace_pokeuser(struct ve_task_struct *p_ve_task, uint64_t addr,
 		goto hndl_return;
 
 	/* Find the offset of the given VE register */
-	reg_offset = psm_get_reg_offset((usr_reg_name_t)addr);
+	reg_offset = (*_veos_arch_ops->arch_psm_get_reg_offset)((ve_usr_reg_name_t)addr);
 	if (-1 == reg_offset) {
 		VEOS_DEBUG("Reg: %ld offset not found", addr);
 		goto hndl_return;
@@ -553,8 +531,12 @@ int psm_ptrace_pokeuser(struct ve_task_struct *p_ve_task, uint64_t addr,
 	/* Set the content of VE register maintained in VE task struct */
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK,
 			"Failed to acquire task lock");
-	memcpy((void *)((void *)(p_ve_task->p_ve_thread) + reg_offset),
-			&data, sizeof(reg_t));
+	if((ve_usr_reg_name_t)addr == VE_USR_EXS)
+                p_ve_task->p_ve_thread->EXS = data;
+        else {
+		memcpy((void *)((char *)p_ve_task->p_ve_thread->arch_user_regs + reg_offset),
+			&data, sizeof(ve_reg_t));
+	}
 	p_ve_task->usr_reg_dirty = true;
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK,
 			"Failed to release task lock");
@@ -576,42 +558,9 @@ hndl_return:
  */
 int psm_ptrace_getregs(struct ve_task_struct *p_ve_task, uint64_t data)
 {
-	int retval = -1;
-	struct ve_user_regs ve_u_reg;
-
-	VEOS_TRACE("Entering");
-
-	if (!p_ve_task)
-		goto hndl_return;
-
-	memset(&ve_u_reg, 0, sizeof(struct ve_user_regs));
-
-	/* Get the VE user register set maintained the VE task struct */
-	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK,
-			"Failed to acquire task lock");
-	memcpy(&ve_u_reg, p_ve_task->p_ve_thread, sizeof(struct ve_user_regs));
-	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK,
-			"Failed to release task lock");
-
-	/* Write the content to tracer's memory at a given address
-	 * 'data' using DMA API's.
-	 */
-	retval = amm_dma_xfer(VE_DMA_VHVA, (uint64_t)&ve_u_reg, getpid(),
-			VE_DMA_VHVA, data, p_ve_task->p_ve_ptrace->tracer_pid,
-			sizeof(struct ve_user_regs), p_ve_task->node_id);
-	if (-1 == retval) {
-		VEOS_DEBUG("DMA failed during ptrace GETREGS");
-		goto hndl_return;
-	} else {
-		update_accounting_data(p_ve_task, ACCT_TRANSDATA,
-				sizeof(struct ve_user_regs) / (double)1024);
-	}
-
-
-	retval = 0;
-hndl_return:
 	VEOS_TRACE("Exiting");
-	return retval;
+	pid_t pid = getpid();
+	return (*_veos_arch_ops->arch_psm_ptrace_getregs)(p_ve_task, pid, data);
 }
 
 /**
@@ -625,44 +574,9 @@ hndl_return:
  */
 int psm_ptrace_setregs(struct ve_task_struct *p_ve_task, uint64_t data)
 {
-	int retval = -1;
-	struct ve_user_regs ve_u_reg;
-
-	VEOS_TRACE("Entering");
-
-	if (!p_ve_task)
-		goto hndl_return;
-
-	memset(&ve_u_reg, 0, sizeof(struct ve_user_regs));
-
-	/* Get the content from tracer's memory at a given address
-	 * 'data' using DMA API's.
-	 */
-	retval = amm_dma_xfer(VE_DMA_VHVA, data,
-			p_ve_task->p_ve_ptrace->tracer_pid,
-			VE_DMA_VHVA, (uint64_t)&ve_u_reg, getpid(),
-			sizeof(struct ve_user_regs), p_ve_task->node_id);
-	if (-1 == retval) {
-		VEOS_DEBUG("DMA failed during ptrace SETREGS");
-		goto hndl_return;
-	} else {
-		update_accounting_data(p_ve_task, ACCT_TRANSDATA,
-				sizeof(struct ve_user_regs) / (double)1024);
-	}
-
-
-	/* Update the VE user register set maintained the VE task struct */
-	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK,
-			"Failed to acquire task lock");
-	memcpy(p_ve_task->p_ve_thread, &ve_u_reg, sizeof(struct ve_user_regs));
-	p_ve_task->usr_reg_dirty = true;
-	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK,
-			"Failed to release task lock");
-
-	retval = 0;
-hndl_return:
 	VEOS_TRACE("Exiting");
-	return retval;
+	pid_t pid = getpid();
+	return (*_veos_arch_ops->arch_psm_ptrace_setregs)(p_ve_task, pid, data);
 }
 
 /**
@@ -676,44 +590,9 @@ hndl_return:
  */
 int psm_ptrace_getvregs(struct ve_task_struct *p_ve_task, uint64_t data)
 {
-	int retval = -1;
-	struct ve_user_vregs ve_u_vreg;
-
-	VEOS_TRACE("Entering");
-
-	if (!p_ve_task)
-		goto hndl_return;
-
-	memset(&ve_u_vreg, 0, sizeof(struct ve_user_vregs));
-
-	/* Get the VE vector register set maintained in the VE task struct */
-	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK,
-			"Failed to acquire task lock");
-	memcpy(&ve_u_vreg, (void *)(p_ve_task->p_ve_thread) +
-			sizeof(struct ve_user_regs),
-			sizeof(struct ve_user_vregs));
-	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK,
-			"Failed to release task lock");
-
-	/* Write the content to tracer's memory at a given address
-	 * 'data' using DMA API's.
-	 */
-	retval = amm_dma_xfer(VE_DMA_VHVA, (uint64_t)&ve_u_vreg, getpid(),
-			VE_DMA_VHVA, data, p_ve_task->p_ve_ptrace->tracer_pid,
-			sizeof(struct ve_user_vregs), p_ve_task->node_id);
-	if (-1 == retval) {
-		VEOS_DEBUG("DMA failed during ptrace GETVREGS");
-		goto hndl_return;
-	} else {
-		update_accounting_data(p_ve_task, ACCT_TRANSDATA,
-				sizeof(struct ve_user_regs) / (double)1024);
-	}
-
-
-	retval = 0;
-hndl_return:
 	VEOS_TRACE("Exiting");
-	return retval;
+	pid_t pid = getpid();
+	return (*_veos_arch_ops->arch_psm_ptrace_getvregs)(p_ve_task, pid, data);
 }
 
 /**
@@ -727,44 +606,9 @@ hndl_return:
  */
 int psm_ptrace_setvregs(struct ve_task_struct *p_ve_task, uint64_t data)
 {
-	int retval = -1;
-	struct ve_user_vregs ve_u_vreg;
-
-	VEOS_TRACE("Entering");
-
-	if (!p_ve_task)
-		goto hndl_return;
-
-	memset(&ve_u_vreg, 0, sizeof(struct ve_user_vregs));
-
-	/* Get the content from tracer's memory at a given address
-	 * 'data' using DMA API's.
-	 */
-	retval = amm_dma_xfer(VE_DMA_VHVA, data,
-			p_ve_task->p_ve_ptrace->tracer_pid,
-			VE_DMA_VHVA, (uint64_t)&ve_u_vreg, getpid(),
-			sizeof(struct ve_user_vregs), p_ve_task->node_id);
-	if (-1 == retval) {
-		VEOS_DEBUG("DMA failed during ptrace SETVREGS");
-		goto hndl_return;
-	} else {
-		update_accounting_data(p_ve_task, ACCT_TRANSDATA,
-                                sizeof(struct ve_user_vregs) / (double)1024);
-	}
-
-	/* Update the VE vector register set maintained the VE task struct */
-	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK,
-			"Failed to acquire task lock");
-	memcpy((void *)(p_ve_task->p_ve_thread) + sizeof(struct ve_user_regs),
-			&ve_u_vreg, sizeof(struct ve_user_vregs));
-	p_ve_task->usr_reg_dirty = true;
-	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK,
-			"Failed to release task lock");
-
-	retval = 0;
-hndl_return:
 	VEOS_TRACE("Exiting");
-	return retval;
+	pid_t pid = getpid();
+	return (*_veos_arch_ops->arch_psm_ptrace_setvregs)(p_ve_task, pid, data);
 }
 
 /**
@@ -889,10 +733,8 @@ int psm_get_ice_regval(int pid, uint64_t *ice)
 
 	if (tsk == p_ve_core->curr_ve_task) {
 		VEOS_DEBUG("Getting ICE from core: %d", core_id);
-		retval = vedl_get_usr_reg(VE_HANDLE(0),
-				VE_CORE_USR_REG_ADDR(0, core_id),
-				ICE,
-				ice);
+		retval = vedl_get_usr_reg(VE_CORE_USR_REG(0, core_id),
+				VE_USR_ICE, ice);
 		if (0 != retval) {
 			VEOS_DEBUG("vedl_get_usr_reg fail for core %d",
 					core_id);
@@ -900,7 +742,9 @@ int psm_get_ice_regval(int pid, uint64_t *ice)
 			goto hndl_return;
 		}
 	} else
-		*ice = tsk->p_ve_thread->ICE;
+		*ice = (uint64_t)(*_veos_arch_ops->
+			arch_psm_get_exception_addr_on_thread_struct)(
+				tsk->p_ve_thread->arch_user_regs);
 
 	VEOS_DEBUG("ICE: %lx of Pid: %d", *ice, pid);
 	retval = 0;

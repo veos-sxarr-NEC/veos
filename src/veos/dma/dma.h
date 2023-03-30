@@ -38,15 +38,14 @@ typedef struct ve_dma_req_hdl_struct ve_dma_req_hdl;
 /**
  * @brief address space type for DMA API
  */
-typedef enum ve_dma_addrtype {
-	VE_DMA_VEMVA,/*!< VEMVA (virtual address for VE core) */
-	VE_DMA_VEMVA_WO_PROT_CHECK,/*!< VEMVA (virtual address for VE core) without write protection check*/
-	VE_DMA_VHVA,/*!< VHVA (virtual address for VH core) */
-	VE_DMA_VEMAA,/*!< VEMAA (physical address on VE memory) */
-	VE_DMA_VERAA,/*!< VERAA (physical address on VE registers) */
-	VE_DMA_VHSAA,/*!< VHSAA (VH bus address; PCI memory address) */
-	VE_DMA_ADDRTYPE_NUMBER,/*!< the number of types, not for arguments */
-} ve_dma_addrtype_t;
+typedef unsigned int ve_dma_addrtype_t;
+#define VE_DMA_VEMVA (0) /*!< VEMVA (virtual address for VE core) */
+#define VE_DMA_VEMVA_WO_PROT_CHECK (1) /*!< VEMVA (virtual address for VE core) without write protection check*/
+#define VE_DMA_VHVA (2) /*!< VHVA (virtual address for VH core) */
+#define VE_DMA_VEMAA (3) /*!< VEMAA (physical address on VE memory) */
+/*!< `4' is reserved for an old definition */
+#define VE_DMA_VHSAA (5) /*!< VHSAA (VH bus address; PCI memory address) */
+/* addr types > 5 are architecture-dependent */
 
 /**
  * @brief status of DMA request handle
@@ -82,4 +81,5 @@ ve_dma_status_t ve_dma_wait(ve_dma_req_hdl *);
 ve_dma_status_t ve_dma_timedwait(ve_dma_req_hdl *, const struct timespec *);
 int ve_dma_req_free(ve_dma_req_hdl *);
 void ve_dma_terminate_all(ve_dma_hdl *);
+int ve_dma_is_busy(const ve_dma_hdl *);
 #endif

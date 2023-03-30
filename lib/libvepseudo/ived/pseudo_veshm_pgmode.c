@@ -35,8 +35,7 @@
 #include <stddef.h>
 
 #include "pseudo_veshm_pgmode.h"
-#include "libved.h"
-#include "ve_hw.h"
+#include <libved.h>
 #include "proto_buff_schema.pb-c.h"
 #include "handle.h"
 #include "comm_request.h"
@@ -124,6 +123,8 @@ pseudo_get_pgsize(uint64_t *args, veos_handle *handle)
 		retval = PGSIZE_2M;
 	else if (ret_msg->syscall_retval == 0 /* PG_4K */)
 		retval = PGSIZE_4K;
+	else if (ret_msg->syscall_retval == 3 /* PG_256MB */)
+		retval = PGSIZE_256M;
 	else
 		retval = ret_msg->syscall_retval;
 

@@ -49,7 +49,7 @@ def os_register(sock, driverfile, subcmd):
     os_reg.socket_name = driverfile
     os_reg.pid = os.getpid()
     os_reg.bar01_addr = 0xffffffffffffffff # dummy
-    os_reg.bar3_addr = 0xffffffffffffffff # dummy
+    os_reg.bar_cr_addr = 0xffffffffffffffff # dummy
     os_reg.pciatb_pgsize = 0 # dummy
     os_reg.mode_flag = 0 # dummy
     data = cmd.SerializeToString()

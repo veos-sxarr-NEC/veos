@@ -41,13 +41,14 @@
 #include <sys/mman.h>
 #include <string.h>
 #include <sys/statvfs.h>
-#include "ve_memory.h"
 #include "sys_mm.h"
 #include "ve_socket.h"
 #include "handle.h"
 #include "mm_transfer.h"
 #include "velayout.h"
 #include "sys_mm.h"
+#include "align.h"
+#include <veos_arch_defs.h>
 #include "vemva_layout.h"
 
 static struct auxv_info auxv;
@@ -79,10 +80,14 @@ static struct auxv_info auxv;
 					      * and buffer */
 #define TRANS_SZ_SHFT   3	/*!< make a size of multiples of 8. */
 #define EXECVE_MAX_ARGS 513
-reg_t inst_intr; /*!< In pse_load_interp = ehdr->e_entry */
-reg_t inst_main; /*!< In pse_load_binary  ehdr->e_entry */
-unsigned long long dyn_seg_addr_main; /*!< PT_DYN(main) phdr->p_vaddr */
-unsigned long long dyn_seg_addr_interp; /*!< PT_DYN: phdr->p_vaddr */
+
+#define VH_PAGE_SHIFT (12)
+ve_reg_t inst_intr; /*!< In pse_load_interp = ehdr->e_entry */
+ve_reg_t inst_main; /*!< In pse_load_binary  ehdr->e_entry */
+uint64_t dyn_seg_addr_main; /*!< PT_DYN(main) phdr->p_vaddr */
+uint64_t dyn_seg_addr_interp; /*!< PT_DYN: phdr->p_vaddr */
+
+const struct veos_arch_ops *_veos_arch_ops;
 
 /**
  * @brief This function will reserve the VE process address
@@ -102,7 +107,6 @@ int ve_address_space_reserve(void)
 	 * "VE Memory management region (VEMMR)"
 	 */
 	PSEUDO_DEBUG("Reserving Space for VE memory virtual address region");
-
 	ret_addr = mmap((void *)VEMMR_START, VEMMR_SIZE,
 			PROT_NONE, MAP_PRIVATE|MAP_ANON|MAP_FIXED,
 			-1, 0);
@@ -118,6 +122,21 @@ int ve_address_space_reserve(void)
 			"Map address: %p", ret_addr);
 err:
 	return ret;
+}
+
+/**
+ * @brief To Validate the gap between data and text section.
+ *
+ * @param[in] ehdr  ELF header
+ *
+ * @Output: Call Architecture dependent ve_validate_gap.
+ */
+void ve_validate_gap(Elf_Ehdr *ehdr)
+{
+       if(NULL != _veos_arch_ops)
+               _veos_arch_ops->arch_ve_validate_gap(ehdr);
+       else
+               pseudo_abort();
 }
 
 /**
@@ -201,7 +220,7 @@ void ve_set_stack_limit(void)
 int pse_load_binary(char *filename, veos_handle *handle,
 		struct ve_start_ve_req_cmd *start_ve_req)
 {
-	reg_t *instr_cntr = &(start_ve_req->context_info.IC);
+	ve_reg_t *instr_cntr = &(start_ve_req->context_info.IC);
 	int segnum = 0;             /* number of segments */
 	char *head = NULL;      /* elf */
 	char *head_interp = NULL;
@@ -232,6 +251,11 @@ int pse_load_binary(char *filename, veos_handle *handle,
 	ret = chk_elf_consistency(load_elf.stat.elf_ex);
 	if ( 0 > ret) goto err_ret;
 
+	/* Probe VE architecture type */
+	_veos_arch_ops = _veos_arch_find(handle->ve_handle, ehdr);
+	if (NULL == _veos_arch_ops)
+		return -1;
+
 	/* Parse segments and fill information */
 	load_elf.pagesize = -1;
 	fill_ve_elf_data(head);
@@ -257,6 +281,11 @@ int pse_load_binary(char *filename, veos_handle *handle,
 	auxv.e_phnum = ehdr->e_phnum;
 	auxv.e_phentsize = ehdr->e_phentsize;
 	auxv.p_align = load_elf.pagesize;
+
+	/* Get hardware capability now */
+	PSEUDO_DEBUG("Hardware mask maximum value: %u",HWCAP_VE_MASK);
+	auxv.p_hwcap = _veos_arch_ops->arch_get_hardware_capability(HWCAP_VE_MASK);
+	PSEUDO_DEBUG("Hardware Capability : %lu",auxv.p_hwcap);
 
 	ve_text_page = ehdr->e_entry & ~(auxv.p_align - 1);
 	default_page_size = auxv.p_align;
@@ -312,7 +341,7 @@ int pse_load_binary(char *filename, veos_handle *handle,
 		}
 		if ((seg_addr->perm & PROT_EXEC) && executeonce) {
 			if (!(load_elf.stat.file_interp)) {
-				*instr_cntr = (reg_t)
+				*instr_cntr = (ve_reg_t)
 					(((Elf_Ehdr *)head)->e_entry);
 				PSEUDO_DEBUG("VE program "
 						"start IC : %lx",
@@ -327,83 +356,19 @@ int pse_load_binary(char *filename, veos_handle *handle,
 						: 0, (uint64_t)load_elf
 						.ve_interp_map);
 
-				*instr_cntr = (reg_t)((char *)
+				*instr_cntr = (ve_reg_t)((char *)
 						(((Elf_Ehdr *)head_interp)->e_entry) +
 						(uint64_t)load_elf.ve_interp_map);
 				executeonce = 0;
 			}
 		}
 	}
+
 	PSEUDO_DEBUG("IC set : %lx", *instr_cntr);
 	PSEUDO_TRACE("Out Func");
 
 err_ret:
 	return ret;
-}
-
-/**
- * @brief To Validate the gap between data and text section.
- *
- * @param[in] ehdr  ELF header
- *
- * @Output: Program proceed further in success else abort.
- */
-void ve_validate_gap(Elf_Ehdr *ehdr)
-{
-	char *sec_string = NULL;
-	int i = 0;
-	Elf_Shdr *shdr = NULL;
-	offset_t diff_offset = 0;
-	Elf64_Addr sh_addr_ax = (long unsigned int)NULL;
-	Elf64_Addr sh_addr_wa = (long unsigned int)NULL;
-
-	if(NULL == ehdr)
-		return;
-
-	if (ehdr->e_type == ET_EXEC) {
-		shdr = (Elf64_Shdr *)load_elf.stat.start_section;
-		sec_string = load_elf.stat.start_string;
-	} else if (ehdr->e_type == ET_DYN) {
-		shdr = (Elf64_Shdr *)load_elf.stat.start_section_dyn;
-		sec_string = load_elf.stat.start_string_dyn;
-	}
-
-	if (!shdr)
-		return;
-
-	for (i = 0; i < ehdr->e_shnum; i++) {
-		if ((shdr->sh_flags == VE_AX)) {
-			/* Get the address for end of text segment */
-			sh_addr_ax = shdr->sh_addr;
-			PSEUDO_DEBUG("Section name is %s,"
-					"flags(AX): %p, address: %p\n",
-					(char *)sec_string + shdr->sh_name,
-					(void *)shdr->sh_flags,
-					(void *)sh_addr_ax);
-		}
-		if ((shdr->sh_flags == VE_WA)||	(shdr->sh_flags == VE_WAT)) {
-			/* Get the address for start of data segment */
-			sh_addr_wa = shdr->sh_addr;
-			PSEUDO_DEBUG("Section name is %s,"
-					"flags(WA/WAT): %p,"
-					"address: %p\n",
-					(char *)sec_string + shdr->sh_name,
-					(void *)shdr->sh_flags,
-					(void *)sh_addr_wa);
-			break;
-		}
-		shdr++;
-	}
-	/* To check binary/ld.so, gap is less than 1024 byte or not */
-	diff_offset = sh_addr_wa - sh_addr_ax;
-	if(diff_offset < DIFF_SECT) {
-		PSEUDO_ERROR("TEXT/DATA gap segment is less than 1024B\n");
-		fprintf(stderr, "TEXT/DATA segment gap is less than 1024B\n");
-		pseudo_abort();
-	}
-
-	PSEUDO_DEBUG("The diff between AX and WA/WAT is %p\n\n",
-			(void *)diff_offset);
 }
 
 /**
@@ -420,7 +385,7 @@ void ve_bss_info(Elf_Ehdr *ehdr, uint64_t p_vaddr, char *name)
 	char *sec_string = NULL;
 	int i = 0;
 	int flag = 0;
-	offset_t offset = 0;
+	ve_mem_offset_t offset = 0;
 	Elf_Shdr *shdr = NULL;
 
 	if (ehdr->e_type == ET_EXEC) {
@@ -522,8 +487,8 @@ int init_stack(veos_handle *handle, int argc,
 	uint64_t vdso = 0;
 	int cnt_env = 0;
 	int cnt_auxv = 0;
-	reg_t *sp = NULL;
-	reg_t *sz = NULL;
+	ve_reg_t *sp = NULL;
+	ve_reg_t *sz = NULL;
 
 	PSEUDO_TRACE("In Func");
 	sp = &(start_ve_req->context_info.SP);
@@ -579,6 +544,7 @@ int init_stack(veos_handle *handle, int argc,
 		case AT_RANDOM:
 		case AT_EXECFN:
 		case AT_QUICKCALL_VADDR:
+		case AT_HWCAP:
 			areap_8b += AUX_BYTE;
 			arg_p += AUX_BYTE;
 			break;
@@ -749,6 +715,13 @@ int init_stack(veos_handle *handle, int argc,
 					ve_string_addr, areap_1b);
 			ve_string_addr += len + 1;
 			areap_1b += len + 1;
+			break;
+		case AT_HWCAP:
+			*areap_8b++ = (long long)(((Elf64_auxv_t *)
+						arg_p)->a_type);
+			PSEUDO_DEBUG("|\t%p\tAT_HWCAP: %lu",
+					(void *)areap_8b, auxv.p_hwcap);
+			*areap_8b++ = (long long)auxv.p_hwcap;
 			break;
 		case AT_ENTRY:
 			*areap_8b++ = (long long)(((Elf64_auxv_t *)
@@ -952,99 +925,6 @@ stack_err_ret:
 stack_err:
 	errno = -ret;
 	return ret;
-}
-
-
-/**
-* @brief Parse segments and fill information.
-*
-* @param[in] head ELF file mmaped address.
-* @param[in] ehdr Address of ELF header.
-*
-* @return No return value, on failure call exit.
-*/
-void fill_ve_elf_data(char *head)
-{
-	static bool is_interp;
-	int segnum = 0;
-	char *buf = NULL;
-	void *align_addr = NULL;
-	Elf_Ehdr *ehdr = NULL;
-	Elf_Phdr *phdr = NULL;
-
-	ehdr = (Elf_Ehdr *)head;
-	PSEUDO_DEBUG("Parsing segment from file");
-	for (segnum = 0; segnum < ehdr->e_phnum; segnum++) {
-		phdr = (Elf_Phdr *)(head + ehdr->e_phoff +
-				ehdr->e_phentsize * segnum);
-
-		switch (phdr->p_type) {
-		case PT_INTERP:
-			PSEUDO_DEBUG("VE interpreter, name: %p",
-					(void *)head+phdr->p_offset);
-
-			if (0 > (lseek(load_elf.stat.fd,
-						phdr->p_offset, SEEK_SET))) {
-				PSEUDO_ERROR("failed to reposition offset"
-						": %s", strerror(errno));
-				fprintf(stderr, "Failed to load executable\n"
-					"Reposition offset: %s\n",
-					strerror(errno));
-				pseudo_abort();
-			}
-			buf = (char *)calloc(1, phdr->p_filesz);
-			if(!buf) {
-				PSEUDO_ERROR("failed to allocate buffer: %s",
-						strerror(errno));
-				fprintf(stderr, "Failed to load executable\n"
-					"Allocate interpreter buffer: %s\n",
-					strerror(errno));
-				pseudo_abort();
-			}
-			if (0 > (read(load_elf.stat.fd, buf,
-							phdr->p_filesz))) {
-				PSEUDO_ERROR("failed to read data: %s",
-						strerror(errno));
-				fprintf(stderr, "Failed to load executable\n"
-					"Read interpreter data: %s",
-					strerror(errno));
-				pseudo_abort();
-			}
-			is_interp = 1;
-
-			/* copying INTERP in mapped area */
-			(void)memcpy((char *)load_elf.stat.file_interp,
-					(char *)buf, phdr->p_filesz);
-
-			load_elf.stat.file_interp_end = (char *)
-					load_elf.stat.file_interp
-					+ phdr->p_filesz;
-
-			align_addr = (char *)((((uint64_t)
-					(load_elf.stat.file_interp_end))
-					& ~(((uint64_t)1 << BPSPSHFT) - 1))
-					+ (1 << BPSPSHFT));
-
-			memset(load_elf.stat.file_interp_end, 0,
-				 ((char *)align_addr - load_elf.stat.file_interp_end));
-			free(buf);
-			break;
-		case PT_LOAD:
-			PSEUDO_DEBUG("VE load,  name: %p",
-					head+phdr->p_offset);
-			if ((phdr->p_flags & PF_X) && (load_elf.pagesize == -1 )) {
-				load_elf.pagesize = phdr->p_align;
-				PSEUDO_DEBUG("load_elf.pagesize: %p",
-						(void *)load_elf.pagesize);
-			}
-			load_elf.loadable_segnum += 1;
-			break;
-		default:
-			break;
-		}
-	}
-	if (!is_interp)
-		load_elf.stat.file_interp = NULL;
 }
 
 /**
@@ -1945,4 +1825,24 @@ void fill_ve_vh_segmap(veos_handle *handle)
 	close(load_elf.stat.fd);
 	close(load_elf.stat.fd_dyn);
 
+}
+
+/* @brief Parse segments and fill information.
+*
+* @param[in] head ELF file mmaped address.
+* @param[in] ehdr Address of ELF header.
+*
+* @return No return value, on failure call exit.
+*/
+
+void fill_ve_elf_data(char *head)
+{
+	PSEUDO_DEBUG("Entering fill_ve_elf_data...");
+        if(NULL != _veos_arch_ops)
+                _veos_arch_ops->arch_fill_ve_elf_data(head);
+        else
+	{
+		pseudo_abort();
+		PSEUDO_ERROR("Failed to read ELF data");
+	}
 }

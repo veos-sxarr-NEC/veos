@@ -50,6 +50,7 @@ enum veshm_memory_mode_flag{
 	VESHM_MODE_PCIATB	= VE_REGISTER_PCI,      /* 0x4 */
 	VESHM_MODE_SWAPPABLE	= VE_SWAPPABLE,			/* 0x20 */
 	VESHM_MODE_CLOSE	= 0x0000000000000008LL,	/* VESHM is closed */
+	VESHM_MODE_256MB	= VE_MAP_256MB,         /* Use 256MB DMAATB */
 };
 
 
@@ -67,9 +68,10 @@ enum veshm_cr_mode_flag{
 /* Memory Size */
 #define PGMODE_FLAG_2M		0ULL    /* page size mode flag */
 #define PGMODE_FLAG_64M		1ULL
-#define PGSIZE_4K	 4*1024
-#define PGSIZE_2M	 2*1024*1024
-#define PGSIZE_64M	64*1024*1024
+#define PGSIZE_4K	  4*1024
+#define PGSIZE_2M	  2*1024*1024
+#define PGSIZE_64M	 64*1024*1024
+#define PGSIZE_256M	256*1024*1024
 #define SHFT_2M		21
 #define SHFT_64M	26
 #define SIZE_MB		1024*1024	

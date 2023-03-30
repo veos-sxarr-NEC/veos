@@ -66,6 +66,9 @@ typedef enum usr_reg {
 	SR36, SR37, SR38, SR39, SR40, SR41, SR42, SR43, SR44, SR45, SR46, SR47,
 	SR48, SR49, SR50, SR51, SR52, SR53, SR54, SR55, SR56, SR57, SR58, SR59,
 	SR60, SR61, SR62, SR63,
+       	PMC16, PMC17, PMC18, PMC19, PMC20,
+        /* following +3 reserve for future use */
+        DMY_PMC21, DMY_PMC22, DMY_PMC23,
 } usr_reg_name_t;
 
 /**
@@ -74,8 +77,8 @@ typedef enum usr_reg {
 struct ve_user_regs {
 	/* Performance Counters */
 	reg_t USRCC;			/*     0x0 -     0x7 */
-	reg_t PMC[16];			/*     0x8 -    0x87 */
-	uint8_t pad0[0x1000 - 0x88];	/*    0x88 -   0xFFF */
+	reg_t PMC[24];			/*     0x8 -    0xc7 */
+	uint8_t pad0[0x1000 - 0xc8];	/*    0xc8 -   0xFFF */
 	/* Control Registers */
 	reg_t PSW;			/*  0x1000 -  0x1007 */
 	reg_t EXS;			/*  0x1008 -  0x100F */

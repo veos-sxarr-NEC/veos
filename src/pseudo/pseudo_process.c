@@ -63,6 +63,8 @@
 #include "vemmr_mgmt.h"
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <sched.h>
+#include <math.h>
 #include "signal_comm.h"
 
 #define PROGRAM_NAME "ve_exec"
@@ -86,6 +88,7 @@ struct ve_address_space_info ve_info;
 uint64_t default_page_size;
 struct ve_load_data load_elf;
 struct vemva_header vemva_header;
+cpu_set_t ve_affinity_mask;
 
 /**
  * @brief Fetches the node number from VEOS socket file.
@@ -769,7 +772,191 @@ void close_syscall_args_fille(int fd, char *sfile_name)
 
 	PSEUDO_TRACE("Exiting");
 }
+void get_ve_core_limit(veos_handle *handle)
+{
+	int num_of_core = 0, i = 0;
+	unsigned long long affinity_mask = 0;
+	char *affinity_mask_string = NULL;
+	CPU_ZERO(&ve_affinity_mask);
 
+	affinity_mask_string = getenv("VE_CORE_LIMIT");
+	if (affinity_mask_string == NULL)
+		return;
+	errno = 0;
+	affinity_mask =	strtoll(affinity_mask_string, NULL, 10);
+	if (ERANGE == errno) {
+		PSEUDO_ERROR("Error parsing VE_CORE_LIMIT env variable\n");
+		fprintf(stderr, "Error parsing VE_CORE_LIMIT env variable\n");
+		goto handl_error;
+	}
+	num_of_core = vedl_get_num_of_core(handle->ve_handle);
+	if (0 > num_of_core) {
+		PSEUDO_ERROR("failed to get number of VE cores");
+		fprintf(stderr, "failed to get number of VE cores");
+		goto handl_error;
+	}
+	for(i=0; affinity_mask > 0 ; i++) {
+		if (i == num_of_core) {
+			PSEUDO_ERROR("Core %d in VE_CORE_LIMIT "
+							"doesn't exist\n", i);
+			fprintf(stderr, "Core %d in VE_CORE_LIMIT "
+							"doesn't exist\n", i);
+			goto handl_error;
+		}
+		if (affinity_mask & 1) {
+			CPU_SET(i, &ve_affinity_mask);
+		}
+		affinity_mask >>= 1;
+	}
+	return;
+handl_error:
+	/* FATAL ERROR: Exiting pseudo process */
+	fprintf(stderr, "VE process setup failed\n");
+	pseudo_abort();
+}
+
+void get_numa_node_from_affinity_mask(veos_handle *handle,
+						int *numa_node, int core_id)
+{
+	char string[PATH_MAX] = {0};
+	int i = 0, retval = -1, ve_numa_list = -1;
+	char *ve_nama_list_string = NULL, *affinity_mask_string= NULL;
+	int numa0_cores = 0, numa0_cores_count = 0;
+	int numa1_cores = 0, numa1_cores_count = 0;
+	int partitioning_mode = 0, numa0_set = 0, numa1_set = 0;
+
+	ve_nama_list_string = getenv("_VENUMALIST");
+	if (ve_nama_list_string != NULL) {
+		errno = 0;
+		ve_numa_list = strtoll(ve_nama_list_string, NULL, 10);
+		if (ERANGE == errno) {
+			PSEUDO_ERROR("Error: invalid numa node set "
+							"by job scheduler\n");
+			goto handl_error;
+		}
+	}
+	retval = vedl_read_from_sysfs(handle->ve_handle,
+					"partitioning_mode", string, PATH_MAX);
+	if (retval) {
+		PSEUDO_ERROR("failed to get VE node partitioning mode");
+		fprintf(stderr, "failed to get VE node partitioning mode");
+		goto handl_error;
+	}
+	errno = 0;
+	partitioning_mode = strtol(string, NULL, 0);
+	if ((errno == ERANGE && (retval == LONG_MAX || retval == LONG_MIN))
+			|| (errno != 0 && retval == 0)) {
+		PSEUDO_ERROR("failed to get VE node partitioning mode");
+		fprintf(stderr, "failed to get VE node partitioning mode");
+		goto handl_error;
+	}
+	/* verify that numa node from _VENUMALIST and VE_NUMA_OPT are in sync*/
+	if (*numa_node != -1 && ve_numa_list != -1
+			&& *numa_node != ve_numa_list) {
+		PSEUDO_ERROR("invalid numa node number given\n");
+		fprintf(stderr, "Error: numa node %d not allowed "
+					"by job scheduler\n", *numa_node);
+		goto handl_error;
+	}
+	if (partitioning_mode == 0)
+		return;
+	/* verify that core given as '-c' is allowed by VE_CORE_LIMIT
+	 * and the job scheduler */
+	affinity_mask_string = getenv("VE_CORE_LIMIT");
+	if (affinity_mask_string != NULL && core_id != -1
+			&& !CPU_ISSET(core_id, &ve_affinity_mask)) {
+		fprintf(stderr, "Error: Core in '-c|--core' is not permitted "
+					"by VE_CORE_LIMIT or job scheduler\n");
+		goto handl_error;
+	}
+	/* verify that the affinity mask from VE_CORE_LIMIT or the job
+	 * scheduler doesn't span across multiple numa nodes */
+	memset(string, '\0', PATH_MAX);
+	retval = vedl_read_from_sysfs(handle->ve_handle,
+					"numa0_cores", string, PATH_MAX);
+	if (retval) {
+		PSEUDO_ERROR("failed to get VE node partitioning mode");
+		goto handl_error;
+	}
+	errno = 0;
+	numa0_cores = strtol(string, NULL, 16);
+	if ((errno == ERANGE && (retval == LONG_MAX || retval == LONG_MIN))
+			|| (errno != 0 && retval == 0)) {
+		PSEUDO_ERROR("failed to get VE node partitioning mode");
+		goto handl_error;
+	}
+	memset(string, '\0', PATH_MAX);
+	retval = vedl_read_from_sysfs(handle->ve_handle,
+					"numa1_cores", string, PATH_MAX);
+	if (retval) {
+		PSEUDO_ERROR("failed to get VE node partitioning mode");
+		goto handl_error;
+	}
+	errno = 0;
+	numa1_cores = strtol(string, NULL, 16);
+	if ((errno == ERANGE && (retval == LONG_MAX || retval == LONG_MIN))
+			|| (errno != 0 && retval == 0)) {
+		PSEUDO_ERROR("failed to get VE node partitioning mode");
+		goto handl_error;
+	}
+	while(numa0_cores) {
+		numa0_cores_count += numa0_cores & 1;
+		numa0_cores >>= 1;
+	}
+	for (i = 0; i < numa0_cores_count; i++) {
+		if (CPU_ISSET(i, &ve_affinity_mask)) {
+			numa0_set = 1;
+		}
+	}
+	while(numa1_cores) {
+		numa1_cores_count += numa1_cores & 1;
+		numa1_cores >>= 1;
+	}
+	for (; i < numa0_cores_count + numa1_cores_count; i++) {
+		if (CPU_ISSET(i, &ve_affinity_mask)) {
+			numa1_set = 1;
+		}
+	}
+	if (numa0_set && numa1_set) {
+		fprintf(stderr, "Error: VE_CORE_LIMIT has cores "
+					"across different numa nodes\n");
+		goto handl_error;
+	} else if (numa0_set) {
+		if(*numa_node == 1) {
+			fprintf(stderr, "Error: invalid input for "
+					"VE_CORE_LIMIT or numa node number\n");
+			goto handl_error;
+		}
+		*numa_node = 0;
+	}
+	else if (numa1_set) {
+		if(*numa_node == 0) {
+			fprintf(stderr, "Error: invalid input for "
+					"VE_CORE_LIMIT or numa node number\n");
+			goto handl_error;
+		}
+		*numa_node = 1;
+	}
+
+	/* verify that core given as '-c' belongs to _VENUMALIST */
+	if (ve_numa_list != -1) {
+		if (*numa_node != -1 && *numa_node != ve_numa_list) {
+			fprintf(stderr, "Error: invalid input for "
+						"cpu mask or numa node number\n");
+			goto handl_error;
+		} else if (core_id != -1
+			&& ((ve_numa_list == 0 && core_id >= numa0_cores_count)
+			|| (ve_numa_list == 1 && core_id < numa0_cores_count))) {
+			fprintf(stderr, "Error: core %d not allowed "
+						"by job scheduler\n", core_id);
+			goto handl_error;
+		}
+	}
+	return;
+handl_error:
+	fprintf(stderr, "VE process setup failed\n");
+	pseudo_abort();
+}
 /**
 * @brief Main function of  pseudo process.
 *	Function performs the following:
@@ -1191,7 +1378,7 @@ int main(int argc, char *argv[], char *envp[])
 	free(veos_sock_name);
 
 	/* Update global tid array for main thread with vefd */
-	global_tid_info[0].vefd = g_handle->ve_handle->vefd;
+	global_tid_info[0].vefd = vedl_get_fd(g_handle->ve_handle);
 	global_tid_info[0].veos_hndl = g_handle;
 	tid_counter=0;
 	global_tid_info[0].tid_val = getpid();
@@ -1204,7 +1391,8 @@ int main(int argc, char *argv[], char *envp[])
 	init_rwlock_to_sync_dma_fork();
 
 	PSEUDO_DEBUG("TID struct vefd : %d, VE driver fd %d",
-			global_tid_info[0].vefd, g_handle->ve_handle->vefd);
+			global_tid_info[0].vefd,
+			vedl_get_fd(g_handle->ve_handle));
 
 	/* Get the basename of the VE executable */
 	exe_base_name = basename(exe_name);
@@ -1227,6 +1415,11 @@ int main(int argc, char *argv[], char *envp[])
 		fprintf(stderr, "VE process setup failed\n");
 		pseudo_abort();
 	}
+
+	/* get cpu affinity mask as set by the job scheduler
+	 * from VE_CORE_LIMIT */
+	get_ve_core_limit(handle);
+	get_numa_node_from_affinity_mask(handle, &numa_node, core_id);
 
 	ve_proc.namespace_pid = syscall(SYS_gettid);
 	ve_proc.shm_lhm_addr = (uint64_t)vedl_get_shm_lhm_addr(handle->ve_handle);
@@ -1257,37 +1450,33 @@ int main(int argc, char *argv[], char *envp[])
 		close_syscall_args_fille(ret, sfile_name );
 		fprintf(stderr, "VE process setup failed\n");
 		pseudo_abort();
-	} else {
-		retval = pseudo_psm_recv_load_binary_req(handle->veos_sock_fd,
-				&core_id,
-				&node_id,
-				&numa_node);
-		if (0 > retval) {
-			PSEUDO_ERROR("VEOS acknowledgement error");
-			if (-EINVAL == retval) {
-				if (core_id != -1) {
-					PSEUDO_ERROR("ERROR: Core '%d' "
-						"doesn't exist", core_id);
-					veos_handle_free(handle);
-					fprintf(stderr, "ERROR: Core '%d' "
-						"doesn't exist\n", core_id);
-				} else {
-					PSEUDO_ERROR("ERROR: Numa node '%d' "
-						"doesn't exist", numa_node);
-					veos_handle_free(handle);
-					fprintf(stderr,
-						"ERROR: Numa node"
-						" argument out of range\n");
-				}
-				close_syscall_args_fille(ret, sfile_name );
-				exit(EXIT_FAILURE);
+	}
+	retval = pseudo_psm_recv_load_binary_req(handle->veos_sock_fd,
+						&core_id, &node_id, &numa_node);
+	if (0 > retval) {
+		PSEUDO_ERROR("VEOS acknowledgement error");
+		if (-EINVAL == retval) {
+			if (core_id != -1) {
+				PSEUDO_ERROR("ERROR: Core '%d' "
+					"doesn't exist", core_id);
+				fprintf(stderr, "ERROR: Core '%d' "
+					"doesn't exist\n", core_id);
+			} else {
+				PSEUDO_ERROR("ERROR: Numa node '%d' "
+					"doesn't exist", numa_node);
+				fprintf(stderr,
+					"ERROR: Numa node"
+					" argument out of range\n");
 			}
-			PSEUDO_DEBUG("Failed to create VE process, return "
-					"value %d", retval);
-			fprintf(stderr, "VE process setup failed\n");
+			veos_handle_free(handle);
 			close_syscall_args_fille(ret, sfile_name );
-			pseudo_abort();
+			exit(EXIT_FAILURE);
 		}
+		PSEUDO_DEBUG("Failed to create VE process, return "
+				"value %d", retval);
+		fprintf(stderr, "VE process setup failed\n");
+		close_syscall_args_fille(ret, sfile_name );
+		pseudo_abort();
 	}
 
 	PSEUDO_DEBUG("CORE ID : %d\t NODE ID : %d NUMA NODE ID : %d",
@@ -1314,7 +1503,29 @@ int main(int argc, char *argv[], char *envp[])
 		fprintf(stderr, "VE process setup failed\n");
 		pseudo_abort();
 	}
+	char *affinity_mask_string = NULL;
 
+	affinity_mask_string = getenv("VE_CORE_LIMIT");
+	if (affinity_mask_string == NULL)
+		goto skip_cpu_mask_request;
+
+	retval = pseudo_psm_send_cpu_mask(handle->veos_sock_fd, ve_affinity_mask);
+	if (0 > retval) {
+		PSEUDO_ERROR("veos request error");
+		PSEUDO_DEBUG("failed to send set cpu mask request, %d",	retval);
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
+	/* Waiting for ACK from PSM */
+	retval = pseudo_psm_recv_cpu_mask_ack(handle->veos_sock_fd);
+	if (0 > retval) {
+		PSEUDO_ERROR("veos acknowledgement error");
+		PSEUDO_DEBUG("Failed to receive SET_CPU_MASK "
+				"acknowledgement: %d", retval);
+		fprintf(stderr, "VE process setup failed\n");
+		pseudo_abort();
+	}
+skip_cpu_mask_request:
 	/* load binary file */
 	/* Memory Manager updates ATB & DMAATB entry */
 	ret = pse_load_binary(exe_name, handle, &start_ve_req);

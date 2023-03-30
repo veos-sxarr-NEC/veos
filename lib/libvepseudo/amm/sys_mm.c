@@ -28,10 +28,7 @@
  */
 #include <sys/shm.h>
 #include "sys_common.h"
-#include "libved.h"
-#include "loader.h"
-#include "ve_memory.h"
-#include "ve_hw.h"
+#include <libved.h>
 #include "sys_mm.h"
 #include "sys_process_mgmt.h"
 #include "vemva_mgmt.h"
@@ -43,6 +40,7 @@
 #include "velayout.h"
 #include "sys_process_mgmt.h"
 #include "exception.h"
+#include "align.h"
 
 
 
@@ -55,6 +53,7 @@ char * const ve_grow_err_str[VE_GROW_NO_ERR] =
        "Memory allocation for requested stack failed\n" /* VE_GROW_MEM_ALLOC */,
 };
 
+/* TODO: move reserve_signal_trampoline() to architecture-dependent part */
 /**
  * @brief This interface will reserve the space for "signal trampoline' code and
  *        store the trampoline code at reserve space.There will be different
@@ -67,7 +66,6 @@ char * const ve_grow_err_str[VE_GROW_NO_ERR] =
  * @return This interface will return 0 on success and negative of
  * errno on failure.
  */
-
 int reserve_signal_trampoline(veos_handle *handle)
 {
 	int ret = 0;
@@ -1305,9 +1303,9 @@ ret_t ve_grow(int syscall_num, char *syscall_name, veos_handle *handle)
 	 */
 	actual_new_bottom = requested_new_bottom - STACK_AREA_FOR_SIGNAL;
 
-	new_bottom = ALIGN_RD(new_bottom, ve_page_info.page_size);
-	actual_new_bottom = ALIGN_RD(actual_new_bottom, ve_page_info.page_size);
-	old_bottom = ALIGN_RD(old_bottom, ve_page_info.page_size);
+	new_bottom = ROUND_DN(new_bottom, ve_page_info.page_size);
+	actual_new_bottom = ROUND_DN(actual_new_bottom, ve_page_info.page_size);
+	old_bottom = ROUND_DN(old_bottom, ve_page_info.page_size);
 
 	if (pid == tid) {
 		/*
@@ -2293,7 +2291,7 @@ int64_t ve_process_vm_rw_single_iov(veos_handle *handle, struct iovec *r_iovec,
 		int type)
 {
 	vemva_t addr = 0, nr_pages = 0, nr_page_copied = 0;
-	offset_t start_offset = 0;
+	ve_mem_offset_t start_offset = 0;
 	size_t pg_size = 0, min = 0;
 	int64_t data_loops = 0, ret = -1;
 	struct ve_process_rw_info *cmd = NULL;
@@ -2305,7 +2303,7 @@ int64_t ve_process_vm_rw_single_iov(veos_handle *handle, struct iovec *r_iovec,
 	if (!IS_ALIGNED((uint64_t)(r_iovec[0].iov_base),
 				ve_page_info.page_size)) {
 		PSEUDO_DEBUG("Offset is not aligned to page boundary");
-		addr = ALIGN_RD((uint64_t)(r_iovec[0].iov_base), pg_size);
+		addr = ROUND_DN((uint64_t)(r_iovec[0].iov_base), pg_size);
 	} else
 		addr = (vemva_t)(r_iovec[0].iov_base);
 
@@ -2317,7 +2315,7 @@ int64_t ve_process_vm_rw_single_iov(veos_handle *handle, struct iovec *r_iovec,
 			r_iovec[0].iov_base);
 
 	nr_page_copied = 0;
-	start_offset = (offset_t)r_iovec[0].iov_base - addr;
+	start_offset = (ve_mem_offset_t)r_iovec[0].iov_base - addr;
 
 	cmd = (struct ve_process_rw_info *)calloc(1, sizeof(struct
 				ve_process_rw_info));

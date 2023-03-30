@@ -49,6 +49,8 @@
 #include "psm_comm.h"
 #include "dmaatb_api.h"
 #include "vehva_mgmt.h"
+#include "veos_ived_private.h"
+#include "ve_memory.h"
 
 /**
  * @brief Check whether VHSHM lock is locked.

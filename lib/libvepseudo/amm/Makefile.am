@@ -18,7 +18,6 @@ libpseudoamm_la_CFLAGS = \
 	-I$(top_srcdir)/src/pseudo \
 	-I$(srcdir)/../psm \
 	-I$(srcdir)/../common \
-	-I$(srcdir)/../loader \
 	-I$(srcdir)/../sys \
 	-I$(top_srcdir)/vhcall/include \
 	-I$(top_srcdir)/include \

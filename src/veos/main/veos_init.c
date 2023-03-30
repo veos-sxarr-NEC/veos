@@ -32,14 +32,20 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <ctype.h>
-#include <sys/mman.h>
+#include <pthread.h>
+#include <unistd.h>
+
+#include <veos_arch_defs.h>
 #include "velayout.h"
 #include "veos.h"
-#include "libved.h"
-#include "task_mgmt.h"
+#include <libved.h>
 #include "veos_ived.h"
-#include "task_sched.h"
+#include "ve_mem.h"
 #include "pciatb_api.h"
+#include "task_sched.h"
+#if 0 /* TODO: remove */
+#include "task_mgmt.h"
+#endif
 #include "vesync.h"
 
 #define CLEAN_PSEUDO_SLEEP_TIME 3
@@ -58,6 +64,8 @@ static void init_ve_numa_struct(struct ve_node_struct *);
 static int veos_make_numa_core_map(struct ve_node_struct *, int *);
 static int init_veos_mode (struct ve_node_struct *);
 
+const struct veos_arch_ops *_veos_arch_ops;
+
 /**
  * @brief Initialize VE Node structure.
  *
@@ -72,7 +80,7 @@ static int init_veos_mode (struct ve_node_struct *);
  * @author VEOS main
  *
  */
-int init_ve_node_struct(struct ve_node_struct *p_ve_node, int node_id,
+static int init_ve_node_struct(struct ve_node_struct *p_ve_node, int node_id,
 								char *drv_file)
 {
 	int retval = -1;
@@ -98,7 +106,7 @@ int init_ve_node_struct(struct ve_node_struct *p_ve_node, int node_id,
 	p_ve_node->dh = NULL;
 	p_ve_node->vdso_pfn = -1;
 	p_ve_node->vdso_pcientry = -1;
-	p_ve_node->cnt_regs_addr = NULL;
+	p_ve_node->cnt_regs = NULL;
 	p_ve_node->swap_request_pids_enable = false;
 	p_ve_node->pps_buf_size = 0;
 	INIT_LIST_HEAD(&(p_ve_node->ve_sys_load_head));
@@ -124,6 +132,19 @@ int init_ve_node_struct(struct ve_node_struct *p_ve_node, int node_id,
 		goto hndl_return1;
 	}
 
+	p_ret = vedl_request_ownership(p_ve_node->handle, -1);
+	if ( p_ret != 0 && errno != ENOTSUP) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+					"Acquiring VE ownership failed");
+		goto hndl_return0;
+	}
+
+	_veos_arch_ops = _veos_arch_find(p_ve_node->handle, NULL);
+	if (_veos_arch_ops == NULL) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+					"Initializing ops for VE arch class failed.");
+		goto hndl_return;
+	}
 	p_ve_node->ve_sysfs_path = vedl_get_sysfs_path(p_ve_node->handle);
 	if (p_ve_node->ve_sysfs_path == NULL) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
@@ -182,17 +203,22 @@ int init_ve_node_struct(struct ve_node_struct *p_ve_node, int node_id,
 	}
 	p_ve_node->nr_avail_cores = a_core_num;
 
-	/* Mapping VE Node Control Registers */
-	p_ve_node->cnt_regs_addr = vedl_mmap_cnt_reg(
-			p_ve_node->handle);
-	if (p_ve_node->cnt_regs_addr == (system_common_reg_t *)-1) {
-		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-				"Mapping common register failed");
+	/* allocate PCI space mapping and DMA space mapping data structures */
+	if (0 != (*_veos_arch_ops->arch_alloc_veos_pci_dma_pgtables)(
+				&p_ve_node->pciatb, &p_ve_node->dmaatb)) {
 		goto hndl_return;
 	}
 
+	/* Mapping VE Node Control Registers */
+	p_ve_node->cnt_regs = vedl_mmap_cnt_reg(p_ve_node->handle);
+	if (p_ve_node->cnt_regs == NULL) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Mapping common register failed");
+		goto hndl_alloc_pgtbls;
+	}
+
 	vedl_barrier_regs_read(p_ve_node->handle);
-	invalidate_dmaatb(&p_ve_node->dmaatb);
+	invalidate_dmaatb(p_ve_node->dmaatb);
 
 	/* Initialize mutex lock for stopping thread */
 	p_ret = pthread_mutex_init(&(p_ve_node->stop_mtx), NULL);
@@ -328,6 +354,23 @@ int init_ve_node_struct(struct ve_node_struct *p_ve_node, int node_id,
 		goto hndl_dstry_attr;
 	}
 
+	/*Initializing Mutex lock for clearing/setting free_udma_bitmap*/
+	p_ret = pthread_mutex_init(&(p_ve_node->udma_bitmap_lock), NULL);
+        if (p_ret != 0) {
+                VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+                                "Mutex init udma_bitmap_lock failed: %s",
+                                strerror(p_ret));
+                goto hndl_dstry_attr;
+        }
+
+	p_ret = pthread_mutex_init(&(p_ve_node->num_ve_proc_lock), NULL);
+	if (p_ret != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Mutex init num_ve_proc_lock failed: %s",
+				strerror(p_ret));
+		goto hndl_dstry_attr;
+	}
+
 	p_ret = init_veos_mode(p_ve_node);
 	if (p_ret != 0)
 		goto hndl_dstry_attr;
@@ -356,14 +399,16 @@ hndl_dstry_attr:
 				strerror(p_ret));
 	}
 hndl_c_reg:
-
-	if (munmap(p_ve_node->cnt_regs_addr,
-				sizeof(system_common_reg_t)) != 0) {
+	if (vedl_munmap_common_reg(p_ve_node->cnt_regs) != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-					"Unmapping common register failed");
+			"Unmapping common register (BAR4) failed");
 	}
-
+hndl_alloc_pgtbls:
+	(*_veos_arch_ops->arch_free_veos_pci_dma_pgtables)(
+				p_ve_node->pciatb, p_ve_node->dmaatb);
 hndl_return:
+	vedl_release_ownership(p_ve_node->handle);
+hndl_return0:
 	vedl_close_ve(p_ve_node->handle);
 hndl_return1:
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
@@ -383,7 +428,7 @@ hndl_return1:
  *
  * @author VEOS main
  */
-int init_ve_core_struct(struct ve_core_struct *p_ve_core,
+static int init_ve_core_struct(struct ve_core_struct *p_ve_core,
 		struct ve_node_struct *p_ve_node, int core_loop, int numa_num)
 {
 	int retval = -1;
@@ -410,10 +455,13 @@ int init_ve_core_struct(struct ve_core_struct *p_ve_core,
 	p_ve_core->busy_time_prev = 0;
 	p_ve_core->core_stime = (struct timeval){0};
 	p_ve_core->nr_switches = 0;
-	p_ve_core->usr_regs_addr = NULL;
-	p_ve_core->sys_regs_addr = NULL;
+	p_ve_core->usr_regs = NULL;
+	p_ve_core->sys_regs = NULL;
 	p_ve_core->p_ve_node = p_ve_node;
 	p_ve_core->numa_node = numa_num;
+        p_ve_core->pwr_throttle_cnt = 0;
+        p_ve_core->current_PMC14 = 0;
+        p_ve_core->previous_PMC14 = 0;
 	if (p_ve_core->numa_node == -1) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 				"This core does not belong to any NUMA nodes, "
@@ -439,34 +487,31 @@ int init_ve_core_struct(struct ve_core_struct *p_ve_core,
 				"Mapping user register and system register for core %d",
 				core_loop);
 
-	p_ve_core->usr_regs_addr = vedl_mmap_usr_reg(
-						p_ve_node->handle,
+	p_ve_core->usr_regs = vedl_mmap_usr_reg(p_ve_node->handle,
 						p_ve_core->phys_core_num);
 
-	if (p_ve_core->usr_regs_addr == (core_user_reg_t *)-1) {
+	if (p_ve_core->usr_regs == NULL) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 					"Mapping user register failed for core %d: physical core %d",
 					core_loop,
 					p_ve_core->phys_core_num);
-		p_ve_core->usr_regs_addr = NULL;
 		goto hndl_return;
 	}
 
 	vedl_barrier_regs_read(p_ve_node->handle);
 
-	p_ve_core->sys_regs_addr = vedl_mmap_sys_reg(
-						p_ve_node->handle,
+	p_ve_core->sys_regs = vedl_mmap_sys_reg(p_ve_node->handle,
 						p_ve_core->phys_core_num);
-	if (p_ve_core->sys_regs_addr == (core_system_reg_t *)-1) {
+	if (p_ve_core->sys_regs == NULL) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 					"Mapping system register failed for core %d: physical core %d",
 					core_loop,
 					p_ve_core->phys_core_num);
-		p_ve_core->sys_regs_addr = NULL;
 		goto hndl_u_reg;
 	}
 
 	vedl_barrier_regs_read(p_ve_node->handle);
+
 	p_ret = pthread_rwlockattr_init(&attr);
 	if (p_ret) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
@@ -508,24 +553,21 @@ hndl_dstry_attr:
 				strerror(p_ret));
 	}
 hndl_s_reg:
-
-	if (munmap(p_ve_core->sys_regs_addr,
-				sizeof(core_system_reg_t)) != 0) {
+	if (vedl_munmap_sys_reg(p_ve_core->sys_regs) != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-				"Unmapping system register failed: core %d",
+				"Unmapping non-prefetchable system register failed: core %d",
 				core_loop);
 	}
-	p_ve_core->sys_regs_addr = NULL;
+	p_ve_core->sys_regs = NULL;
 
 hndl_u_reg:
-
-	if (munmap(p_ve_core->usr_regs_addr,
-				sizeof(core_user_reg_t)) != 0) {
+	if (vedl_munmap_usr_reg(p_ve_core->usr_regs) != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-				"Unmapping user register failed: core %d",
+				"Unmapping non-prefetchable user register failed: core %d",
 				core_loop);
 	}
-	p_ve_core->usr_regs_addr = NULL;
+	p_ve_core->usr_regs = NULL;
+
 
 hndl_return:
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
@@ -552,7 +594,7 @@ int veos_init_ve_node(void)
 	int ret = 0;
 	/* Initialized at veos_make_numa_core_map() */
 	int numa_core_map[VE_MAX_CORE_PER_NODE];
-	reg_t regdata;
+	ve_reg_t regdata;
 
 	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "In Func");
 
@@ -584,7 +626,7 @@ int veos_init_ve_node(void)
 			goto hndl_core;
 
 		/* Ensure VE core is halt state. */
-		if (psm_halt_ve_core(0, core_loop, &regdata, false) != 0) {
+		if (psm_halt_ve_core(0, core_loop, &regdata, false, false) != 0) {
 			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 					"Failed to halt ve core %d",
 					core_loop);
@@ -602,6 +644,13 @@ int veos_init_ve_node(void)
 
 	init_ve_numa_struct(p_ve_node);
 
+	if (_veos_arch_ops->arch_main_construct_node_arch_dep_data(p_ve_node)
+		!= 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+			"Faied to construct architecture dependent data.");
+		goto hndl_core;
+	}
+
 	retval = 0;
 	goto hndl_return;
 
@@ -611,17 +660,15 @@ hndl_core:
 		p_ve_core = p_ve_node->p_ve_core[core_loop];
 		if (p_ve_core == NULL)
 			continue;
-		if (p_ve_core->sys_regs_addr != NULL) {
-			if (munmap(p_ve_core->sys_regs_addr,
-				sizeof(core_system_reg_t)) != 0) {
+		if (p_ve_core->sys_regs != NULL) {
+			if (vedl_munmap_sys_reg(p_ve_core->sys_regs) != 0) {
 				VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 			       "Unmapping system register failed: core %d",
 			       core_loop);
 			}
 		}
-		if (p_ve_core->usr_regs_addr != NULL) {
-			if (munmap(p_ve_core->usr_regs_addr,
-				sizeof(core_user_reg_t)) != 0) {
+		if (p_ve_core->usr_regs != NULL) {
+			if (vedl_munmap_usr_reg(p_ve_core->usr_regs) != 0) {
 				VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 				"Unmapping user register failed: core %d",
 				core_loop);
@@ -629,10 +676,11 @@ hndl_core:
 		}
 		free(p_ve_core);
 	}
-	if (munmap(p_ve_node->cnt_regs_addr,
-					sizeof(system_common_reg_t)) != 0)
+	if (vedl_munmap_common_reg(p_ve_node->cnt_regs) != 0)
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-					"Unmapping common register failed");
+			"Unmapping common register failed");
+
+	vedl_release_ownership(p_ve_node->handle);
 	vedl_close_ve(p_ve_node->handle);
 
 hndl_ve:
@@ -961,6 +1009,8 @@ int veos_init(void)
 					"Cleaning up pseudo process failed");
 		goto hndl_dma;
 	}
+
+	(*_veos_arch_ops->arch_turn_on_clock_gating)();
 
 	/* open a socket to connect IVED. */
 	if (opt_ived != 0) {

@@ -1153,7 +1153,7 @@ try_clear_osinfo(struct veos_info *os_info, int self)
 		os_info->node_stat      = VE_STAT_UNUSED;
 		os_info->os_pid         = UNUSED;
 		os_info->bar01_paddr    = 0;
-		os_info->bar3_paddr     = 0;
+		os_info->bar_cr_paddr     = 0;
 		os_info->pciatb_pgsize  = 0;
 
 		pthread_mutex_lock(&os_info->veos_sock_lock);
@@ -1789,7 +1789,7 @@ ived_register_osdata(ived_thread_arg_t *pti, RpcIvedArg *request)
 	os->veos_sock	    = pti->socket_descriptor;
 	os->os_pid	    = request->register_os_arg->pid;
 	os->bar01_paddr	    = request->register_os_arg->bar01_addr;
-	os->bar3_paddr	    = request->register_os_arg->bar3_addr;
+	os->bar_cr_paddr    = request->register_os_arg->bar_cr_addr;
 	os->proc_info_num   = 0;
 	os->veshm_mem_num   = 0;
 

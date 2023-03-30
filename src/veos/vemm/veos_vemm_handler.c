@@ -36,6 +36,7 @@
 #include "veos_veshm.h"
 #include "veos.h"
 #include "veshm_defs.h"
+#include "align.h"
 #include "vemva_layout.h"
 
 #include "veos_vemm_log.h"
@@ -177,7 +178,7 @@ int veos_vemm_acquire(pid_t pid, uint64_t encoded_vaddr, size_t size)
 		return 0;
 	}
 	/* check the 2nd to the last pages */
-	for (uint64_t addr = ROUN_DN(start_vaddr, page_size) + page_size;
+	for (uint64_t addr = ROUND_DN(start_vaddr, page_size) + page_size;
 		addr < start_vaddr + size; addr += page_size) {
 		page_size = veos_vemm_get_page_size(pid, addr);
 
@@ -261,7 +262,9 @@ int veos_vemm_get_pages(uid_t euid, pid_t pid, uint64_t encoded_vaddr,
 	}
 
 	uint64_t mode_flag = (writable ? 0 : VE_SHM_RO) |
-		(USE_PCISYNC(encoded_vaddr) ? VE_PCISYNC : 0) | VE_REGISTER_PCI;
+		(USE_PCISYNC(encoded_vaddr) ? VE_PCISYNC : 0) | VE_REGISTER_PCI |
+		((VE_NODE(0)->ve_type == VE_TYPE_VE3) &&
+			(size % (256 * 1024 * 1024) == 0) ? VE_MAP_256MB : 0);
 	int syncnum = SYNCNUM(encoded_vaddr);
 
 	VEMM_AGENT_TRACE("veshm_open_internal(%d, %d, %p, %ld, %d, 0x%lx, ..)",

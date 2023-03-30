@@ -8,14 +8,14 @@ License:	GPLv2+ and (LGPLv2+ and BSD and MIT)
 Source0:	@PACKAGE@-@VERSION@.tar.gz
 Vendor:		NEC Corporation
 BuildArch:	x86_64
-BuildRequires:	libved-devel velayout-devel
+BuildRequires:	libved-devel >= 2.99.0 velayout-devel
 BuildRequires:	protobuf-c-devel log4c-devel systemd-devel libuuid-devel
 BuildRequires:	libcap-devel
 BuildRequires:	procps-ng-devel
 BuildRequires:	protobuf-compiler
 BuildRequires:  ve-memory-mapping-devel
 BuildRequires:  libdhash-devel
-Requires:	libved >= 2.1.0-1
+Requires:	libved >= 2.99.0
 Requires:	velayout
 Requires:	protobuf-c log4c systemd-libs libuuid
 Requires:	libcap
@@ -65,7 +65,7 @@ VE programs or libraries include them if required.
 License:	LGPLv2+ and BSD
 Summary:	Headers for libvepseudo
 Requires:	%{name} = %{version}-%{release}
-Requires:	libved-devel velayout-devel
+Requires:	libved-devel >= 2.99.0 velayout-devel
 
 %description	libvepseudo-headers
 This package contains the header files of definition of libvepseudo.
@@ -90,7 +90,8 @@ include them.
 pathfix.py -pn -i /usr/bin/python3 $RPM_BUILD_DIR/$RPM_PACKAGE_NAME-$RPM_PACKAGE_VERSION/scripts \
 	   $RPM_BUILD_DIR/$RPM_PACKAGE_NAME-$RPM_PACKAGE_VERSION/scripts/ve_release_resource.in \
 	   $RPM_BUILD_DIR/$RPM_PACKAGE_NAME-$RPM_PACKAGE_VERSION/scripts/ve_delete_process.in \
-	   $RPM_BUILD_DIR/$RPM_PACKAGE_NAME-$RPM_PACKAGE_VERSION/scripts/ve_release_remote_resource.in
+	   $RPM_BUILD_DIR/$RPM_PACKAGE_NAME-$RPM_PACKAGE_VERSION/scripts/ve_release_remote_resource.in \
+	   $RPM_BUILD_DIR/$RPM_PACKAGE_NAME-$RPM_PACKAGE_VERSION/generate-arch_ops.py
 %endif
 
 %build
@@ -99,7 +100,8 @@ pathfix.py -pn -i /usr/bin/python3 $RPM_BUILD_DIR/$RPM_PACKAGE_NAME-$RPM_PACKAGE
   --with-binfmtdir=@binfmtdir@ \
   --with-limitsdir=@limitsdir@ \
   --with-sysctldir=@sysctldir@ \
-  --with-veldconfdir=@veldconfdir@
+  --with-veldconfdir=@veldconfdir@ \
+  --enable-memclear=@memclear@
 make %{?_smp_mflags}
 
 %install
@@ -140,6 +142,13 @@ for no in `seq 0 7`; do
     mkdir --mode=ugo+rwxt -p %{_localstatedir}/veos${no}-tmp
 done
 
+if [ `systemd-detect-virt` == 'kvm' ];then
+    if [ -e @ve_os_launcher_confdir@/veos_vm.options ];then
+	sed -i s/#ve-os-launcher@/ve-os-launcher@/ @ve_os_launcher_confdir@/veos_vm.options
+    fi
+fi
+
+
 %preun
 for dev in /dev/veslot*; do
     if [ $dev == '/dev/veslot*' ]; then
@@ -171,6 +180,8 @@ fi
 %config @veldconfdir@/veos.conf
 @ve_os_launcher_confdir@/ve-ived.options
 @ve_os_launcher_confdir@/veos_timer.options
+@ve_os_launcher_confdir@/veos_power_throttle.options
+@ve_os_launcher_confdir@/veos_vm.options
 %config(noreplace) @ve_os_launcher_confdir@/veswap.options
 %attr(0444,root,root) @prefix@/share/feature_list
 @ve_bindir@/*
@@ -198,6 +209,7 @@ fi
 
 %files headers
 @ve_includedir@/*.h
+@ve3_includedir@/*.h
 
 %files libvepseudo-headers
 # LGPLv2+

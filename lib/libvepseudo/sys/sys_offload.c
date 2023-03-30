@@ -39,6 +39,7 @@
 #include "veacc_io_defs.h"
 #include "vemva_mgmt.h"
 #include <linux/sockios.h>
+#include "align.h"
 
 /* Under Linux 2.6, alignment to 512-byte boundaries suffices */
 static uint64_t align_sz = 512;
@@ -3893,7 +3894,7 @@ ret_t ve_dup2(int syscall_num, char *syscall_name, veos_handle *handle)
  */
 ret_t ve_pause(int syscall_num, char *syscall_name, veos_handle *handle)
 {
-	reg_t retval = -1;
+	ret_t retval = -1;
 	sigset_t signal_mask = { {0} };
 
 	PSEUDO_TRACE("Entering");

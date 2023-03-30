@@ -26,11 +26,13 @@
 #include "mm_common.h"
 #include "ve_memory.h"
 #include "veos.h"
-#include "libved.h"
+#include <libved.h>
 #include "dma.h"
+#include "task_sched.h"
+#include <veos_arch_defs.h>
 #include "dmaatb_api.h"
-#include "ve_hw.h"
 #include "vehva_mgmt.h"
+#include "ve_memory_def.h"
 
 /**
  * @brief This function will allocate DMAAATB entry for system call area.
@@ -73,15 +75,7 @@ int64_t veos_alloc_dmaatb_entry_for_syscall(struct ve_task_struct *tsk,
 	/*
 	 * Allocating DMAATB for System common register.
 	 */
-	veraa_t veraa_paddr[3] =  {0};
-	veraa_paddr[0] = SYSCOM_ADD + SYSSTM_OFFSET;
-	veraa_paddr[1] = SYSCOM_ADD + SYSCRPM_OFFSET;
-
-	ret = veos_alloc_dmaatb_entry_for_aa_tsk(tsk,
-			veraa_paddr,
-			PROT_READ,
-			VE_ADDR_VERAA, VEHVA_SYSCOM_REG|VEHVA_4K,
-			false);
+	ret = (*_veos_arch_ops->arch_amm_map_dma_area_to_system_registers)(tsk);
 	if (0 > ret) {
 		VEOS_DEBUG("Error (%s) while allocating SCOM DMAATB for tsk:pid:%d",
 			strerror(-ret), tsk->pid);
@@ -405,148 +399,7 @@ int64_t veos_alloc_dmaatb_entry_by_vehva_tsk(struct ve_task_struct *tsk,
 		vhsaa_t *addr, int permission, int addr_flag,
 		uint64_t vehva_flag, bool halt_all, uint64_t vehva)
 {
-	struct ve_node_struct *vnode = VE_NODE(0);
-	ssize_t i = 0, ret = -1;
-	size_t pgsize = 0;
-	int pgmod = 0;
-	uint64_t *bmap = NULL;
-	int64_t entry = -1;
-	size_t size = 0;
-	dir_t prv_dir = -1;
-	dir_t dir_num = -1;
-	dir_t dirs[DMAATB_DIR_NUM] = {0};
-	int prot = 0, cnt = 0;
-	int64_t count = 0;
-	pthread_mutex_t *vehva_lock = NULL; /*!< mutex lock*/
-	dmaatb_reg_t tsk_cp = { { { {0} } } } ,node_cp = { { { {0} } } };
-
-	memset(dirs, -1, sizeof(dirs));
-
-	VEOS_TRACE("Invoked");
-	VEOS_DEBUG("Invoked with pid = %d, permission = %d, addr_flag = %d"
-		"vehva_flag = %ld halt_all = %d vehva = %#08lx",
-		tsk->pid, permission, addr_flag, vehva_flag, halt_all, vehva);
-
-	VEOS_DEBUG("Dump dmaatb before alloc entry by vehva");
-	amm_dump_dmaatb(tsk, true);
-
-	pgsize = (size_t)((vehva_flag & VEHVA_4K) ? PAGE_SIZE_4KB :
-		(vehva_flag & VEHVA_2MB) ? PAGE_SIZE_2MB :
-		PAGE_SIZE_64MB);
-	pgmod = (vehva_flag & VEHVA_4K) ? PG_4K :
-		(vehva_flag & VEHVA_2MB) ? PG_2M :
-		PG_HP;
-
-	for (i = 0; addr[i]; i++) {
-		VEOS_DEBUG("addr[%ld]:%lx", i, addr[i]);
-		size += pgsize;
-		count = i + 1;
-	}
-
-	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, LOCK,
-			"Failed to acquire node dmaatb lock");
-	if (vehva_flag & VEHVA_2MB) {
-		VEOS_DEBUG("VEHVA request type VESHM_2MB");
-		bmap = tsk->p_ve_mm->vehva_header.bmap_2m;
-		entry = (vehva - VEHVA_2M_START)/PAGE_SIZE_2MB;
-		vehva_lock = &tsk->p_ve_mm->vehva_header.vehva_2m_lock;
-	} else if (vehva_flag & VEHVA_64MB) {
-		VEOS_DEBUG("VEHVA request type VESHM_64MB");
-		bmap = tsk->p_ve_mm->vehva_header.bmap_64m;
-		entry = (vehva - VEHVA_64M_START)/PAGE_SIZE_64MB;
-		vehva_lock = &tsk->p_ve_mm->vehva_header.vehva_64m_lock;
-	} else if (vehva_flag & VEHVA_4K) {
-		VEOS_DEBUG("VEHVA request type VESHM_4KB");
-		bmap = tsk->p_ve_mm->vehva_header.bmap_4k;
-		entry = (vehva - VEHVA_4K_START)/PAGE_SIZE_4KB;
-		vehva_lock = &tsk->p_ve_mm->vehva_header.vehva_4k_lock;
-	} else {
-		ret = -EINVAL;
-		VEOS_DEBUG("Error (%s) for VESHM vehva", strerror(-ret));
-		goto err_handle;
-	}
-
-	VEOS_DEBUG("vehva:0x%lx count:%ld entry:%ld pgmod:%d",
-			vehva, count, entry, pgmod);
-	pthread_mutex_lock_unlock(vehva_lock, LOCK,
-			"Failed to acquire VEHVA VESHM lock");
-	if (check_bits(bmap, entry, count, MARK_UNUSED)) {
-		mark_bits(bmap, entry, count, MARK_USED);
-		pthread_mutex_lock_unlock(vehva_lock, UNLOCK,
-			"Failed to release VEHVA VESHM lock");
-	} else {
-		pthread_mutex_lock_unlock(vehva_lock, UNLOCK,
-			"Failed to release VEHVA VESHM lock");
-		VEOS_ERROR("Used bit is already set");
-		ret = -EINVAL;
-		VEOS_DEBUG("Error (%s) for VESHM vehva", strerror(-ret));
-		goto err_handle;
-	}
-	memset(&tsk_cp, 0, sizeof(dmaatb_reg_t));
-	memset(&node_cp, 0, sizeof(dmaatb_reg_t));
-	/* Here we save the content of node_dmaatb and task_dmaatb.
-	 * so in case of failure we can do proper cleanup.
-	 */
-	memcpy(&tsk_cp, &tsk->p_ve_mm->dmaatb, sizeof(dmaatb_reg_t));
-	memcpy(&node_cp, &vnode->dmaatb, sizeof(dmaatb_reg_t));
-
-	prot = (permission & PROT_WRITE) ? 1 : 0;
-
-	/* Allocate DMAATB entry for the absolute address */
-	for (i = 0; addr[i]; i++) {
-		dir_num = validate_vehva(vehva+(i*pgsize), prot,
-				pfnum(addr[i], pgmod),
-				&tsk->p_ve_mm->dmaatb,
-				pgmod, addr_flag, tsk->jid, vehva_flag,
-				tsk->numa_node);
-		if (0 > dir_num) {
-				ret = -ENOMEM;
-			VEOS_DEBUG("Error (%s) while setting vehva 0x%lx",
-					strerror(-ret), vehva);
-			goto clean_up;
-		}
-		if (prv_dir == -1 || (prv_dir != dir_num)) {
-			if (DMAATB_DIR_NUM == dir_num)
-				continue;
-			dirs[cnt++] = dir_num;
-			prv_dir = dir_num;
-		}
-	}
-
-	i = 0;
-	while (0 <= dirs[i]) {
-		/* Syncing DMAATB with h/w */
-		dir_num = dirs[i++];
-		if (DMAATB_DIR_NUM == dir_num)
-			continue;
-		psm_sync_hw_regs(tsk, _DMAATB, halt_all, dir_num, 1);
-	}
-
-	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
-			"Failed to release node dmaatb lock");
-
-	ret = vehva;
-	VEOS_DEBUG("returned with 0x%lx", ret);
-	VEOS_TRACE("returned");
-
-	VEOS_DEBUG("Dump dmaatb after alloc entry by vehva");
-	amm_dump_dmaatb(tsk, true);
-
-	return ret;
-clean_up:
-	memcpy(&tsk->p_ve_mm->dmaatb, &tsk_cp, sizeof(dmaatb_reg_t));
-	memcpy(&vnode->dmaatb, &node_cp, sizeof(dmaatb_reg_t));
-	if(0 > veos_vehva_free(vehva, size, tsk)) {
-		VEOS_DEBUG("Error (%s) while freeing vehva",
-				strerror(-ret));
-	}
-
-err_handle:
-	VEOS_DEBUG("returned with 0x%lx", ret);
-	VEOS_TRACE("returned");
-	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
-			"Failed to release node dmaatb lock");
-	return ret;
+	return ((*_veos_arch_ops->arch_amm_alloc_dmaatb_entry_by_vehva_tsk)(tsk, addr, permission, addr_flag, vehva_flag, halt_all, vehva));
 }
 
 
@@ -559,6 +412,7 @@ err_handle:
  * @param[in] permission Access permission (PROT_READ, PROT_WRITE) to
  *            requesting process DMAATB.
  * @param[in] addr_flag Type of address to allocate DMA entry.
+ * @param[in] vehva_type Type of vehva address.
  * @param[in] vehva_flag Type of vehva address.
  * @param[in] halt_all Halt other task or not
  *
@@ -574,14 +428,13 @@ int64_t veos_alloc_dmaatb_entry_for_aa_tsk(struct ve_task_struct *tsk,
 	vehva_t vehva = 0;
 	size_t pgsize = 0;
 	int pgmod = 0;
+	int dma_pgmode = 0;
 	size_t size = 0;
 	dir_t prv_dir = -1;
 	dir_t dir_num = -1;
-	dir_t dirs[DMAATB_DIR_NUM] = {0};
 	int prot = 0, cnt = 0;
-	dmaatb_reg_t tsk_cp = { { { {0} } } } ,node_cp = { { { {0} } } };
-
-	memset(dirs, -1, sizeof(dirs));
+	size_t n_dir;
+	int offset = 0;
 
 	VEOS_TRACE("Invoked");
 	VEOS_DEBUG("Invoked with pid = %d, permission = %d, addr_flag = %d"
@@ -591,8 +444,11 @@ int64_t veos_alloc_dmaatb_entry_for_aa_tsk(struct ve_task_struct *tsk,
 
 	VEOS_DEBUG("Start Dump Array of ABS addresses");
 
-	for (i = 0; addr[i]; i++)
-		VEOS_DEBUG("addr[%ld]:%lx", i, addr[i]);
+	for (n_dir = 0; addr[n_dir]; n_dir++)
+		VEOS_DEBUG("addr[%ld]:%lx", i, addr[n_dir]);
+
+	dir_t dirs[n_dir + 1];
+	memset(dirs, -1, sizeof(dir_t) * (n_dir + 1));
 
 	VEOS_DEBUG("End Dump Array of ABS addresses");
 
@@ -603,7 +459,13 @@ int64_t veos_alloc_dmaatb_entry_for_aa_tsk(struct ve_task_struct *tsk,
 		(vehva_flag & VEHVA_2MB) ? PG_2M :
 		PG_HP;
 
-	VEOS_DEBUG("pgsize %ld  pgmod %d", pgsize, pgmod);
+	dma_pgmode = (vehva_flag & VEHVA_4K) ? PG_4K :
+		(vehva_flag & VEHVA_2MB) ? PG_2M :
+		(vehva_flag & VEHVA_64MB) ? PG_HP :
+		PG_SHP;
+
+	VEOS_DEBUG("pgsize %ld  pgmod %d dma_pgmode %d",
+				pgsize, pgmod, dma_pgmode);
 	for (i = 0; addr[i]; i++)
 		size += pgsize;
 
@@ -617,32 +479,45 @@ int64_t veos_alloc_dmaatb_entry_for_aa_tsk(struct ve_task_struct *tsk,
 	}
 
 	vehva = (vehva_t)ret;
-	memset(&tsk_cp, 0, sizeof(dmaatb_reg_t));
-	memset(&node_cp, 0, sizeof(dmaatb_reg_t));
 	/* Here we save the content of node_dmaatb and task_dmaatb.
 	 * so in case of failure we can do proper cleanup.
 	 */
-	memcpy(&tsk_cp, &tsk->p_ve_mm->dmaatb, sizeof(dmaatb_reg_t));
-	memcpy(&node_cp, &vnode->dmaatb, sizeof(dmaatb_reg_t));
+	veos_dmaatb_reg_t *task_cp = NULL;
+	veos_dmaatb_reg_t *node_cp = NULL;
+	task_cp = (*_veos_arch_ops->arch_amm_dup_veos_dma_pgtable)(tsk->
+						p_ve_mm->dmaatb);
+	if (task_cp == NULL) {
+		ret = -ENOMEM;
+		goto err_handle;
+	}
+	node_cp = (*_veos_arch_ops->arch_amm_dup_veos_dma_pgtable)(
+						vnode->dmaatb);
+	if (node_cp == NULL) {
+		ret = -ENOMEM;
+		goto err_dup_node_dma_pgtable;
+	}
 
 	prot = (permission & PROT_WRITE) ? 1 : 0;
 
 	/* Allocate DMAATB entry for the absolute address */
-	for (i = 0; addr[i]; i++) {
+	offset = (vnode->ve_type == VE_TYPE_VE3) ?
+			(vehva_flag & VEHVA_256MB) ? 4 : 1 : 1;
+	for (i = 0; addr[i]; i = i + offset) {
 		dir_num = validate_vehva(vehva+(i*pgsize), prot,
-				pfnum(addr[i], pgmod),
-				&tsk->p_ve_mm->dmaatb,
-				pgmod, addr_flag, tsk->jid, vehva_flag,
+				pfnum(addr[i], dma_pgmode),
+				tsk->p_ve_mm,
+				dma_pgmode, addr_flag, tsk->jid, vehva_flag,
 				tsk->numa_node);
 		if (0 > dir_num) {
-				ret = -ENOMEM;
+			ret = -ENOMEM;
 			VEOS_DEBUG("Error (%s) while setting vehva 0x%lx",
 					strerror(-ret), vehva);
 			goto clean_up;
 		}
-
 		if (prv_dir == -1 || (prv_dir != dir_num)) {
-			if (DMAATB_DIR_NUM == dir_num)
+			/* When creating mapping of syscall area and
+			 * the task is not scheduled, DIR_MAX is returned. */
+			if (DIR_MAX == dir_num)
 				continue;
 			dirs[cnt++] = dir_num;
 			prv_dir = dir_num;
@@ -653,7 +528,7 @@ int64_t veos_alloc_dmaatb_entry_for_aa_tsk(struct ve_task_struct *tsk,
 	while (0 <= dirs[i]) {
 		/* Syncing DMAATB with h/w */
 		dir_num = dirs[i++];
-		if (DMAATB_DIR_NUM == dir_num)
+		if (DIR_MAX == dir_num)
 			continue;
 		psm_sync_hw_regs(tsk, _DMAATB,
 				halt_all,
@@ -662,6 +537,8 @@ int64_t veos_alloc_dmaatb_entry_for_aa_tsk(struct ve_task_struct *tsk,
 
 	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
 			"Failed to release node dmaatb lock");
+	(*_veos_arch_ops->arch_free_veos_pci_dma_pgtables)(NULL, node_cp);
+	(*_veos_arch_ops->arch_free_veos_pci_dma_pgtables)(NULL, task_cp);
 
 	ret = vehva;
 	VEOS_DEBUG("returned with 0x%lx", ret);
@@ -672,18 +549,23 @@ int64_t veos_alloc_dmaatb_entry_for_aa_tsk(struct ve_task_struct *tsk,
 #endif
 	return ret;
 clean_up:
-	memcpy(&tsk->p_ve_mm->dmaatb, &tsk_cp, sizeof(dmaatb_reg_t));
-	memcpy(&vnode->dmaatb, &node_cp, sizeof(dmaatb_reg_t));
+	(*_veos_arch_ops->arch_amm_copy_veos_dma_pgtable)(
+					tsk->p_ve_mm->dmaatb, task_cp);
+	(*_veos_arch_ops->arch_amm_copy_veos_dma_pgtable)(
+					vnode->dmaatb, node_cp);
 	if(0 > veos_vehva_free(vehva, size, tsk)) {
 		VEOS_DEBUG("Error (%s) while freeing vehva",
 				strerror(-ret));
 	}
-
+	(*_veos_arch_ops->arch_free_veos_pci_dma_pgtables)(NULL, node_cp);
+err_dup_node_dma_pgtable:
+	(*_veos_arch_ops->arch_free_veos_pci_dma_pgtables)(NULL, task_cp);
 err_handle:
 	VEOS_DEBUG("returned with 0x%lx", ret);
 	VEOS_TRACE("returned");
 	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
 			"Failed to release node dmaatb lock");
+
 	return ret;
 }
 
@@ -767,7 +649,8 @@ int veos_schedulein_dmaatb(struct ve_task_struct *tsk)
 		VEOS_DEBUG("Physical address: %lx", vhsaa_addr);
 		tsk->p_ve_mm->shm_lhm_addr_vhsaa = vhsaa_addr;
 	}
-	if (!ps_isvalid(&tsk->p_ve_mm->dmaatb.dir[0])) {
+	if (!(*_veos_arch_ops->arch_amm_dma_syscall_region_is_mapped)(
+						tsk->p_ve_mm)) {
 		VEOS_DEBUG("first time schedule in");
 		ret = veos_alloc_dmaatb_entry_for_syscall(tsk,
 				vehva, vhsaa_addr);
@@ -864,96 +747,11 @@ err:
 int64_t veos_free_dmaatb_entry_tsk(struct ve_task_struct *req_tsk,
 		vehva_t vehva, size_t size)
 {
-	int64_t ret = -1;
-	int8_t dir_num = -1;
-	int8_t prv_dir = -1;
-	int8_t dirs[DMAATB_DIR_NUM] = {-1};
-	vehva_t tmp_vehva = 0;
-	uint64_t pgsz = 0;
-	uint64_t count = 0;
-	int pgmod = 0, i = 0, noc = 0, start = 0;
-	struct ve_node_struct *vnode = VE_NODE(0);
-
 	VEOS_TRACE("Invoked");
 	VEOS_DEBUG("Invoked with pid:%d vehva:0x%lx size:%ld",
 			req_tsk->pid, vehva, size);
 
-	memset(dirs, -1, sizeof(dirs));
-	noc = vnode->nr_avail_cores;
-	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, LOCK,
-			"Failed to acquire node dmaatb lock");
-	amm_dump_dmaatb(req_tsk, true);
-	/*
-	 * Use veos_get_pgmod instead of returning pgmod from veos_vehva_free*/
-	pgmod = veos_vehva_free(vehva, size, req_tsk);
-	if (0 > pgmod) {
-		ret = pgmod;
-		VEOS_DEBUG("Error (%s) while freeing vehva",
-				strerror(-ret));
-		goto err_handle;
-	}
-
-	pgsz = (uint64_t)((pgmod == PG_4K) ? PAGE_SIZE_4KB :
-		(pgmod == PG_2M) ? PAGE_SIZE_2MB :
-		PAGE_SIZE_64MB);
-
-	count = size/pgsz;
-	tmp_vehva = vehva;
-
-	for (i = 0; i < count; i++) {
-		dir_num = invalidate_vehva(tmp_vehva + (i*pgsz),
-				&req_tsk->p_ve_mm->dmaatb,
-				req_tsk->jid);
-		if (0 > dir_num) {
-			ret = -EFAULT;
-			VEOS_DEBUG("Error (%s) while unsetting dmaatb",
-					strerror(-ret));
-			goto err_handle;
-		}
-		/* Check for node DMAATB for jid & VEHVA  with false
-		 * if dir is -1 then do nothing and if any directory
-		 * then invalidate correspodning entry
-		 * */
-		if (prv_dir == -1 || (prv_dir != dir_num))
-			dirs[start++] = dir_num;
-
-		prv_dir = dir_num;
-	}
-	i = 0;
-
-	while (0 <= dirs[i]) {
-		if ((dirs[i] >= noc) || (req_tsk->p_ve_mm->is_sched == true)) {
-			psm_sync_hw_regs(req_tsk, _DMAATB,
-					true, dirs[i++], 1);
-		} else
-			i++;
-	}
-	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
-			"Failed to release node dmaatb lock");
-	amm_dump_dmaatb(req_tsk, true);
-	if (dir_num >= noc) {
-		pthread_mutex_lock_unlock(&(vnode->swap_request_pids_lock),
-				LOCK, "Failed to aqcuire swap_request lock");
-		vnode->resource_freed = true;
-		pthread_cond_broadcast(&(vnode->swap_request_pids_cond));
-		pthread_mutex_lock_unlock(&(vnode->swap_request_pids_lock),
-				UNLOCK, "Failed to release swap_request lock");
-	}
-
-#if DEBUG
-	VEOS_DEBUG("Dumping DMAATB from free_dmaatb_entry");
-	amm_dump_dmaatb(NULL, 0);
-#endif
-
-	VEOS_DEBUG("returned with:%ld", ret);
-	VEOS_TRACE("returned");
-	return 0;
-err_handle:
-	VEOS_DEBUG("returned with:%ld", ret);
-	VEOS_TRACE("returned");
-	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
-			"Failed to release node dmaatb lock");
-	return ret;
+	return ((*_veos_arch_ops->arch_amm_free_dmaatb_entry_tsk)(req_tsk, vehva, size));
 }
 
 /**
@@ -964,101 +762,9 @@ err_handle:
  *
  * @note Acquire thread_group_mm_lock before invoking this.
  */
-void veos_free_dmaatb(dmaatb_reg_t *dmaatb, enum swap_progress dmaatb_progress)
+void veos_free_dmaatb(veos_dmaatb_reg_t *dmaatb, enum swap_progress dmaatb_progress)
 {
-	int dir, ent, pg_type, ret, core_num;
-	system_common_reg_t *cnt_regs_addr = VE_CORE_CNT_REG_ADDR(0);
-	vedl_handle *handle = VE_HANDLE(0);
-	struct ve_node_struct *vnode = VE_NODE(0);
-	pgno_t pb;
-	vemaa_t vemaa;
-
-	VEOS_TRACE("Invoked");
-
-	core_num = vnode->nr_avail_cores;
-	for (dir = core_num; dir < DMAATB_DIR_NUM; dir++) {
-		if (!ps_isvalid(&dmaatb->dir[dir]))
-			continue;
-
-		/* Clear registered memory with DMAATB along process soft copy */
-		VEOS_DEBUG("Clear DMAATB dir %d", dir);
-		ps_clrdir(&dmaatb->dir[dir]);
-		ps_invalid(&dmaatb->dir[dir]);
-		for (ent = 0; ent < DMAATB_ENTRY_MAX_SIZE; ent++) {
-			while (pg_isvalid(&(dmaatb->entry[dir][ent]))) {
-				pg_type = pg_gettype(
-						&(dmaatb->entry[dir][ent]));
-				if (pg_type != VE_ADDR_VEMAA)
-					break;
-
-				pb = pg_getpb(
-					&(dmaatb->entry[dir][ent]), PG_2M);
-				if (pb == PG_BUS)
-					break;
-				vemaa = pbaddr(pb, PG_2M);
-				VEOS_DEBUG(
-					"free registered memory 0x%lx", vemaa);
-				amm_put_page(vemaa);
-				break;
-			}
-			pg_unsetro(&(dmaatb->entry[dir][ent]));
-			pg_unsetido(&(dmaatb->entry[dir][ent]));
-			pg_invalid(&(dmaatb->entry[dir][ent]));
-			pg_unsetprot(&(dmaatb->entry[dir][ent]));
-			pg_unsettype(&(dmaatb->entry[dir][ent]));
-			pg_clearpfn(&(dmaatb->entry[dir][ent]));
-		}
-
-		/* If dmaatb_progress is 'SWAPPED', all directories and entries
-		 * of node soft copy already have been freed.
-		 */
-		if (dmaatb_progress == SWAPPED)
-			continue;
-
-		pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, LOCK,
-					"Failed to acquire node dmaatb lock");
-		VEOS_DEBUG("Clear node's DMAATB dir %d", dir);
-		ps_clrdir(&vnode->dmaatb.dir[dir]);
-		ps_invalid(&vnode->dmaatb.dir[dir]);
-
-		for (ent = 0; ent < DMAATB_ENTRY_MAX_SIZE; ent++) {
-			pg_unsetro(&vnode->dmaatb.entry[dir][ent]);
-			pg_unsetido(&vnode->dmaatb.entry[dir][ent]);
-			pg_invalid(&vnode->dmaatb.entry[dir][ent]);
-			pg_unsetprot(&vnode->dmaatb.entry[dir][ent]);
-			pg_unsettype(&vnode->dmaatb.entry[dir][ent]);
-			pg_clearpfn(&vnode->dmaatb.entry[dir][ent]);
-		}
-
-		hw_dma_map[dir].count = 0;
-		ret = vedl_update_dmaatb_dir(handle, cnt_regs_addr,
-							&(vnode->dmaatb), dir);
-		if (ret < 0) {
-			VEOS_ERROR("vedl_update_dmaatb_dir failed (%d)", ret);
-			veos_abort("failed to sync dmaatb");
-		}
-		pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
-					"Failed to release node dmaatb lock");
-
-		if (terminate_flag == NOT_REQUIRED) {
-			pthread_mutex_lock_unlock(&(vnode->
-				swap_request_pids_lock),
-				LOCK, "Failed to aqcuire swap_request lock");
-			vnode->resource_freed = true;
-			pthread_cond_broadcast(
-					&(vnode->swap_request_pids_cond));
-			pthread_mutex_lock_unlock(&(vnode->
-				swap_request_pids_lock),
-				UNLOCK, "Failed to release swap_request lock");
-		}
-	}
-
-#if DEBUG
-	VEOS_DEBUG("Dumping DMAATB from veos_free_dmaatb");
-	amm_dump_dmaatb(NULL, 0);
-#endif
-	VEOS_TRACE("returned");
-	return;
+	(*_veos_arch_ops->arch_amm_free_dmaatb)(dmaatb, dmaatb_progress);
 }
 
 /**
@@ -1074,17 +780,7 @@ int64_t veos_aa_to_vehva(pid_t pid, vemaa_t addr, int type)
 {
 	struct ve_task_struct *tsk = NULL;
 	struct ve_mm_struct *ve_mm = NULL;
-	dmaatb_reg_t dmaatb = { { { {0} } } };
-	atb_dir_t *atbp = NULL;
-	uint64_t pgsz = 0;
-	uint64_t pgmask = 0;
-	uint64_t data = 0;
-	vehva_t vehva = 0;
-	uint64_t psnum_dir = 0;
-	int ps_entry = 0;
-	int pg_entry = 0;
 	int64_t ret = -1;
-	uint8_t pgmode_dir = 0;
 	struct ve_node_struct *vnode = VE_NODE(0);
 
 	VEOS_TRACE("Invoked");
@@ -1103,67 +799,13 @@ int64_t veos_aa_to_vehva(pid_t pid, vemaa_t addr, int type)
 	ve_mm = tsk->p_ve_mm;
 	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, LOCK,
 			"Failed to acquire node dmaatb lock");
-	memcpy(&dmaatb, &ve_mm->dmaatb, sizeof(dmaatb_reg_t));
 
-	atbp = dmaatb.dir;
-
-	for (ps_entry = 0; ps_entry < DMAATB_DIR_NUM; ps_entry++) {
-		/* Is atbp valid? */
-		if (ps_isvalid(atbp)) {
-
-			/* pgmode check */
-			pgmode_dir = ps_getpgsz(atbp);
-
-			pgsz = (uint64_t)((pgmode_dir == PG_2M) ? PAGE_SIZE_2MB :
-				(pgmode_dir == PG_4K) ? PAGE_SIZE_4KB :
-				PAGE_SIZE_64MB);
-
-			pgmask = ~(uint64_t)(pgsz - 1);
-
-			for (pg_entry = 0; pg_entry <
-					DMAATB_ENTRY_MAX_SIZE; pg_entry++) {
-				/* Check if page entries is valid */
-				if (pg_isvalid(&(dmaatb.entry[ps_entry][pg_entry]))) {
-					data = dmaatb.entry[ps_entry]
-						[pg_entry].data;
-					VEOS_DEBUG("%d : %d :PB"
-							" Address %p",
-							ps_entry, pg_entry,
-							(void *)data);
-					if ((data & pgmask) == addr) {
-						if (type != ((data >> type_shft)
-									& PG_TYP_MSK))
-							continue;
-						psnum_dir = ps_getps(atbp,
-								pgmode_dir);
-						goto done;
-					}
-				}
-			}
-		}
-		atbp++;
-	}
-
-	VEOS_DEBUG("veos_aa_to_vehva fails");
+	ret = (*_veos_arch_ops->arch_amm__aa_to_vehva)(ve_mm, addr, type);
 
 	if (tsk)
 		put_ve_task_struct(tsk);
 	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
 			"Failed to release node dmaatb lock");
-	ret = -EFAULT;
-	VEOS_DEBUG("returned with:%ld", ret);
-	VEOS_TRACE("returned");
-	return ret;
-done:
-	vehva = psnum_dir + (pg_entry*pgsz);
-	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
-			"Failed to release node dmaatb lock");
-	VEOS_DEBUG("returned with:%ld", ret);
-	VEOS_TRACE("returned");
-
-	if (tsk)
-		put_ve_task_struct(tsk);
-	return vehva;
 err:
 	VEOS_DEBUG("returned with:%ld", ret);
 	VEOS_TRACE("returned");
@@ -1181,94 +823,7 @@ err:
  */
 int64_t veos_update_dmaatb_context(struct ve_task_struct *tsk, int core_num)
 {
-	int64_t ret = 0, err_ret = 0;
-	int phys_core = 0;
-	struct ve_core_struct *p_ve_core = NULL;
-	veraa_t paddr[2] =  {0, 0};
-
-	VEOS_TRACE("Invoked");
-
-	if (!tsk || (-1 == core_num))
-		return -1;
-
-	amm_dump_dmaatb(tsk, true);
-	p_ve_core = VE_CORE(0, core_num);
-	phys_core = p_ve_core->phys_core_num;
-	VEOS_DEBUG("update_dmaatb_context for pid %d on"
-			" logical core %d physical core: %d",
-			tsk->pid, core_num, phys_core);
-
-	paddr[0] = VERAA(phys_core) + SYSPROT_OFF + EDMACTL_OFF;
-
-	ret = veos_alloc_dmaatb_entry_for_aa_tsk(tsk,
-			paddr,
-			PROT_READ,
-			VE_ADDR_VERAA,
-			VEHVA_DMA_CNT_REG|VEHVA_4K|VEHVA_MAP_FIXED,
-			false);
-	if (0 > ret) {
-		VEOS_DEBUG("veos_alloc_dmaatb_entry_for_aa failed");
-		return ret;
-	}
-	amm_dump_dmaatb(tsk, true);
-	paddr[0] = VERAA(phys_core) + SYSPROT_OFF + EDMADESC_E_OFF;
-
-	ret = veos_alloc_dmaatb_entry_for_aa_tsk(tsk, paddr,
-			PROT_READ|PROT_WRITE,
-			VE_ADDR_VERAA,
-			VEHVA_DMA_DESC_E_REG|VEHVA_4K|VEHVA_MAP_FIXED,
-			false);
-	if (0 > ret) {
-		VEOS_DEBUG("veos_alloc_dmaatb_entry_for_aa failed");
-		err_ret = ret;
-		goto hndl_err;
-	}
-	amm_dump_dmaatb(tsk, true);
-
-	/* If DMA Descriptor table H is enabled then allocate dmaatb
-	 * entry.
-	 */
-	if (!(tsk->p_ve_mm->udma_desc_bmap & DMA_DESC_H))
-		goto done;
-
-	paddr[0] = VERAA(phys_core) + SYSPROT_OFF + EDMADESC_H_OFF;
-
-	ret = veos_alloc_dmaatb_entry_for_aa_tsk(tsk, paddr,
-			PROT_READ|PROT_WRITE,
-			VE_ADDR_VERAA,
-			VEHVA_DMA_DESC_H_REG|VEHVA_4K|VEHVA_MAP_FIXED,
-			false);
-	if (0 > ret) {
-		VEOS_DEBUG("veos_alloc_dmaatb_entry_for_aa failed");
-		err_ret = ret;
-		goto hndl_err1;
-	}
-	amm_dump_dmaatb(tsk, true);
-
-done:
-	VEOS_DEBUG("updated dmaatb_context for pid %d on"
-			" logical core %d physical core %d",
-			tsk->pid, core_num, phys_core);
-	ret = 0;
-	VEOS_TRACE("returned");
-	return ret;
-
-hndl_err1:
-	paddr[0] = VERAA(phys_core) + SYSPROT_OFF + EDMADESC_E_OFF;
-	ret = veos_free_dmaatb_entry_tsk(tsk, paddr[0],
-			VEHVA_4K);
-	if (0 > ret)
-		VEOS_DEBUG("veos_free_dmaatb_fail");
-hndl_err:
-	paddr[0] = VERAA(phys_core) + SYSPROT_OFF + EDMACTL_OFF;
-	ret = veos_free_dmaatb_entry_tsk(tsk, paddr[0],
-			VEHVA_4K);
-	if (0 > ret)
-		VEOS_DEBUG("veos_free_dmaatb_fail");
-
-	VEOS_DEBUG("returned with 0x%lx", err_ret);
-	VEOS_TRACE("returned");
-	return err_ret;
+	return (*_veos_arch_ops->arch_amm_update_dmaatb_context)(tsk, core_num);
 }
 /**
  * @brief Release DMAATB directorty.
@@ -1279,48 +834,7 @@ hndl_err:
  */
 int veos_release_dmaatb_entry(struct ve_task_struct *tsk)
 {
-	dir_t dir_num = 0;
-	int ps_entry  = 0;
-	dmaatb_reg_t *dmaatb = &tsk->p_ve_mm->dmaatb;
-	struct ve_node_struct *vnode = VE_NODE(0);
-
-	VEOS_TRACE("Invoked");
-	VEOS_TRACE("Invoked veos_release_dmaatb_entry for pid:%d",
-			tsk->pid);
-
-	dir_num = __get_pgd(tsk->p_ve_mm->shm_lhm_vehva, NULL,
-			tsk->jid, false);
-	if (0 > dir_num) {
-		VEOS_DEBUG("DMAATB Directory not available"
-				"for vehva");
-		return -EFAULT;
-	}
-
-	ps_clrdir(&(vnode->dmaatb.dir[dir_num]));
-	ps_invalid(&(vnode->dmaatb.dir[dir_num]));
-
-	for (ps_entry = 0; ps_entry <
-			ATB_ENTRY_MAX_SIZE; ps_entry++) {
-		pg_unsetro(&(vnode->dmaatb.entry[dir_num][ps_entry]));
-		pg_unsetido(&(vnode->dmaatb.entry[dir_num][ps_entry]));
-		pg_unsetprot(&(vnode->dmaatb.entry[dir_num][ps_entry]));
-		pg_unsettype(&(vnode->dmaatb.entry[dir_num][ps_entry]));
-		pg_clearpfn(&(vnode->dmaatb.entry[dir_num][ps_entry]));
-		pg_invalid(&(vnode->dmaatb.entry[dir_num][ps_entry]));
-	}
-
-	for (ps_entry = 3; ps_entry < 6; ps_entry++) {
-		pg_unsetro(&(dmaatb->entry[0][ps_entry]));
-		pg_unsetido(&(dmaatb->entry[0][ps_entry]));
-		pg_unsetprot(&(dmaatb->entry[0][ps_entry]));
-		pg_unsettype(&(dmaatb->entry[0][ps_entry]));
-		pg_clearpfn(&(dmaatb->entry[0][ps_entry]));
-		pg_invalid(&(dmaatb->entry[0][ps_entry]));
-	}
-
-	VEOS_TRACE("returned with 0x%x", dir_num);
-	VEOS_TRACE("returned");
-	return dir_num;
+	return (*_veos_arch_ops->arch_amm_release_dmaatb_entry)(tsk);
 }
 
 
@@ -1333,45 +847,15 @@ int veos_release_dmaatb_entry(struct ve_task_struct *tsk)
 * @param[in] dir_idx DMAATB directory number.
 * @param[in] jid jid of VE process.
 *
-* @return on success returns page table(DMAATB) directory and negative of errno on failure.
+* @return on success returns page table(DMAATB) directory;
+*         DIR_MAX when syscall area for a process is requested and
+*          the processis not scheduled;
+*         negative of errno on failure.
 */
 int sync_node_dmaatb_dir(vehva_t vehva, struct ve_mm_struct *mm, dir_t dir_idx, jid_t jid)
 {
-	atb_dir_t *pgd = NULL;
-	atb_entry_t *pte = NULL;
-	dir_t dir_num = 0;
-	dmaatb_reg_t *dmaatb = &mm->dmaatb;
-	struct ve_node_struct *vnode = VE_NODE(0);
-	VEOS_TRACE("Invoked");
-	VEOS_DEBUG("vehva %lx dmaatb %p dir_idx %d jid %d",
-			vehva, dmaatb, dir_idx, jid);
-
-	if (PG_4K == ps_getpgsz(&dmaatb->dir[dir_idx])) {
-		dir_num = __get_pgd(vehva, &vnode->dmaatb, jid, true);
-		if (0 > dir_num && mm->is_sched) {
-			dir_num = -EINVAL;
-			VEOS_DEBUG("Error (%s) while getting directory for VEHVA %p",
-					strerror(-dir_num), (void *)vehva);
-			return dir_num;
-		} else if (!mm->is_sched) {
-			VEOS_DEBUG("process is scheduleout and \
-					requested for syscall directiory entry");
-			return DMAATB_DIR_NUM;
-		}
-	} else {
-		dir_num = dir_idx;
-	}
-
-	ps_clrjid(&dmaatb->dir[dir_idx], jid);
-	ps_setjid(&dmaatb->dir[dir_idx], jid);
-	pgd = &vnode->dmaatb.dir[dir_num];
-	pte = vnode->dmaatb.entry[dir_num];
-
-	memcpy(&pgd->data, &dmaatb->dir[dir_idx].data, sizeof(uint64_t));
-	memcpy(pte, dmaatb->entry[dir_idx],
-			sizeof(uint64_t)*ATB_ENTRY_MAX_SIZE);
-
-	return dir_num;
+	return (*_veos_arch_ops->arch_amm_sync_node_dma_page_dir)(vehva,
+							mm, dir_idx, jid);
 }
 
 /**
@@ -1386,11 +870,8 @@ int sync_node_dmaatb_dir(vehva_t vehva, struct ve_mm_struct *mm, dir_t dir_idx, 
  */
 int veos_map_dmades(pid_t pid, uint64_t *vehva_dmades, uint64_t *vehva_dmactl)
 {
-	int retval = -1, phys_core = -1;
+	int retval = -1;
 	struct ve_task_struct *tsk = NULL;
-	struct ve_core_struct *p_ve_core = NULL;
-	veraa_t paddr[2] = {0, 0};
-	bool set_permission_bit = true;
 
 	VEOS_TRACE("Entering");
 
@@ -1414,79 +895,9 @@ int veos_map_dmades(pid_t pid, uint64_t *vehva_dmades, uint64_t *vehva_dmactl)
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
 
-	/* Check if DMA descriptor table H is already enabled or not */
-	if (tsk->p_ve_mm->udma_desc_bmap & DMA_DESC_H) {
-		VEOS_DEBUG("DMAATB for DMA descriptor table H"
-				" is already allocated of PID: %d", pid);
-		retval = -EBUSY;
-		goto err_return2;
-	}
+	retval = (*_veos_arch_ops->arch_amm__map_dmades)(tsk,
+					vehva_dmades, vehva_dmactl);
 
-	/* Currently VE task is not scheduled on any of the core.
-	 * So we will just update the field "DMA_DESC_H" and
-	 * during scheduling DMAATB entry will get allocated.
-	 */
-	if (-1 == *tsk->core_dma_desc || false == tsk->p_ve_mm->is_sched) {
-		VEOS_DEBUG("PID: %d is not scheduled.", tsk->pid);
-
-		/* Currently task is scheduled out so there is no need
-		 * to set the permission bit of DMA control register H.
-		 */
-		set_permission_bit = false;
-		goto update_field;
-	}
-
-	p_ve_core = VE_CORE(0, *tsk->core_dma_desc);
-	phys_core = p_ve_core->phys_core_num;
-	VEOS_DEBUG("PID %d DMA DESC logical core %d physical core: %d",
-			tsk->pid, *tsk->core_dma_desc, phys_core);
-
-	paddr[0] = VERAA(phys_core) + SYSPROT_OFF + EDMADESC_H_OFF;
-	amm_dump_dmaatb(tsk, true);
-	retval = veos_alloc_dmaatb_entry_for_aa_tsk(tsk, paddr,
-			PROT_READ|PROT_WRITE,
-			VE_ADDR_VERAA,
-			VEHVA_DMA_DESC_H_REG|VEHVA_4K|VEHVA_MAP_FIXED,
-			true);
-	if (0 > retval) {
-		VEOS_DEBUG("veos_alloc_dmaatb_entry_for_aa failed");
-		goto err_return2;
-	}
-
-	amm_dump_dmaatb(tsk, true);
-
-update_field:
-	/* Zero-clear DMA descriptor table H and DMA control register corresponding
-	 * to DMA descriptor table H.
-	 */
-	memset(&(tsk->udma_context->dmades[VE_UDMA_HENTRY]), 0,
-				sizeof(dma_desc_t)*DMA_DSCR_ENTRY_SIZE);
-	memset(&(tsk->udma_context->dmactl[VE_UDMA_HENTRY]), 0,
-				sizeof(dma_control_t));
-
-	/* If any threads of the process are running on VE cores, then sync the
-	 * soft copy of DMA descriptor table H and DMA control register
-	 * corresponding to DMA descriptor table H to actual registers, and set
-	 * permission bit in the DMA control register of H.
-	 */
-	if (true == set_permission_bit) {
-		VEOS_DEBUG("Restore UDMA context corresponding to H");
-		if (__psm_restore_udma_context(tsk,
-					*(tsk->core_dma_desc), VE_UDMA_HENTRY))
-			veos_abort("Fail to Restore DMA H context of core: %d",
-					*tsk->core_dma_desc);
-
-		if (psm_start_udma(*(tsk->core_dma_desc), DMA_DESC_H))
-			veos_abort("Fail to START DMA H of core: %d",
-					*tsk->core_dma_desc);
-	}
-
-	*vehva_dmades = DMA_DESC_H_START;
-	*vehva_dmactl = DMA_CNT_START;
-	tsk->p_ve_mm->udma_desc_bmap = DMA_DESC_E_H;
-	VEOS_DEBUG("DMA descriptor table H is now enabled of PID: %d", pid);
-	retval = 0;
-err_return2:
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, UNLOCK,
 			"Failed to release thread-group-mm-lock");
 	put_ve_task_struct(tsk);

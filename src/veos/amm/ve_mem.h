@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 NEC Corporation
+ * Copyright (C) 2017-2020 NEC Corporation
  * This file is part of the VEOS.
  *
  * The VEOS is free software; you can redistribute it and/or
@@ -29,42 +29,21 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
-#include <malloc.h>
-#include "ve_list.h"
-#include "libved.h"
-#include "locking_handler.h"
-#include "task_sched.h"
+#include <ve_list.h>
 #include "mm_common.h"
-#include "task_signal.h"
 #include "veos_defs.h"
-#include "ve_memory.h"
-#include "velayout.h"
-#include "mm_type.h"
-#include "dma_private.h"
+#include "align.h"
+#include <comm_request.h>
+#include <velayout.h>
+#include <mm_type.h>
 
 #define SIZE_512KB (512*1024)
-#define USRCC_OFFSET 0x00000
-#define PMC_OFFSET 0x01000
-#define EDMACTL_OFF     0x22000
-#define EDMADESC_E_OFF    0x21000
-#define EDMADESC_H_OFF    0x20000
-#define USRCC_OFFSET 0x00000
-#define PMC_OFFSET 0x01000
-
-#define VERAA(a)        (a * (SIZE_512KB +SIZE_512KB))
-#define SYSPROT_OFF     SIZE_512KB
-#define SYSCOM_ADD      0x1000000
-#define SYSSTM_OFFSET	0x000000
-#define SYSCRPM_OFFSET	0x001000
-#define SYSPCI_OFFSET	0x007000
-#define ATB		1
-#define DMAATB		2
-#define CRDIR		3
 
 #define BUFFER_SIZE	256
 #define PAGE_SIZE_4KB	(2 * 2 * 1024)
 #define PAGE_SIZE_2MB	(2 * 1024 * 1024)
 #define PAGE_SIZE_64MB	(64 * 1024 * 1024)
+#define PAGE_SIZE_256MB	(256 * 1024 * 1024)
 #define READ_ONLY	1
 #define WRITE_ONLY	2
 #define RD_WR		4
@@ -76,15 +55,7 @@
 #define LARGE_PSHFT	21	/*<!Shift for large page*/
 #define HUGE_PSHFT	26	/*<!Shift for huge page*/
 
-/* Mapping control flags
- * Note : MAP_2MB, MAP_64MB, MAP_ADDR_SPACE, MAP_VDSO flags are also
- * defined in file 've_mem.h'. There puropose is same in both files.
- * please take care while modifying these flag value
- */
-#define MAP_2MB			((uint64_t)1<<22)
-#define MAP_ADDR_SPACE          ((uint64_t)1<<34)
-#define MAP_64MB		((uint64_t)1<<23)
-#define MAP_VDSO                ((uint64_t)1<<32)
+/* Note: Mapping control flags are in mmap_ve.h.  */
 
 /* Macro for judging the type of pages */
 #define FILE_DESC(flags, perm) (!(PG_PTRACE & flags) && !(MAP_ANON & flags) && \
@@ -104,17 +75,10 @@
 		(!(MAP_ANON & flag) && (MAP_PRIVATE & flag) && (PROT_WRITE & perm)))
 
 
-/* Macro For Address alignment */
-#define IS_ALIGNED(x, a)	(((x) & ((typeof(x))(a) - 1)) == 0)
-#define ALIGN(x, a)		__ALIGN_MASK(x, (typeof(x))(a) - 1)
-#define __ALIGN_MASK(x, mask)	(((x) + (mask)) & ~(mask))
-
-#define ROUN_DN(x, y)	((x) & ~(((typeof(x))y) - 1))
-
 #define HUGE_PAGE_IDX 32
 #define VE_PAGE(vnode, pgnum) ((((struct ve_page *)-1 ==\
 				vnode->ve_pages[pgnum]) ?\
-			vnode->ve_pages[ROUN_DN(pgnum, HUGE_PAGE_IDX)] :\
+			vnode->ve_pages[ROUND_DN(pgnum, HUGE_PAGE_IDX)] :\
 			vnode->ve_pages[pgnum]))
 
 #define BITS_PER_BLOCK		32
@@ -122,7 +86,6 @@
 #define BITS_PER_WORD		64
 #define WORDS_PER_BITMAP	4
 #define ENTRIES_PER_DIR		256
-#define DMA_BITMAP	((BITS_PER_WORD*ENTRIES_PER_DIR)/BLOCKS_PER_BITMAP)
 
 #define GET_PAGE_NUMBER(page_base) ((page_base)>>21)
 
@@ -142,8 +105,6 @@
  **/
 #define paddr2mpnum(paddr, blksz, fma) \
 		(((uint64_t)paddr / blksz + fma) % VE_NODE(0)->numa_count)
-
-#define VE_DMA_NUM_DESC (128)
 
 #define PARENT(X)       ((X-1)/2)
 #define LEFT(X)         (2*X+1)
@@ -285,6 +246,9 @@ struct ve_page {
 				/*!< Information about Swapped-out VE page */
 };
 
+struct ve_node_struct;
+struct dump_params;
+
 /* for NUMA */
 /**
  * @brief contain numa sysfs informations
@@ -326,7 +290,6 @@ int send_file_data(vemva_t, off_t, size_t,
 int64_t extract_file_pgoff(vemva_t, struct ve_task_struct *,
 			size_t *, struct mapping_desc **);
 size_t is_addr_file_backed(uint64_t, struct ve_task_struct *);
-void clear_page_array_entry(struct mapping_desc *, pgno_t);
 void free_file_desc(struct file_desc *file);
 
 /* VE memory controlling APIs */
@@ -350,11 +313,10 @@ int calc_usable_dirty_page(struct ve_node_struct *vnode,
 			   int mempolicy, int numa_node);
 void amm_wake_alloc_page(void);
 void invalidate_atb(atb_reg_t *atb);
-void invalidate_dmaatb(dmaatb_reg_t *atb);
+void invalidate_dmaatb(veos_dmaatb_reg_t *atb);
 int amm_copy_atb_private(struct ve_mm_struct *, struct ve_mm_struct *, int);
 void amm_copy_atb_vfork(atb_reg_t *, atb_reg_t *, struct veshm_struct *);
 int amm_copy_phy_page(uint64_t, uint64_t, uint64_t);
-ret_t amm_clear_page(uint64_t, size_t);
 int amm_dma_xfer(int, uint64_t, int, int, uint64_t, int, uint64_t, int);
 int vemva_to_vemaa(pid_t, uint64_t, uint64_t *);
 int amm_initialize_zeroed_page(vemaa_t);
@@ -397,16 +359,15 @@ int veos_unshare_vemva_region(pid_t, vemva_t, size_t);
 
 void invalidate_veshm_pte(atb_reg_t *, struct veshm_struct *);
 
-dir_t validate_vehva(vemva_t, int, pgno_t, void *, int,
+dir_t validate_vehva(vemva_t, int, pgno_t, struct ve_mm_struct *, int,
 		uint8_t, jid_t, uint16_t, int);
 
-dir_t invalidate_vehva(vemva_t, void *, jid_t);
+dir_t invalidate_vehva(vemva_t, struct ve_mm_struct *, jid_t);
 dir_t validate_vemva(vemva_t, int, pgno_t, void *, int);
 dir_t invalidate_vemva(vemva_t, void *);
 
-void __validate_pgd(void *, dir_t, int, int, int);
 void validate_pgd(atb_reg_t *, dir_t, int, int);
-void validate_dmapgd(dmaatb_reg_t *,  dir_t, int, int, int);
+void validate_dmapgd(veos_dmaatb_reg_t *,  dir_t, int, int, int);
 
 void invalidate_pgd(atb_reg_t *, dir_t);
 
@@ -425,12 +386,10 @@ uint64_t *amm_get_pgmod_info(vemva_t, struct ve_task_struct *,
 void amm_dump_atb(struct ve_task_struct *);
 int amm_do_set_tproc(struct ve_jid_cmd cmd, struct ve_task_struct *tsk);
 int veos_handle_ptrace_poke_req(struct ve_task_struct *, vemva_t);
-int copy_entry(atb_entry_t *, atb_entry_t *, int, int, int, struct ve_mm_struct *);
-pgno_t __replace_page(atb_entry_t *, struct ve_mm_struct *, int);
+pgno_t __replace_page(veos_atb_entry_t *, struct ve_mm_struct *, int);
 int64_t replace_page(vemva_t, struct ve_task_struct *);
 
 ret_t amm_mem_clear(size_t);
-ret_t dma_clear_page(uint64_t);
 int amm_update_atb_dir(vedl_handle *, int, struct ve_task_struct *, int);
 
 /*

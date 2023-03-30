@@ -1,5 +1,8 @@
 noinst_LIBRARIES = libveamm.a
 libveamm_a_SOURCES = \
+	ve_memory.c \
+	ve_memory_def.h \
+	amm_api.h \
 	dma_api.c \
 	ve_mem.c \
 	mm_stat.c \
@@ -8,6 +11,7 @@ libveamm_a_SOURCES = \
 	mm_comm.c \
 	pmap.c \
 	elf_dump.c \
+	elf_dump.h \
 	mm_stat.h \
 	ve_shm.h \
 	ve_mem.h \
@@ -21,12 +25,15 @@ libveamm_a_SOURCES = \
 	vehva_mgmt.c \
 	vehva_mgmt.h \
 	../main/veos.h \
+	pagetable.h \
 	buddy.c \
 	buddy.h
+
 
 # ived and libived are used for Dummy AMM
 libveamm_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 \
+	-I$(srcdir)/.. \
 	-I$(srcdir)/../dma \
 	-I$(srcdir)/../psm \
 	-I$(srcdir)/../main \

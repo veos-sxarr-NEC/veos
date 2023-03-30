@@ -30,9 +30,24 @@
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
 #include "ve_list.h"
-#include "libved.h"
-#include "mm_common.h"
-#include "ve_mem.h"
+#include <libved.h>
+
+/* FIXME: architecture-dependent */
+/*
+ * PCIATB page table structure of VE1 and VE3 is still defined here,
+ * in architecture-independent code.
+ * TODO: abstract address translation.
+ */
+#ifndef veos__pciatb_entry_defined
+#define veos__pciatb_entry_defined
+typedef union veos_pciatb_entry {
+	ve_reg_t data;
+	struct {
+		ve_reg_t rfu1:16, page_base_address:27, rfu2:14, num:2, sync:1,
+			rfu3:2, cache_bypass:1, rfu4:1;
+	} bf;
+} veos_pciatb_entry_t;
+#endif
 
 /*
  * PCI_ALLOC_NORMAL: PCIATB page size and VE page size is 2MB
@@ -60,9 +75,9 @@ enum pciattr {PCIATTR_SIZE = 1};
 
 /*PCIATB attribute structure*/
 typedef union pci_attr {
-	reg_t data;
+	ve_reg_t data;
 	struct {
-		reg_t rfu0:63, size:1;
+		ve_reg_t rfu0:63, size:1;
 	} bf;
 } pci_attr_t;
 
@@ -135,7 +150,7 @@ do {\
 #define GET_PCIATB_PB(entry)   (((entry)->data >> PB_SHIFT) & PB_MASK)
 
 int amm_init_pciatb(struct ve_node_struct *);
-void veos_set_pciatb(pciatb_entry_t *, int, int);
+void veos_set_pciatb(const veos_pciatb_entry_t *, int, int);
 int64_t veos_get_vhsaa_pciatb(vemaa_t, pid_t);
 int64_t veos_alloc_pciatb(pid_t, uint64_t, size_t, uint64_t, bool);
 int64_t veos_delete_pciatb(uint64_t, size_t);
@@ -156,4 +171,8 @@ int mk_pci_pgent(uint64_t, uint64_t, struct ve_mm_struct *, size_t, int,
 int free_unused_entry(uint64_t, size_t, size_t);
 int veos_alloc_vdso_pcientry(uint8_t, uint64_t);
 int veos_delete_vdso_pcientry(uint64_t);
+
+int veos_get_pci_memory_window_address(uint64_t *);
+int veos_get_pci_memory_window_size(size_t *);
+size_t veos_get_number_of_pci_pte(void);
 #endif

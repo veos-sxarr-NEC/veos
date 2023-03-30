@@ -33,7 +33,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include "libved.h"
+#include <libved.h>
 #include "list.h"
 #include "vemva_mgmt.h"
 #include "comm_request.h"
@@ -63,6 +63,25 @@
 #endif
 struct pseudo_proc_request;
 
+/**
+* @brief This structure contains the VE process stack and heap limit
+* related information.
+*/
+struct ve_address_space_info {
+	uint64_t heap_start;		/*!< Start address of heap */
+	uint64_t heap_top;		/*!< Heap top of VE Process */
+	uint64_t stack_limit;		/*!< Max stack limit for a VE Process.
+					 * value = 0 in case of UNLIMITED,
+					 * value = 'X' in case of User-Defined
+					 * or default(Currently 10MB).
+					 */
+	uint64_t stack_bottom;		/*!< Stack bottom of a VE Process */
+	uint64_t stack_pointer_aligned;	/*!< Page size aligned actual stack
+					 * pointer of a VE process. */
+};
+extern struct ve_address_space_info ve_info;
+
+
 typedef enum ve_grow_err_t
 {
        VE_GROW_INVALID_REQUEST,
@@ -72,6 +91,8 @@ typedef enum ve_grow_err_t
        VE_GROW_MEM_ALLOC,	
        VE_GROW_NO_ERR
 }ve_grow_err;
+
+typedef uint64_t ve_mem_offset_t;
 
 /* mmap syscall function prototypes */
 ret_t ve_mmap(int syscall_num, char *syscall_name, veos_handle *handle);

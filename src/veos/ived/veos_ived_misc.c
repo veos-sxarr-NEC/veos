@@ -37,6 +37,7 @@
 #include "veos_ived.h"
 #include "veos_ived_common.h"
 #include "veos_veshm_core.h"
+#include "veos_ived_private.h"
 
 int
 dump_ived_shared_resource_data(struct ived_shared_resource_data *info)

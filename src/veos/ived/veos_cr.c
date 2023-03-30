@@ -37,6 +37,7 @@
 #include "comm_request.h"
 #include "ived_request.h"
 #include "vehva_mgmt.h"
+#include "dmaatb_api.h"
 
 #include "ived.pb-c.h"
 #include "ived_ipc.h"
@@ -46,6 +47,8 @@
 #include "vesync.h"
 #include "ived_common.h"
 #include "cr_api.h"
+#include "ve_memory.h"
+#include "veos_ived_private.h"
 
 #define VALID_CR_MODE			(VE_CR_THREAD | VE_CR_MPI)
 #define INVALID_CR_PAGE_NUM		0xffffffffffffffffll
@@ -373,7 +376,7 @@ static int64_t veos_cr_alloc(uint64_t mode_flag, struct ucred *cred,
 			return -EINVAL;
 	}
 
-	veos_sync_r_bar01_bar3();
+	veos_sync_r_bar01_bar_cr();
 	IVED_DEBUG(log4cat_veos_ived,
 		"Allocating a CR page with mode %#"PRIx64" to pid:%d",
 		mode_flag, cred->pid);
@@ -520,7 +523,7 @@ static int64_t veos_cr_release_local(uint64_t crd_number, struct ucred *cred,
 		"Releasing the local CR page referenced by pid:%d crd:%#"
 		PRIx64,	cred->pid, crd_number);
 
-	veos_sync_r_bar01_bar3();
+	veos_sync_r_bar01_bar_cr();
 	ret = veos_detach_cr_page(crd_number, tsk->group_leader->pid);
 	if (ret) {
 		IVED_ERROR(log4cat_veos_ived,
@@ -951,7 +954,7 @@ static int veos_cr_not_referenced(RpcCrSubNotReferenced *request)
 	IVED_DEBUG(log4cat_veos_ived,
 		"Releasing the CR page referenced by page number:%"PRIu64,
 		request->cr_page);
-	veos_sync_r_bar01_bar3();
+	veos_sync_r_bar01_bar_cr();
 	ret = veos_put_cr_page(request->cr_page);
 	if (ret) {
 		IVED_ERROR(log4cat_veos_ived,
@@ -1018,7 +1021,7 @@ int veos_cr_discard_all(struct ve_task_struct *tsk)
 	if (resource == NULL)
 		return -1;
 
-	veos_sync_r_bar01_bar3();
+	veos_sync_r_bar01_bar_cr();
 	for (i = 0; i < MAX_CRD_PER_CORE; i++) {
 		pthread_mutex_lock(&resource->proc_cr_lock);
 

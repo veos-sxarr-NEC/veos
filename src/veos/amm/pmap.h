@@ -27,6 +27,8 @@
  * @internal
  * @author AMM
  */
+#ifndef VEOS_AMM_PMAP_H
+#define VEOS_AMM_PMAP_H
 #include <limits.h>
 #include <stdio.h>
 #include <sys/types.h>
@@ -37,13 +39,13 @@
 #include "ve_shm.h"
 #include "ve_mem.h"
 #include "mm_common.h"
-#include "ve_memory.h"
+//#include "ve_memory.h"
 #include "veos.h"
 #include "libved.h"
 #include "dma.h"
 #include "velayout.h"
-#include "task_signal.h"
-#include "ptrace_req.h"
+//#include "task_signal.h"
+//#include "ptrace_req.h"
 #include "buddy.h"
 
 #define SIZE(x) (sizeof(x) / sizeof((x)[0]))
@@ -77,7 +79,6 @@
 #define DEFAULT_DUMP_SIZE	64 * 1024 * 1024
 
 typedef unsigned long elf_greg_t;
-typedef uint64_t reg_t;
 
 /**
  * @brief Structure For VE valid atb directories.
@@ -124,39 +125,10 @@ int dump_core_info(struct dump_params *, const void *, loff_t, bool);
  *      in veos.
  */
 struct elf_siginfo {
-	int     si_signo;                       /* signal number */
-	int     si_code;                        /* extra code */
-	int     si_errno;                       /* errno */
+	int	si_signo;			/* signal number */
+	int	si_code;			/* extra code */
+	int	si_errno;			/* errno */
 };
-
-/**
- * @brief Structure For Note section.
- *
- *      This will contain the information about the name
- *      type , description and data of registers, signals
- *      auxv and file which will be dump in coredump
- */
-struct memelfnote {
-	const char *name;
-	int type;
-	uint64_t datasz;
-	void *data;
-};
-
-#define roundups(x, y) (                                 \
-{                                                       \
-	const typeof(y) __y = y;                        \
-	(((x) + (__y - 1)) / __y) * __y;                \
-}							\
-)
-
-enum ve_regs {
-	REGSET_GENERAL,
-	REGSET_FP,
-};
-
-struct ve_task_struct;
-struct user_regset;
 
 typedef unsigned char  u8;
 typedef unsigned short u16;
@@ -166,141 +138,17 @@ typedef unsigned int   u32;
 #define user_siginfo_t siginfo_t
 #endif
 
-/**
- * @brief Structure For process status.
- *
- *      This will contain the information about the pending
- *      signals, pid , ppid,  user time and general purpose
- *      register of a VE process which will be dump in
- *      coredump.
- */
-struct elf_prstatus {
-	struct elf_siginfo pr_info;
-	short   pr_cursig;              /* Current signal */
-	unsigned long pr_sigpend;       /* Set of pending signals */
-	unsigned long pr_sighold;       /* Set of held signals */
-	pid_t   pr_pid;
-	pid_t   pr_ppid;
-	pid_t   pr_pgrp;
-	pid_t   pr_sid;
-	struct timeval pr_utime;        /* User time */
-	struct timeval pr_stime;        /* System time */
-	struct timeval pr_cutime;       /* Cumulative user time */
-	struct timeval pr_cstime;       /* Cumulative system time */
-	unsigned long pr_reg[ELF_NGREG];   /* GP registers */
-	int pr_fpvalid;
-};
-
-/**
- * @brief Structure For availabe register set.
- * @name:       Identifier, e.g. UTS_MACHINE string.
- * @regsets:    Array of @n regsets available in this view.
- * @n:          Number of elements in @regsets.
- * @e_machine:  ELF header @e_machine %EM_* value written in core dumps.
- * @e_flags:    ELF header @e_flags value written in core dumps.
- * @ei_osabi:   ELF header @e_ident[%EI_OSABI] value written in core dumps.
- */
-struct user_regset_view {
-	const char *name;
-	const struct user_regset *regsets;
-	unsigned int n;
-	u32 e_flags;
-	u16 e_machine;
-	u8 ei_osabi;
-};
-
-/**
- * @brief Structure For accessible thred CPU state.
- *
- * @n:                  Number of slots (registers).
- * @size:               Size in bytes of a slot (register).
- * @align:              Required alignment, in bytes.
- * @bias:               Bias from natural indexing.
- * @core_note_type:     ELF note @n_type value used in core dumps.
- */
-struct user_regset {
-	unsigned int                    n;
-	unsigned int                    size;
-	unsigned int                    align;
-	unsigned int                    bias;
-	unsigned int                    core_note_type;
-};
-
-/**
- * @brief Structure For File Backed handling.
- *
- *      This will contain the information about the file
- *      to be mapped as. Global List of this will be
- *      maintained in veos.
- */
-struct core_thread {
-	struct ve_task_struct *task;
-	struct core_thread *next;
-};
-
-
-#define ELF_PRARGSZ     (80)
-
-/**
- * @brief Structure For process information.
- *
- *      This will contain the information about the state,
- *      priority, pid , name of executable etc which will be
- *	dump in core files.
- */
-struct elf_prpsinfo {
-	char    pr_state;       /* numeric process state */
-	char    pr_sname;       /* char for pr_state */
-	char    pr_zomb;        /* zombie */
-	char    pr_nice;        /* nice val */
-	unsigned long pr_flag;  /* flags */
-	unsigned int  pr_uid;
-	unsigned int  pr_gid;
-	pid_t   pr_pid, pr_ppid, pr_pgrp, pr_sid;
-	/* Lots missing */
-	char    pr_fname[16];   /* filename of executable */
-	char    pr_psargs[ELF_PRARGSZ]; /* initial part of arg list */
-};
-
-/**
- * @brief Structure For process status and it task.
- *
- *      This will contain the list about the task
- *      of process, register of process which will be
- *      dump in veos.
- */
-struct elf_thread_core_info {
-	struct elf_thread_core_info *next;
-	struct ve_task_struct *task;
-	struct elf_prstatus prstatus;
-	struct memelfnote notes[0];
-};
-
-/**
- * @brief Structure For Note section for core dump.
- *
- *      This will contain the information about the file
- *      auxv, signal, process info of process in core dumps.
- */
-struct elf_note_info {
-	struct elf_thread_core_info *thread;
-	struct memelfnote psinfo;
-	struct memelfnote signote;
-	struct memelfnote auxv;
-	struct memelfnote files;
-	user_siginfo_t csigdata;
-	size_t size;
-	int thread_notes;
-	int map_count;
-};
 
 bool generate_core_dump(struct dump_params *);
 
 int fill_ve_pmap(struct _psuedo_pmap *, struct _psuedo_pmap **, int);
 
-int parse_psuedopmap(struct _psuedo_pmap *, struct _valid_atbdir *,
+int parse_pseudopmap(struct _psuedo_pmap *, struct _valid_atbdir *,
 		struct _psuedo_pmap **, int, int,  struct ve_task_struct *);
 
 int parse_valid_atbdir(struct _valid_atbdir **, atb_reg_t *);
 
 int fill_maps(struct _psuedo_pmap **, pid_t);
+
+
+#endif

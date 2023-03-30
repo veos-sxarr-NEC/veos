@@ -17,14 +17,14 @@
  * <http://www.gnu.org/licenses/>.
  */
 /**
- * @file vedma_hw.h
- * @brief Definitions of parameters for DMA engine
+ * @file ve1dma_hw.h
+ * @brief Definitions of parameters for VE1 DMA engine
  */
-#ifndef VE_VEOS_VEDMA_HW_H
-#define VE_VEOS_VEDMA_HW_H
+#ifndef VE_VEOS_VE1_VE1DMA_HW_H
+#define VE_VEOS_VE1_VE1DMA_HW_H
 
 /* DMA engine control register */
-#define VE_DMA_OFFSET_OF_DMACTL (offsetof(system_common_reg_t, dmactl))
+#define VE_DMA_OFFSET_OF_DMACTL (offsetof(ve1_system_common_reg_t, dmactl))
 #define VE_DMA_OFFSET_OF_WORD_READPTR (VE_DMA_OFFSET_OF_DMACTL + 8)
 /* word 0 */
 #define VE_DMA_CTL_STATUS_MASK (3)
@@ -36,7 +36,7 @@
 #define VE_DMA_CTL_READ_PTR_MASK (0x7f)
 
 /* DMA descriptor */
-#define VE_DMA_OFFSET_OF_DMADESC(i) (offsetof(system_common_reg_t, dmadesc[(i)]))
+#define VE_DMA_OFFSET_OF_DMADESC(i) (offsetof(ve1_system_common_reg_t, dmadesc[(i)]))
 /* word 0 */
 #define VE_DMA_DESC_EXCEPTION_MASK (0xffffUL << 48)
 #define VE_DMA_DESC_STATUS_MASK (0xfUL)
@@ -64,6 +64,6 @@
 #define VE_DMA_DESC_CTL_PCI_RO (4UL << 44)
 #define VE_DMA_DESC_CTL_PCI_IDO (2UL << 44)
 
-#define VE_DMA_NUM_DESC (128)
+#define VE1_DMA_NUM_DESC (128)
 
 #endif

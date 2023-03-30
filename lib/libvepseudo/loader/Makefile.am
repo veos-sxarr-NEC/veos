@@ -10,6 +10,7 @@ libloader_la_CFLAGS = \
 	-I$(srcdir)/../amm \
 	-I$(srcdir)/../common \
 	-I$(srcdir)/../sys \
+	-I$(srcdir)/.. \
 	-I$(top_srcdir)/vhcall/include \
 	-I$(top_srcdir)/include \
 	-I@prefix@/include

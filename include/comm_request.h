@@ -35,8 +35,8 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <sched.h>
-#include "ve_hw.h"
 #include "mm_type.h"
+#include <libved.h>
 
 #define MAX_PROTO_MSG_SIZE (4*1024)
 
@@ -223,7 +223,6 @@ struct new_ve_proc {
 	int mem_policy;		/*!< memory policy for VE process*/
 	pid_t real_parent_pid;  /*!< Parent Process ID of VE Process*/
 };
-
 
 /**
 * @brief ve_mmap command Information
@@ -422,9 +421,9 @@ struct veos_cmd_entry {
  * @brief VE context data structure required by PSM
  */
 struct ve_context_info {
-	reg_t IC; /*!< Instruction counter */
-	reg_t SP; /*!< Stack pointer */
-	reg_t SZ; /*!< Stack frame pointer */
+	ve_reg_t IC; /*!< Instruction counter */
+	ve_reg_t SP; /*!< Stack pointer */
+	ve_reg_t SZ; /*!< Stack frame pointer */
 };
 
 struct ve_address_space_info_cmd {
@@ -565,7 +564,7 @@ enum ve_rlim {
  */
 struct reg_data {
 	int reg;		/*!< Register ID */
-	reg_t regval;		/*!< Register value */
+	ve_reg_t regval;		/*!< Register value */
 	int64_t mask;		/*!< Mask for regval */
 };
 
@@ -680,6 +679,8 @@ enum pseudo_veos_msg_id {
 	STOP_USER_THREADS,
 	START_USER_THREADS,
 	GET_USER_THREADS_STATE,
+	SET_CPU_MASK,
+	CMD_GET_PROGINF_DATA,
 	PSEUDO_VEOS_MAX_MSG_NUM,
 	CMD_INVALID = -1,
 };

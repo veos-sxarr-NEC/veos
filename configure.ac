@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([veos], [2.14.1])
+AC_INIT([veos], [3.0.2])
 AC_CONFIG_SRCDIR([lib/libvepseudo/psm/exception.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([./build-aux])
@@ -22,6 +22,11 @@ AC_ARG_WITH(ve-prefix, [AS_HELP_STRING([--with-ve-prefix],
 	    [ve_prefix=${with_ve_prefix}],
 	    [ve_prefix=/opt/nec/ve])
 AC_SUBST(ve_prefix)
+AC_ARG_WITH(ve3-prefix, [AS_HELP_STRING([--with-ve3-prefix],
+	    [Specify prefix of VE3 software [/opt/nec/ve3]])],
+	    [ve3_prefix=${with_ve_prefix}],
+	    [ve3_prefix=/opt/nec/ve3])
+AC_SUBST(ve3_prefix)
 AC_ARG_WITH(ve-bindir, [AS_HELP_STRING([--with-ve-bindir],
 	    [VE bindir [ve-prefix/bin]])],
 	    [ve_bindir=${with_ve_bindir}],
@@ -42,6 +47,11 @@ AC_ARG_WITH(ve-includedir, [AS_HELP_STRING([--with-ve-includedir],
 	    [ve_includedir=${with_ve_includedir}],
 	    [ve_includedir=${ve_prefix}/include])
 AC_SUBST(ve_includedir)
+AC_ARG_WITH(ve3-includedir, [AS_HELP_STRING([--with-ve3-includedir],
+	    [VE includedir for VE3 [ve3-prefix/include]])],
+	    [ve3_includedir=${with_ve3_includedir}],
+	    [ve3_includedir=${ve3_prefix}/include])
+AC_SUBST(ve3_includedir)
 AC_ARG_WITH(ve-musl-includedir, [AS_HELP_STRING([--with-ve-musl-includedir],
 	    [VE includedir for musl])],
 	    [ve_musl_includedir=${with_ve_musl_includedir}],
@@ -102,6 +112,11 @@ AC_ARG_WITH([libvepseudo-headersdir],
 	[libvepseudo_headersdir=${includedir}/libvepseudo])
 AC_SUBST(libvepseudo_headersdir)
 
+AC_ARG_WITH([ve1], AS_HELP_STRING([--with-ve1], [VE1 support]))
+AM_CONDITIONAL([VEOS_VE1], [test x$with_ve1 != xno])
+AC_ARG_WITH([ve3], AS_HELP_STRING([--with-ve3], [VE3 support]))
+AM_CONDITIONAL([VEOS_VE3], [test x$with_ve3 != xno])
+
 AM_PROG_AR
 LT_INIT
 AC_CONFIG_MACRO_DIR([m4])
@@ -127,6 +142,7 @@ AC_CHECK_LIB(ved, vedl_wait_exception, [have_libved=yes], [have_libved=no])
       AC_MSG_ERROR([libved support missing/incomplete])
     fi
     LIBVED_LIBS="-lved"
+    # TODO: check libved >= 2.99.0
 
 AC_CHECK_LIB([dl], [dlsym], [], [AC_MSG_ERROR([dl library support missing/incomplete])])
 AC_CHECK_LIB([log4c], [log4c_init], [], [AC_MSG_ERROR([log4c library support missing/incomplete])])
@@ -215,7 +231,38 @@ AC_CONFIG_FILES([Makefile
 		debian/veos.install
 		debian/veos-libvepseudo-headers.install
 		debian/veos-libveptrace.install
-		debian/veos-musl-headers.install])
+		debian/veos-musl-headers.install
+		ve1/Makefile
+		ve1/lib/Makefile
+		ve1/lib/libvepseudo/Makefile
+		ve1/lib/libvepseudo/amm/Makefile
+		ve1/lib/libvepseudo/common/Makefile
+		ve1/lib/libvepseudo/loader/Makefile
+		ve1/lib/libvepseudo/psm/Makefile
+		ve1/lib/libveptrace/Makefile
+		ve1/src/Makefile
+		ve1/src/veos/Makefile
+		ve1/src/veos/amm/Makefile
+		ve1/src/veos/dma/Makefile
+		ve1/src/veos/main/Makefile
+		ve1/src/veos/psm/Makefile
+		ve1/src/veos/pps/Makefile
+		ve3/Makefile
+		ve3/lib/Makefile
+		ve3/lib/libvepseudo/Makefile
+		ve3/lib/libvepseudo/amm/Makefile
+		ve3/lib/libvepseudo/common/Makefile
+		ve3/lib/libvepseudo/loader/Makefile
+		ve3/lib/libvepseudo/psm/Makefile
+		ve3/lib/libveptrace/Makefile
+		ve3/src/Makefile
+		ve3/src/veos/Makefile
+		ve3/src/veos/amm/Makefile
+		ve3/src/veos/dma/Makefile
+		ve3/src/veos/main/Makefile
+		ve3/src/veos/psm/Makefile
+		ve3/src/veos/pps/Makefile
+		])
 
 
 AC_OUTPUT

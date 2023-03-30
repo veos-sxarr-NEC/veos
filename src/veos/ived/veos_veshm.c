@@ -36,7 +36,6 @@
 #include <uuid/uuid.h>
 
 #include "libved.h"
-#include "ve_hw.h"
 #include "veos.h"
 #include "veos_handler.h"
 #include "task_mgmt.h"
@@ -52,6 +51,7 @@
 #include "proto_buff_schema.pb-c.h"
 #include "psm_comm.h"
 #include "veos_veshm_ipc.h"
+#include "veos_ived_private.h"
 
 /* Terminated process's VESHM list */
 /* About order of lock, please see definition of ived_task_list_lock. */
@@ -341,7 +341,7 @@ pickup_owned_veshm_addr(struct ived_shared_resource_data *resource,
 	struct owned_veshm_info *entry = NULL;
 	int found = 0;
 	uint64_t checking_mask = (VESHM_MODE_SYNC | VESHM_MODE_PCIATB
-				  | VESHM_MODE_RO);
+				  | VESHM_MODE_RO | VESHM_MODE_256MB);
 
 	list_for_each(list_p, &(resource->owned_veshm_list)){
 		entry = list_entry(list_p, struct owned_veshm_info, list);
@@ -585,7 +585,7 @@ pickup_attaching_veshm(struct ived_shared_resource_data *resource,
 	struct attaching_veshm_info *entry = NULL;
 	int found = 0;
 	uint64_t checking_mask = VESHM_MODE_SYNC | VESHM_MODE_PCIATB
-		| VESHM_MODE_RO;
+		| VESHM_MODE_RO | VESHM_MODE_256MB;
 
 	assert(resource != NULL);
 	if (resource == NULL){

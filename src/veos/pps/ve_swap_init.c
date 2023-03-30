@@ -34,6 +34,7 @@
 #include <libgen.h>
 #include <log4c.h>
 #include <pthread.h>
+#include <unistd.h>
 #include "velayout.h"
 #include "ve_swap.h"
 #include "veos.h"
@@ -521,8 +522,11 @@ int fork_pps_file_handler(char *path, int sockfd[], uid_t uid, gid_t gid,
 				/* Get file descriptor of pps_to_file */
 				memset(&msg, '\0', 
 					sizeof(struct ve_swap_file_hdr_comm));
-				pps_f_fd = open(path, O_RDWR | O_CREAT, 
+				remove(path);
+				errno = 0;
+				pps_f_fd = open(path, O_RDWR | O_CREAT | O_EXCL,
 								S_IRWXU);
+
 				msg.kind = PPS_F_HDR_OPEN_FD_RET;
 				msg.int_ret = pps_f_fd;
 				msg.r_errno = errno;
@@ -987,8 +991,10 @@ int veos_open_pps_file(struct ve_node_struct *vnode)
 
 	if(vnode->pps_file.is_created_by_root){
 		/* open as root */
-		pps_file_fd = open(vnode->pps_file.path, O_RDWR | O_CREAT, 
-								S_IRWXU);	
+		remove(vnode->pps_file.path);
+		errno = 0;
+		pps_file_fd = open(vnode->pps_file.path, O_RDWR | O_CREAT |
+							O_EXCL, S_IRWXU);
 		if ((pps_file_fd == -1) && (errno == ENOENT)) {
 			ret = veos_mkdir_pps_file(pps_file_dir);
 			if (ret != 0) {
@@ -996,8 +1002,10 @@ int veos_open_pps_file(struct ve_node_struct *vnode)
 					"PPS file due to %s", strerror(errno));
 				goto hndl_return;
 			}
+			remove(vnode->pps_file.path);
+			errno = 0;
 			pps_file_fd = open(vnode->pps_file.path, O_RDWR | 
-					O_CREAT, S_IRWXU);
+					O_CREAT | O_EXCL , S_IRWXU);
 		}
 	}else{
 		/* open as non-root */

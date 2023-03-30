@@ -40,7 +40,7 @@
 #include "ve_socket.h"
 #include "proto_buff_schema.pb-c.h"
 #include "velayout.h"
-#include "ve_memory.h"
+#include "align.h"
 
 /**
  * @brief This function read the shm stat from file /proc/sysvipc/shm.

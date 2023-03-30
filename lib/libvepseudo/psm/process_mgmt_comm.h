@@ -93,6 +93,8 @@ int pseudo_psm_recv_setuidgid_ack(int);
 int ve_set_user_reg(veos_handle *, int, uint64_t, int64_t);
 int pseudo_psm_send_get_mempolicy_req(int veos_sock_fd);
 int pseudo_psm_recv_get_mempolicy_ack(int veos_sock_fd);
+int pseudo_psm_send_cpu_mask(int, cpu_set_t);
+int64_t pseudo_psm_recv_cpu_mask_ack(int);
 int pseudo_psm_send_signal_mask(int, sigset_t);
 int64_t pseudo_psm_recv_signal_mask_ack(int);
 #endif
