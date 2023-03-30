@@ -47,6 +47,7 @@
 #include "task_mgmt.h"
 #endif
 #include "vesync.h"
+#include "veos_devmem.h"
 
 #define CLEAN_PSEUDO_SLEEP_TIME 3
 #define TERMINATE_DMA_SLEEP_TIME 3
@@ -993,6 +994,16 @@ int veos_init(void)
 		goto hndl_dma;
 	}
 
+	errno = 0;
+	/* release all GPU physical pages relating to the VE node */
+	if (vedl_put_devmem_all(VE_HANDLE(0)) != 0) {
+		if (errno != ENOTSUP) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+			       "Failed to releasing all registered device memory");
+			goto hndl_dma;
+		}				
+	}
+	  
 	/* reset core's interrupt counter to zero */
 	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores;
 								core_loop++) {
@@ -1043,6 +1054,13 @@ int veos_init(void)
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
 				"Mapping bar01 failed");
 		goto hndl_amm;
+	}
+
+	/* create thread for device memory*/
+	if (veos_devmem_init(VE_NODE(0)) != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+			"Failed to create thread for device memory");
+		goto hndl_bar01_sync_addr;
 	}
 
 	/* Start veos Scheduler timer */

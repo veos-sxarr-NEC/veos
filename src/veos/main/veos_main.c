@@ -55,6 +55,7 @@
 #include "ve_swap.h"
 #include "ve_mem.h"
 #include "veos_sock.h"
+#include "veos_devmem.h"
 
 #define IPC_QUEUE_LEN 20
 #define UG_NAME_MAX 32
@@ -428,6 +429,15 @@ static int veos_cleanup(void)
 		goto hndl_error_dma;
 	}
 
+	errno = 0;
+	if (vedl_put_devmem_all(VE_HANDLE(0)) != 0) {
+		if (errno != ENOTSUP) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Failed to releasing all registered device memory");
+			goto hndl_error_dma;
+		}
+	}
+	
 	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores;
 								core_loop++) {
 		if (vedl_reset_interrupt_count(VE_HANDLE(0), core_loop) != 0) {

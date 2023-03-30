@@ -62,6 +62,7 @@
 #include "locking_handler.h"
 #include "task_mgmt.h"
 #include "veos_arch_ops.h"
+#include "veos_devmem.h"
 
 extern pthread_mutex_t readproc_mutex;
 #define ZOMBIE_TASK_CLEANUP_INTERVAL 5

@@ -559,8 +559,6 @@ err_ret:
 	return(0);
 }
 
-
-
 /**
  * @brief Initialize IVED resource management data per process
  * If an argument tsk is a thread and it has had a ived_shared_resource_data,
@@ -643,6 +641,13 @@ veos_init_ived_proc_property(struct ve_task_struct *tsk)
 		pthread_mutex_destroy(&newdata->re_attach_veshm_lock);
 		goto err_ret;
 	}
+	/* Initialize a resource information about DEVMEM */
+	ret = veos_initialize_devmem_resource(newdata);
+	if (ret != 0) {
+		pthread_rwlock_destroy(&newdata->ived_resource_lock);
+		pthread_mutex_destroy(&newdata->proc_cr_lock);
+		goto err_ret;
+	}
 
 	/* Register a new process with IVED */
 	ret = veos_ived_register_procdata(newdata); 
@@ -652,6 +657,8 @@ veos_init_ived_proc_property(struct ve_task_struct *tsk)
 		pthread_mutex_destroy(&newdata->re_attach_veshm_lock);
 		pthread_mutex_destroy(
 				&newdata->veos_vhshm_res_head.veos_vhshm_lock);
+		pthread_mutex_destroy(
+				&newdata->veos_dev_mem_res_head.veos_dev_mem_lock);
 		goto err_ret;
 	}
 
@@ -727,6 +734,11 @@ veos_clean_ived_proc_property(struct ve_task_struct *tsk)
 	if (ret != 0)
 		IVED_ERROR(log4cat_veos_ived,
 					"Releasing VHSHM resources failed");
+	/* Release VE-GPU resources */
+	ret = veos_delete_devmem_resource(tsk);
+	if (ret != 0)
+		IVED_ERROR(log4cat_veos_ived,
+					"Releasing Device Memory resources failed");
 
 	/* Erase a registration of this process */
 	veos_ived_erase_procdata(ived_resource);

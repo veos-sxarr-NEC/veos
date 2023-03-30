@@ -121,6 +121,7 @@ int psm_handle_get_proginf_req(struct veos_thread_arg *);
 extern int veos_veshm_veshmctl(struct veos_thread_arg *);
 extern int veos_shared_cr_crctl(struct veos_thread_arg *);
 extern int veos_vhshm(veos_thread_arg_t *);
+extern int veos_dev_mem(veos_thread_arg_t *);
 
 /* VEMM <--------------> PSEUDO */
 int veos_handle_vemmctl(struct veos_thread_arg *);

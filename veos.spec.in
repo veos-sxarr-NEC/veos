@@ -8,14 +8,14 @@ License:	GPLv2+ and (LGPLv2+ and BSD and MIT)
 Source0:	@PACKAGE@-@VERSION@.tar.gz
 Vendor:		NEC Corporation
 BuildArch:	x86_64
-BuildRequires:	libved-devel >= 2.99.0 velayout-devel
+BuildRequires:	libved-devel >= 3.0.1 velayout-devel
 BuildRequires:	protobuf-c-devel log4c-devel systemd-devel libuuid-devel
 BuildRequires:	libcap-devel
 BuildRequires:	procps-ng-devel
 BuildRequires:	protobuf-compiler
 BuildRequires:  ve-memory-mapping-devel
 BuildRequires:  libdhash-devel
-Requires:	libved >= 2.99.0
+Requires:	libved >= 3.0.1
 Requires:	velayout
 Requires:	protobuf-c log4c systemd-libs libuuid
 Requires:	libcap

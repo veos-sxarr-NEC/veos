@@ -10,7 +10,9 @@ libpseudoived_la_SOURCES = \
 	pseudo_cr.c \
 	pseudo_vemm.c \
 	pseudo_vhshm.c \
-	pseudo_vhshm.h
+	pseudo_vhshm.h \
+	pseudo_devmem.c \
+	pseudo_devmem.h
 
 libpseudoived_la_CFLAGS = \
 	-g -Wall -Werror -DDEBUG -D_GNU_SOURCE \

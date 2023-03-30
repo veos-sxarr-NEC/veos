@@ -23,6 +23,10 @@ from time import sleep
 VEDRV_CMD_DELETE_ALL_TASK = (0xf500 + 17)
 UDEVADM='@UDEVADM@'
 
+def delete_all_devmem(devfile):
+    fd = os.open(devfile, os.O_RDWR)
+    fcntl.ioctl(fd, VEDRV_CMD_PUT_DEVMEM_ALL)
+
 def delete_all_task(devfile):
     fd = os.open(devfile, os.O_RDWR)
     fcntl.ioctl(fd, VEDRV_CMD_DELETE_ALL_TASK)
@@ -54,6 +58,7 @@ def kill_process(devfile):
         sleep(1)
 
 def delete_process(devfile):
+    delete_all_devmem(devfile)
     delete_all_task(devfile)
     kill_process(devfile)
 

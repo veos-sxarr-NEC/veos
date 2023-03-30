@@ -67,6 +67,7 @@
 #include "veos_sock.h"
 #include "ve_swap.h"
 #include <sys/sysmacros.h>
+#include "veos_devmem.h"
 
 bool veos_term ;
 extern int __amm_get_sysfs_info(char *out, char *fname, size_t out_sz);
@@ -1968,7 +1969,7 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 	/* Clean and Re-initialise ived proc property */
 	if (del_task_struct->ived_resource)
 		veos_clean_ived_proc_property(del_task_struct);
-
+	
 	del_task_struct->execed_proc = true;
 
 	/* task exit status is set to 0 so that it does not invoke delete

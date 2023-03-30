@@ -98,4 +98,17 @@ struct vhshm_args {
 	};
 };
 
+#define ATTACHMASK64M  0x0000000003FFFFFFULL
+struct dev_mem_args {
+	int subcmd;
+	union {
+		struct atg_args {  /* Used to veos_attach_dev_mem() request. */
+			int devmem_id;
+		} atg_arg;
+		struct dtg_args { /* Used to veos_detach_dev_mem() request. */
+			uint64_t vehva;
+		} dtg_arg;
+	};
+};
+
 #endif

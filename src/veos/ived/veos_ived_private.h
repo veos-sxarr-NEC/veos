@@ -35,6 +35,7 @@
 #include <log4c.h>
 
 #include "veos_vhshm.h"
+#include "veos_devmem.h"
 #include "veos_cr.h"
 #include "cr_api.h"
 
@@ -78,6 +79,7 @@ struct ived_shared_resource_data{
 	int attach_veshm_num;	/*!< For debug only. Don't divert to other purpose. */
 
 	struct veos_vhshm veos_vhshm_res_head; /* !< VHSHM resource structure */
+	struct veos_dev_mem veos_dev_mem_res_head; /* !< Device Memory resource structure */
 	bool is_swap_out;			/*!< process swap out or not */
 	struct list_head swapped_owned_veshm_list;	/*!< List head of swapped-out owned VESHM */
 	struct list_head swapped_attach_veshm_list;	/*!< List head of swapped-out attaching VESHM */

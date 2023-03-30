@@ -5,6 +5,7 @@ ve_musl_include_HEADERS = \
 	sysve.h \
 	vhcall.h \
 	vhshm_defs.h \
+	devmem_defs.h \
 	veaio_defs.h \
 	veacc_io_defs.h \
 	psm_defs.h
@@ -16,6 +17,7 @@ ve_include_HEADERS = \
 	sysve.h \
 	vhcall.h \
 	vhshm_defs.h \
+	devmem_defs.h \
 	veaio_defs.h \
 	veacc_io_defs.h \
 	mempolicy.h \

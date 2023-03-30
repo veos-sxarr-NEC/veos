@@ -39,6 +39,7 @@
 #include "sysve_os.h"
 #include "pseudo_cr.h"
 #include "pseudo_veshm.h"
+#include "pseudo_devmem.h"
 #include "pseudo_vhshm.h"
 #include "sys_veaio.h"
 #include "sys_accelerated_io.h"
@@ -1468,6 +1469,9 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 		break;
 	case VE_SYSVE_VHSHM_CTL:
 		retval = sys_vhshm(handle, &args[1]);
+		break;
+	case VE_SYSVE_DEVMEM_CTL:
+		retval = sys_dev_mem(handle, &args[1]);
 		break;
 	case VE_SYSVE_MAP_DMADES:
 		retval = ve_sys_map_dmades(handle,(uint64_t *)args[1],
