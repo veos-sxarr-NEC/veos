@@ -66,8 +66,10 @@ static ve_dma_reqlist_entry *ve1_dma_intr__finish_descriptor(struct ve1_dma_engi
 			ve_dma_reqlist__cancel(r);
 		} else {
 			ve1_dma_finish_reqlist_entry(e, status, readptr);
-			if (e->last)
+			if (e->last){
+				ve_dma__dec_ipc_sync_nolock(r);
 				r->comp = 1;
+			}
 			ret = e;
 		}
 		/*

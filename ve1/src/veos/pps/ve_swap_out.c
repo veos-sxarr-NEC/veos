@@ -126,7 +126,7 @@ veos_do_swap_out_dmaatb(struct ve_task_struct *tsk, int dir, int ent,
 	pg_setpb(&(tsk_p_ve_mm_dmaatb->entry[dir][ent]), PG_BUS, PG_2M);
 	pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock), UNLOCK,
 				"Failed to release thread_group_mm_lock");
-	ret = amm_do_put_page(pgno * PAGE_SIZE_2MB, true);
+	ret = amm_do_put_page(pgno * PAGE_SIZE_2MB, true, PPS_TO_DUMY);
 	pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock),
 				LOCK, "Failed to acquire thread_group_mm_lock");
 	if (ret != 0) {

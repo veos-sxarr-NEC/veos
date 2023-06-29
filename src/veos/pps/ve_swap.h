@@ -67,6 +67,11 @@ extern log4c_category_t *cat_os_pps;
 #define PPS_MEM_MODE   1
 #define PPS_FILE_MODE  2
 #define PPS_MIX_MODE   3
+
+#define PPS_TO_DUMY   0
+#define PPS_TO_MEM   1
+#define PPS_TO_FILE   2
+
 #define PPS_TRANSFER_BUFFER_SIZE 64 
 #define PPS_TRANSFER_BUFFER_SIZE_BYTE (PPS_TRANSFER_BUFFER_SIZE * 1024 * 1024)
 #define PPS_PAGE_SIZE_64MB	(64 * 1024 * 1024)
@@ -144,7 +149,7 @@ void veos_pps_free_file_offset(void *, size_t, int);
 int get_task_exit_status(struct ve_task_struct *);
 void veos_update_substatus(struct ve_task_struct *, enum swap_status);
 int veos_check_substatus(struct ve_task_struct *, enum swap_status);
-int veos_pps_save_memory_content(pgno_t);
+int veos_pps_save_memory_content(pgno_t, int);
 int del_swapped_pages(struct ve_task_struct *);
 void veos_operate_all_ve_task_lock(struct ve_task_struct *, lock_unlock_t);
 void veos_free_ppsbuf(void);

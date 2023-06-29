@@ -165,6 +165,16 @@ struct ve_swap_file_info {
 };
 
 /**
+ * @brief Code Modification file infomation Struct
+ */
+struct ve_code_modification_file_info {
+	char path[PATH_MAX + 1]; /* !< Absolute path of temporary file */
+	int max_file_num;         /* !< Max file number */
+	int per_usr_max_file_num;
+	int alive_day_inter_file;
+};
+
+/**
  * @brief VE Node Struct
  */
 struct ve_node_struct {
@@ -196,6 +206,9 @@ struct ve_node_struct {
 	pthread_mutex_t zombie_mtx;/*!< Mutex lock specific to zombie task cleanup */
 	volatile int num_zombie_proc; /*!< Number of zombie VE processes created
 				       * using 'time' command on this node */
+	pthread_cond_t modtmp_cond;/*!< Conditional lock for modification temp file cleanup */
+	pthread_mutex_t modtmp_mtx;/*!< Mutex lock specific to modification temp file cleanup */
+
 	pthread_cond_t pg_allc_cond;/*!< Conditional lock for allocating ve pages protected by ve_node_lock*/
 	uint64_t dirty_pg_num_2M[VE_MAX_NUMA_NODE];
 	uint64_t dirty_pg_num_64M[VE_MAX_NUMA_NODE];
@@ -259,6 +272,7 @@ struct ve_node_struct {
 	pthread_mutex_t pps_file_buffer_lock; /* !< Lock for transferring data from pps file buffer to pps file */
 	int couredump_launcher_sockfd;
 	pid_t couredump_launcher_pid;
+	struct ve_code_modification_file_info code_modification_file;
 };
 
 /**
@@ -286,6 +300,9 @@ struct ve_sys_load {
 #define OPT_VESWAP_FILE_GROUP  8
 #define OPT_SKIPMEMCLEAR       9
 #define OPT_DRORDERING         10
+#define OPT_MODCD_FILE_MAX   11
+#define OPT_MODCD_U_FILE_MAX   12
+#define OPT_MODCD_ALIVE_INTER_FILE   13
 
 
 #define NOT_REQUIRED 0

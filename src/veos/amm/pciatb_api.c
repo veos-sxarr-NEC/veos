@@ -318,7 +318,7 @@ int alloc_pcientry(uint64_t start_entry,
 				entry_cnt_bak >= 0; entry_cnt_bak--) {
 				vnode_info->pciatb[--idx].data = INVALID_ENTRY;
 				ret_2 = amm_do_put_page(
-						page_base[entry_cnt_bak], true);
+						page_base[entry_cnt_bak], true, PPS_TO_DUMY);
 				if (ret_2 < 0) {
 					pthread_mutex_lock_unlock(&vnode_info->
 						pciatb_lock, UNLOCK,

@@ -100,21 +100,33 @@ void *ve_get_vemva_under_64GB(veos_handle *handle, vemva_t addr,
 	pthread_mutex_lock(&as_attributes.as_attr_lock);
 	/*Initialize the mapping attributes*/
 	if (!as_attributes.addr_space_2mb_next &&
-			!as_attributes.addr_space_64mb_next) {
+		!as_attributes.addr_space_64mb_next &&
+		!as_attributes.addr_space_hole_start_2mb &&
+		!as_attributes.addr_space_hole_start_64mb &&
+		!as_attributes.addr_space_hole_end_2mb &&
+		!as_attributes.addr_space_hole_start_64mb) {
 		if (default_page_size == PAGE_SIZE_2MB) {
 			PSEUDO_DEBUG("Initializing attr for %lx align binary",
 					default_page_size);
 			as_attributes.addr_space_2mb_next
-						= ADDR_SPACE_2MB_START;
+				= as_attributes.addr_space_hole_start_2mb
+				= as_attributes.addr_space_hole_end_2mb
+				= ADDR_SPACE_2MB_START;
 			as_attributes.addr_space_64mb_next
-						= ADDR_SPACE_2MB_END;
+				= as_attributes.addr_space_hole_start_64mb
+				= as_attributes.addr_space_hole_end_64mb
+				= ADDR_SPACE_2MB_END;
 		} else {
 			PSEUDO_DEBUG("Initializing attr for %lx align binary",
 					default_page_size);
 			as_attributes.addr_space_64mb_next
-						= ADDR_SPACE_64MB_START;
+				= as_attributes.addr_space_hole_start_64mb
+				= as_attributes.addr_space_hole_end_64mb
+				= ADDR_SPACE_64MB_START;
 			as_attributes.addr_space_2mb_next
-						=  ADDR_SPACE_64MB_END;
+				= as_attributes.addr_space_hole_start_2mb
+				= as_attributes.addr_space_hole_end_2mb
+				= ADDR_SPACE_64MB_END;
 		}
 	}
 
@@ -125,7 +137,13 @@ void *ve_get_vemva_under_64GB(veos_handle *handle, vemva_t addr,
 		if (ve_page_info.page_size == PAGE_SIZE_2MB) {
 			if (!(flag & MAP_ADDR_64GB_FIXED)
 					&& (addr != TRAMP_2MB)) {
-				addr =	as_attributes.addr_space_2mb_next;
+				if ((as_attributes.addr_space_hole_start_2mb < as_attributes.addr_space_2mb_next)
+				      && (size <=
+					    (size_t)(as_attributes.addr_space_hole_end_2mb
+						     - as_attributes.addr_space_hole_start_2mb)))
+						addr = as_attributes.addr_space_hole_start_2mb;
+				else
+					addr =	as_attributes.addr_space_2mb_next;
 				PSEUDO_DEBUG("Next addr for 2MB-2MB"
 						" page size %lx", addr);
 			}
@@ -138,7 +156,13 @@ void *ve_get_vemva_under_64GB(veos_handle *handle, vemva_t addr,
 			}
 		} else {
 			if (!(flag & MAP_ADDR_64GB_FIXED)) {
-				addr = as_attributes.addr_space_64mb_next;
+				if ((as_attributes.addr_space_hole_start_64mb < as_attributes.addr_space_64mb_next) &&
+					(size <=
+					    (size_t)(as_attributes.addr_space_hole_end_64mb
+						     - as_attributes.addr_space_hole_start_64mb)))
+					addr = as_attributes.addr_space_hole_start_64mb;
+				else
+					addr = as_attributes.addr_space_64mb_next;
 				PSEUDO_DEBUG("Next addr for 2MB-64MB page"
 						" size %lx", addr);
 			}
@@ -153,7 +177,13 @@ void *ve_get_vemva_under_64GB(veos_handle *handle, vemva_t addr,
 	} else {
 		if (ve_page_info.page_size == PAGE_SIZE_64MB) {
 			if (!(flag & MAP_ADDR_64GB_FIXED)) {
-				addr = as_attributes.addr_space_64mb_next;
+				if ((as_attributes.addr_space_hole_start_64mb < as_attributes.addr_space_64mb_next) &&
+					(size <=
+					    (size_t)(as_attributes.addr_space_hole_end_64mb
+						     - as_attributes.addr_space_hole_start_64mb)))
+					addr = as_attributes.addr_space_hole_start_64mb;
+				else
+					addr = as_attributes.addr_space_64mb_next;
 				PSEUDO_DEBUG("Next addr for 64MB-64MB"
 						" page size %lx", addr);
 			}
@@ -168,7 +198,13 @@ void *ve_get_vemva_under_64GB(veos_handle *handle, vemva_t addr,
 			/*verify that current mapping not beyond the limit*/
 			if (!(flag & MAP_ADDR_64GB_FIXED)
 					&& (addr != TRAMP_64MB)) {
-				addr =	as_attributes.addr_space_2mb_next;
+				if ((as_attributes.addr_space_hole_start_2mb < as_attributes.addr_space_2mb_next) &&
+				      (size <=
+				       (size_t)(as_attributes.addr_space_hole_end_2mb
+						- as_attributes.addr_space_hole_start_2mb)))
+					addr = as_attributes.addr_space_hole_start_2mb;
+				else
+					addr =	as_attributes.addr_space_2mb_next;
 				PSEUDO_DEBUG("Next addr for 2MB-64MB"
 						" page size %lx", addr);
 			}
@@ -212,7 +248,7 @@ use_holes:
 			return vemva;
 		} else {
 			/*first check is new vemva is valid or not*/
-			if (((uint64_t)vemva) > HEAP_START) {
+			if (((uint64_t)vemva + size) > HEAP_START) {
 				PSEUDO_DEBUG("Invalid vemva %p", vemva);
 				ve_free_vemva(vemva, size);
 				vemva = MAP_FAILED;
@@ -226,12 +262,31 @@ use_holes:
 	/* Update next addresses into mapping attributes*/
 	if (!(flag & MAP_ADDR_64GB_FIXED) && (addr != TRAMP_2MB)
 			&& (addr != TRAMP_64MB) && !is_holes) {
-		if (ve_page_info.page_size == PAGE_SIZE_2MB)
-			as_attributes.addr_space_2mb_next
-				= (vemva_t)(addr + size);
-		else
-			as_attributes.addr_space_64mb_next
-				= (vemva_t)(addr + size);
+		if (ve_page_info.page_size == PAGE_SIZE_2MB) {
+			if ((as_attributes.addr_space_hole_end_2mb == as_attributes.addr_space_hole_start_2mb) &&
+			    (as_attributes.addr_space_hole_start_2mb == as_attributes.addr_space_2mb_next)) {
+				as_attributes.addr_space_2mb_next
+				  = as_attributes.addr_space_hole_start_2mb
+				  = as_attributes.addr_space_hole_end_2mb
+				  = (vemva_t)(addr + size);
+			} else if (addr < as_attributes.addr_space_hole_end_2mb)
+				as_attributes.addr_space_hole_start_2mb = (vemva_t)(addr + size);
+			else
+				as_attributes.addr_space_2mb_next
+				  = (vemva_t)(addr + size);
+		} else {
+			if ((as_attributes.addr_space_hole_end_64mb == as_attributes.addr_space_hole_start_64mb) &&
+			    (as_attributes.addr_space_hole_start_64mb == as_attributes.addr_space_64mb_next))
+				as_attributes.addr_space_64mb_next
+				  = as_attributes.addr_space_hole_start_64mb
+				  = as_attributes.addr_space_hole_end_64mb
+				  = (vemva_t)(addr + size);
+			else if (addr < as_attributes.addr_space_hole_end_64mb)
+				as_attributes.addr_space_hole_start_64mb = (vemva_t)(addr + size);
+			else
+				as_attributes.addr_space_64mb_next
+				  = (vemva_t)(addr + size);
+		}
 	}
 
 	pthread_mutex_unlock(&as_attributes.as_attr_lock);
@@ -383,6 +438,407 @@ void *ve_get_vemva(veos_handle *handle, uint64_t addr,
 err_exit:
 	if (reset_ve_page_info)
 		memset(&ve_page_info, '\0', sizeof(ve_page_info));
+	errno = saved_errno;
+	return (void *)-1;
+}
+
+/**
+ * @brief This function is used to obtain virtual memory for
+ * 	  VE on VH side within first 64GB of address space.
+ *
+ * @param[in] handle handle veos_handle
+ * @param[out] addr Memory address for mapping
+ * @param[in] size Memory length to map
+ * @param[in] flag flag to control memory mapping
+ * @param[in] prot Memory protection flag
+ * @param[in] offset Offset to file
+ *
+ * @return Return virtual address on success, (void *)-1 on error and set
+ * errno.
+ */
+void *ve_get_vemva_for_mod_code_under_64GB(veos_handle *handle, vemva_t addr,
+		uint64_t size, uint64_t flag, int prot,  uint64_t offset)
+{
+	void *vemva  = MAP_FAILED;
+	bool is_holes = false;
+
+	PSEUDO_TRACE("Invoked");
+
+	pthread_mutex_lock(&as_attributes.as_attr_lock);
+	/*Initialize the mapping attributes*/
+	if (!as_attributes.addr_space_2mb_next &&
+		!as_attributes.addr_space_64mb_next &&
+		!as_attributes.addr_space_hole_start_2mb &&
+		!as_attributes.addr_space_hole_start_64mb &&
+		!as_attributes.addr_space_hole_end_2mb &&
+		!as_attributes.addr_space_hole_start_64mb) {
+		if (default_page_size == PAGE_SIZE_2MB) {
+			PSEUDO_DEBUG("Initializing attr for %lx align binary",
+					default_page_size);
+			as_attributes.addr_space_2mb_next
+				= as_attributes.addr_space_hole_start_2mb
+				= as_attributes.addr_space_hole_end_2mb
+				= ADDR_SPACE_2MB_START;
+			as_attributes.addr_space_64mb_next
+				= as_attributes.addr_space_hole_start_64mb
+				= as_attributes.addr_space_hole_end_64mb
+				= ADDR_SPACE_2MB_END;
+		} else {
+			PSEUDO_DEBUG("Initializing attr for %lx align binary",
+					default_page_size);
+			as_attributes.addr_space_64mb_next
+				= as_attributes.addr_space_hole_start_64mb
+				= as_attributes.addr_space_hole_end_64mb
+				= ADDR_SPACE_64MB_START;
+			as_attributes.addr_space_2mb_next
+				= as_attributes.addr_space_hole_start_2mb
+				= as_attributes.addr_space_hole_end_2mb
+				= ADDR_SPACE_64MB_END;
+		}
+	}
+
+	/* specify from where to map requested memory  within first 64GB of
+	 * address space. We are not allowing mapping at user specified address
+	 * to avoid scattered mapping as we have limited address space*/
+	if (default_page_size == PAGE_SIZE_2MB) {
+		if (ve_page_info.page_size == PAGE_SIZE_2MB) {
+			if (!(flag & MAP_ADDR_64GB_FIXED)) {
+				if (addr == 0) {
+					if ((as_attributes.addr_space_hole_start_2mb < as_attributes.addr_space_2mb_next)
+					    && (size <=
+						(size_t)(as_attributes.addr_space_hole_end_2mb
+							 - as_attributes.addr_space_hole_start_2mb)))
+						addr = as_attributes.addr_space_hole_start_2mb;
+					else
+						addr =	as_attributes.addr_space_2mb_next;
+					PSEUDO_DEBUG("Next addr for 2MB-2MB"
+							" page size %lx", addr);
+				} else if (addr != TRAMP_2MB) {
+					PSEUDO_DEBUG("use addr %lx", addr);
+				}
+			}
+			/*verify that current mapping not beyond the limit*/
+			if ((addr + size) > ADDR_SPACE_2MB_END) {
+				PSEUDO_DEBUG("Max address space limit reached"
+ 						" for 2MB page size");
+				is_holes = true;
+				goto use_holes;
+			}
+		} else {
+			if (!(flag & MAP_ADDR_64GB_FIXED)) {
+			 	if (addr == 0) {
+					if ((as_attributes.addr_space_hole_start_64mb < as_attributes.addr_space_64mb_next) &&
+					    (size <=
+					     (size_t)(as_attributes.addr_space_hole_end_64mb
+						      - as_attributes.addr_space_hole_start_64mb)))
+						addr = as_attributes.addr_space_hole_start_64mb;
+					else
+						addr = as_attributes.addr_space_64mb_next;
+					PSEUDO_DEBUG("Next addr for 2MB-64MB page"
+						     " size %lx", addr);
+				} else
+					PSEUDO_DEBUG("use addr %lx", addr);
+			}
+			/*verify that current mapping not beyond the limit*/
+			if ((addr + size) > HEAP_START) {
+				PSEUDO_DEBUG("Max address space limit reached"
+						" for 64MB page size");
+				is_holes = true;
+				goto use_holes;
+			}
+		}
+	} else {
+		if (ve_page_info.page_size == PAGE_SIZE_64MB) {
+			if (!(flag & MAP_ADDR_64GB_FIXED)) {
+				if (addr == 0) {
+					if ((as_attributes.addr_space_hole_start_64mb < as_attributes.addr_space_64mb_next) &&
+					    (size <=
+					     (size_t)(as_attributes.addr_space_hole_end_64mb
+						      - as_attributes.addr_space_hole_start_64mb)))
+						addr = as_attributes.addr_space_hole_start_64mb;
+					else
+						addr = as_attributes.addr_space_64mb_next;
+					PSEUDO_DEBUG("Next addr for 64MB-64MB"
+						     " page size %lx", addr);
+				} else
+					PSEUDO_DEBUG("use addr %lx", addr);
+			}
+			/*verify that current mapping not beyond the limit*/
+			if ((addr + size) > ADDR_SPACE_64MB_END) {
+				PSEUDO_DEBUG("Max address space limite "
+						"reached for 2MB page size");
+				is_holes = true;
+				goto use_holes;
+			}
+		} else {
+			/*verify that current mapping not beyond the limit*/
+		  if (!(flag & MAP_ADDR_64GB_FIXED)) {
+			if ((addr == 0) && (addr != TRAMP_64MB)) {
+				if ((as_attributes.addr_space_hole_start_2mb < as_attributes.addr_space_2mb_next) &&
+				    (size <=
+				     (size_t)(as_attributes.addr_space_hole_end_2mb
+					      - as_attributes.addr_space_hole_start_2mb)))
+					addr = as_attributes.addr_space_hole_start_2mb;
+				else
+					addr =	as_attributes.addr_space_2mb_next;
+				PSEUDO_DEBUG("Next addr for 2MB-64MB"
+					     " page size %lx", addr);
+			} else
+				PSEUDO_DEBUG("use addr %lx", addr);
+		  }
+		  if ((addr + size) > HEAP_START) {
+			PSEUDO_DEBUG("Max address space limit"
+				     " reached for 64MB page size");
+			is_holes = true;
+			goto use_holes;
+		  }
+		}
+	}
+
+	flag |= MAP_FIXED;
+
+	vemva = ve_get_vemva_for_mod_code(handle, addr, size, flag, prot, offset);
+	if (vemva == MAP_FAILED) {
+		PSEUDO_DEBUG("free vemva is not found at address 0x%lx", addr);
+
+		/* Let's try to allocate memory at holes created within first
+		 * 64GB address space. dlopen() and dlclose() function can
+		 * create holes in 64GB of address space */
+use_holes:
+		flag &= ~MAP_FIXED;
+		vemva = ve_get_vemva_for_mod_code(handle, 0, size, flag, prot, offset);
+		if (vemva == MAP_FAILED) {
+			PSEUDO_DEBUG("No free vemva within "
+					"64GB address space");
+			pthread_mutex_unlock(&as_attributes.as_attr_lock);
+			return vemva;
+		} else {
+			/*first check is new vemva is valid or not*/
+			if (((uint64_t)vemva + size) > HEAP_START) {
+				PSEUDO_DEBUG("Invalid vemva %p", vemva);
+				ve_free_vemva(vemva, size);
+				vemva = MAP_FAILED;
+				pthread_mutex_unlock(&as_attributes.as_attr_lock);
+				return vemva;
+			}
+		}
+	}
+
+	/* Update next addresses into mapping attributes*/
+	/* if (!(flag & MAP_ADDR_64GB_FIXED) && (addr != TRAMP_2MB) */
+	if ((addr != TRAMP_2MB)
+			&& (addr != TRAMP_64MB) && !is_holes) {
+		if (ve_page_info.page_size == PAGE_SIZE_2MB) {
+			if ((as_attributes.addr_space_hole_start_2mb == as_attributes.addr_space_2mb_next) &&
+			    (as_attributes.addr_space_hole_start_2mb == as_attributes.addr_space_hole_end_2mb)) {
+				if (as_attributes.addr_space_hole_start_2mb == addr) {
+					as_attributes.addr_space_2mb_next
+						= as_attributes.addr_space_hole_start_2mb
+						= as_attributes.addr_space_hole_end_2mb
+						= (vemva_t)(addr + size);
+				} else if (as_attributes.addr_space_2mb_next < addr) {
+					as_attributes.addr_space_hole_end_2mb = addr;
+					as_attributes.addr_space_hole_start_2mb = as_attributes.addr_space_2mb_next;
+					as_attributes.addr_space_2mb_next = (vemva_t)(addr + size);
+				}
+			} else if (addr < as_attributes.addr_space_hole_end_2mb) {
+				as_attributes.addr_space_hole_start_2mb = (vemva_t)(addr + size);
+			} else {
+				as_attributes.addr_space_2mb_next = (vemva_t)(addr + size);
+			}
+		} else {
+			if ((as_attributes.addr_space_hole_start_64mb == as_attributes.addr_space_64mb_next) &&
+			    (as_attributes.addr_space_hole_start_64mb == as_attributes.addr_space_hole_end_64mb)) {
+				if (as_attributes.addr_space_hole_start_64mb == addr) {
+					as_attributes.addr_space_64mb_next
+						= as_attributes.addr_space_hole_start_64mb
+						= as_attributes.addr_space_hole_end_64mb
+						= (vemva_t)(addr + size);
+				} else if (as_attributes.addr_space_64mb_next < addr) {
+					as_attributes.addr_space_hole_end_64mb = addr;
+					as_attributes.addr_space_hole_start_64mb = as_attributes.addr_space_64mb_next;
+					as_attributes.addr_space_64mb_next = (vemva_t)(addr + size);
+				}
+			} else if (addr < as_attributes.addr_space_hole_end_64mb) {
+				as_attributes.addr_space_hole_start_64mb = (vemva_t)(addr + size);
+			} else {
+				as_attributes.addr_space_64mb_next = (vemva_t)(addr + size);
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&as_attributes.as_attr_lock);
+	PSEUDO_DEBUG("returned with : vemva %p", vemva);
+	PSEUDO_TRACE("returned");
+	return vemva;
+}
+
+/**
+ * @brief This function is used
+ * to obtain virtual memory for VE on VH side for modify code.
+ *
+ * @param[in] handle handle veos_handle
+ * @param[out] addr Memory address for mapping
+ * @param[in] size Memory length to map
+ * @param[in] flag flag to control memory mapping
+ * @param[in] prot Memory protection flag
+ * @param[in] offset Offset to file
+ *
+ * @return Return virtual address on success, (void *)-1 on error and set
+ * errno.
+ */
+void *ve_get_vemva_for_mod_code(veos_handle *handle, uint64_t addr,
+		uint64_t size, uint64_t flag, int prot,
+		uint64_t offset)
+{
+	struct vemva_struct *vemva_tmp = NULL;
+	void *vemva = (void *)-1;
+	uint64_t count = 0;
+	uint8_t reset_ve_page_info = 0;
+	/* int64_t mmap_flag, ret = 0; */
+	int saved_errno = errno;
+
+	PSEUDO_TRACE("Invoked");
+	PSEUDO_DEBUG("Invoked to allocate vemva with addr:%lx size:%lx flag:%lx\
+			prot:%x off:%lx",
+			addr, size, flag, prot, offset);
+
+	/*update ve page info*/
+	if (!ve_page_info.updated) {
+		update_ve_page_info(&flag);
+		reset_ve_page_info = 1;
+	}
+	pthread_mutex_lock(&vemva_header.vemva_lock);
+
+	/*
+	 * If addr is unaligned and map FIXED is
+	 * Specified Return ERROR
+	 */
+	if (!IS_ALIGNED(addr, ve_page_info.page_size)) {
+		if (flag & MAP_FIXED) {
+			PSEUDO_DEBUG("Error (%s) vemva is unaligned with"
+					" MAP_FIXED", strerror(EINVAL));
+			errno = EINVAL;
+			pthread_mutex_unlock(&vemva_header.vemva_lock);
+			return MAP_FAILED;
+		}
+
+		addr = ALIGN(addr, ve_page_info.page_size) -
+			ve_page_info.page_size;
+		PSEUDO_DEBUG("Aligned address :%lu", addr);
+	}
+
+	/*
+	 * Calculate the Number of pages Required
+	 */
+	count = size/ve_page_info.page_size;
+
+	if (!addr && !(flag & MAP_FIXED)) {
+		/*scan the list for free pages*/
+		vemva = scan_vemva_dir_list(handle, count, flag);
+		if (MAP_FAILED == vemva) {
+			vemva_tmp = alloc_vemva_dir(handle, NULL,
+					0, count, flag);
+			if (NULL == vemva_tmp) {
+				PSEUDO_DEBUG("Error (%s) while allocating "
+					"directory", strerror(saved_errno));
+				pthread_mutex_unlock(&vemva_header.vemva_lock);
+				saved_errno = ENOMEM;
+				goto err_exit;
+			}
+			/*
+			 * Now the request can be fulfilled.
+			 * As a new VEMVA is just allocated
+			 */
+			vemva = ve_get_free_vemva(handle, vemva_tmp,
+					(uint64_t)NULL, count, flag);
+			if (MAP_FAILED == vemva) {
+				PSEUDO_DEBUG("Error (%s) while allocating vemva \
+						from directory",
+						strerror(ENOMEM));
+				pthread_mutex_unlock(&vemva_header.vemva_lock);
+				saved_errno = ENOMEM;
+				goto err_exit;
+			}
+		}
+	} else if (!addr && (flag & MAP_FIXED)) {
+		PSEUDO_DEBUG("Error (%s)", strerror(EPERM));
+		pthread_mutex_unlock(&vemva_header.vemva_lock);
+		saved_errno = EPERM;
+		goto err_exit;
+	} else {
+		vemva = avail_vemva(handle, addr, size, flag);
+		if (MAP_FAILED == vemva) {
+			PSEUDO_DEBUG("Error (%s) while availing vemva from "
+					"existing directory", strerror(ENOMEM));
+			pthread_mutex_unlock(&vemva_header.vemva_lock);
+			saved_errno = ENOMEM;
+			goto err_exit;
+		}
+	}
+	pthread_mutex_unlock(&vemva_header.vemva_lock);
+	if (reset_ve_page_info)
+		memset(&ve_page_info, '\0', sizeof(ve_page_info));
+
+	PSEUDO_DEBUG("returned with : vemva %p", vemva);
+	PSEUDO_TRACE("returned");
+	errno = saved_errno;
+	return vemva;
+err_exit:
+	if (reset_ve_page_info)
+		memset(&ve_page_info, '\0', sizeof(ve_page_info));
+	errno = saved_errno;
+	return (void *)-1;
+}
+
+/**
+ * @brief This function is used
+ * to obtain virtual memory for VE on VH side for modify code.
+ *
+ * @param[in] handle handle veos_handle
+ * @param[out] addr Memory address for mapping
+ * @param[in] size Memory length to map
+ * @param[in] flag flag to control memory mapping
+ * @param[in] prot Memory protection flag
+ * @param[in] fd File descriptor for file backed mapping
+ * @param[in] offset Offset to file
+ *
+ * @return Return virtual address on success, (void *)-1 on error and set
+ * errno.
+ */
+void *vh_map_for_mod_code(veos_handle *handle, uint64_t addr,
+		uint64_t size, uint64_t flag, int prot, int fd,
+		uint64_t offset)
+{
+	void *vemva = (void *)-1;
+	int64_t mmap_flag, ret = 0;
+	int saved_errno = errno;
+
+	vemva = (void *)addr;
+
+	/* mmap the space with the permissions and flag given by the user
+	 * Add MAP_NORESERVE if mmap is not file back or MAP_STACK as we are
+	 * not accessing VH memory*/
+	mmap_flag = (flag | MAP_FIXED) & (~(MAP_2MB | MAP_64MB | MAP_VESHM));
+	if ((flag & MAP_ANON) && (!(flag & MAP_VDSO)))
+		mmap_flag |= MAP_NORESERVE;
+	if (vemva != mmap(vemva, size, prot, mmap_flag, fd, offset)) {
+		ret = errno;
+		PSEUDO_DEBUG("Error (%s) while performing VH MMAP",
+				strerror(ret));
+		pthread_mutex_lock(&vemva_header.vemva_lock);
+		mark_vemva((uint64_t)vemva, size, MARK_UNUSED);
+		pthread_mutex_unlock(&vemva_header.vemva_lock);
+		saved_errno  = ret;
+		goto err_exit;
+	}
+
+
+	PSEUDO_DEBUG("returned with : vemva %p", vemva);
+	PSEUDO_TRACE("returned");
+	errno = saved_errno;
+	return vemva;
+err_exit:
 	errno = saved_errno;
 	return (void *)-1;
 }

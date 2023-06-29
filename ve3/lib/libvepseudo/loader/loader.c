@@ -259,6 +259,7 @@ int libvepseudo_ve3_probe(vedl_handle *handle, void *arg)
 	}
 	/* check ELF header */
 	uint32_t e_flags = ehdr->e_flags;
+#if 0 /* disable binary checking for old VE1 */
         char *ve_no_dynamic_cd = NULL;
 	ve_no_dynamic_cd = getenv("VE_NO_DYNAMIC_CD");
 	if(!ve_no_dynamic_cd) {
@@ -280,6 +281,7 @@ int libvepseudo_ve3_probe(vedl_handle *handle, void *arg)
 			return -1;
 		}
         }
+#endif
 
 	/* Old VE1 arch binary on VE3 machine */
 	if(0 == e_flags)

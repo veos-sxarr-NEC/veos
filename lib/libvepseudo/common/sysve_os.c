@@ -37,6 +37,7 @@
 #include "ve_socket.h"
 #include "process_mgmt_comm.h"
 #include "mm_transfer.h"
+#include "sys_mm.h"
 #include "handle.h"
 #include "ve_swap_request.h"
 #include "productinfo.h"
@@ -1181,3 +1182,31 @@ hndl_return:
 	return ret;
 }
 
+
+/**
+ * @brief This function returns the address of original code 
+ * corresponding specified address.
+ *
+ * @param[in] handle VEOS handle of pseudo process.
+ * @param[in] mod_vemva Address of modified code
+ *
+ * @return 0 on Success
+ *           Address of original code that modified only start section.
+ * @return  -errno on failure.
+ *                (-EFAULT mod_vemva is not found in translation table.)
+ *
+ * @internal
+ *
+ * @author libsysve
+ */
+int64_t ve_sys_get_original_addr(veos_handle *handle, uint64_t mod_vemva)
+{
+        ret_t ret = -1;
+        uint64_t result = 0;
+
+        PSEUDO_TRACE("ve_sys_get_original_addr");
+        get_original_addr_from_xtbl_adr(mod_vemva, &result);
+        ret = (int64_t)result;
+        PSEUDO_TRACE("ve_sys_get_original_addr, ret = %ld", ret);
+        return ret;
+}

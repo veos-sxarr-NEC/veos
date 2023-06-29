@@ -62,6 +62,7 @@
 #include "locking_handler.h"
 
 #include "task_signal_ve3.h"
+#include "task_mgmt_ve3.h"
 
 int ve3_psm_get_SP_from_core(int core_id, ve_reg_t *sp)
 {
@@ -99,6 +100,8 @@ int ve3_psm_restore_ve_context(struct ve_task_struct *ve_task_curr)
 	ve_dma_status_t st;
 	struct ve_node_struct *vnode_info;
 	int retval = 0;
+	ve_reg_t pmc[PMC_REG_VE3];
+	int i = 0;
 
 	VEOS_TRACE("Entering");
 
@@ -148,11 +151,23 @@ int ve3_psm_restore_ve_context(struct ve_task_struct *ve_task_curr)
 	 * */
 	pthread_mutex_lock_unlock(&(ve_task_curr->ve_task_lock), LOCK,
 				"failed to acquire task lock");
+
+	/* To save PMC values */
+        ve3_core_user_reg_pre_t *user_regs
+                        = ve_task_curr->p_ve_thread->arch_user_regs;
+        for(i = 0; i < PMC_REG_VE3; i++) {
+                pmc[i] = user_regs->PMC[i];
+        }
+
 	memset(ve_task_curr->p_ve_thread->arch_user_regs,
 			'\0', sizeof(ve3_core_user_reg_pre_t));
 	memcpy(ve_task_curr->p_ve_thread->arch_user_regs,
 		&p_ve_sigframe.uc.uc_mcontext, sizeof(ve3_core_user_reg_pre_t));
 	ve_task_curr->p_ve_thread->EXS = p_ve_sigframe.uc.uc_mcontext.Padding_exs;
+
+        for(i = 0; i < PMC_REG_VE3; i++) {
+                user_regs->PMC[i] = pmc[i];
+        }
 
 	ve_task_curr->usr_reg_dirty = true;
 
@@ -164,9 +179,6 @@ int ve3_psm_restore_ve_context(struct ve_task_struct *ve_task_curr)
 	/* Restore the signal mask
 	 * */
 	ve_task_curr->blocked = p_ve_sigframe.uc.uc_sigmask;
-
-	const ve3_core_user_reg_pre_t *user_regs =
-			ve_task_curr->p_ve_thread->arch_user_regs;
 
 	VEOS_DEBUG("Sigreturn Context PID : %d IC: %lx"
 			" LR : %lx SP : %lx SR12 : %lx"

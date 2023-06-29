@@ -128,6 +128,9 @@ struct ve_mm_struct {
 	struct list_head swapped_pages; /*!< List of ATB/DMAATB corresponding
 					 * to VE memory which was deallocated
 					 * in Swap-out */
+	size_t swap_required_free_size; /* required-free-size */
+	char swapping_flag[VEOS_ATB_DIR_NUM][ VEOS_ATB_ENTRY_MAX_SIZE]; /* flag of
+					 * swapping out atb entry */
 	int64_t rdma_offset; /* RDMA_OFFSET */
 };
 

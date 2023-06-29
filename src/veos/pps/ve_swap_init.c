@@ -45,8 +45,8 @@
 #define ISDIGIT(c)      ((unsigned)c-'0' < 10)
 
 log4c_category_t *cat_os_pps;
-static void *pps_buffer_addr;
-static void *pps_file_transfer_buffer_addr;
+static void *pps_buffer_addr = NULL;
+static void *pps_file_transfer_buffer_addr = NULL;
 
 /*
 Allocate                  Deallocate
@@ -628,23 +628,13 @@ veos_alloc_ppsbuf(size_t pps_buf_size, size_t pps_file_buf_size)
 	pthread_mutex_init(&(vnode->swap_request_pids_lock), NULL);
 	pthread_cond_init(&(vnode->swap_request_pids_cond), NULL);
 
-	if (pps_buf_size != 0) {
-		pps_buffer_addr = veos_pps_alloc_ppsbuf(pps_buf_size, true, 
-									false);
-			if (pps_buffer_addr == NULL)
-				goto hndl_return;
-
-		ret = veos_pps_init_buddy(pps_buffer_addr);
-		if (ret != 0)
-			goto hndl_dealloc;
-	}
 	if (pps_file_buf_size != 0) {
 		pps_file_transfer_buffer_addr =
 			veos_pps_alloc_ppsbuf(pps_file_buf_size, false, 
 					!(vnode->pps_file.is_created_by_root));
 		vnode->pps_file_transfer_buffer = pps_file_transfer_buffer_addr;
 		if (pps_file_transfer_buffer_addr == NULL) {
-			goto hndl_free_buddy;
+			goto hndl_dealloc;
 		}
 		pthread_mutex_lock_unlock(&(vnode->pps_file_lock), LOCK,
 					"Failed to aqcuire pps_file_lock");
@@ -657,7 +647,7 @@ veos_alloc_ppsbuf(size_t pps_buf_size, size_t pps_file_buf_size)
 				pthread_mutex_lock_unlock(
 					&(vnode->pps_file_lock), UNLOCK,
 					"Failed to release pps_file_lock");
-				goto hndl_free_buddy;
+				goto hndl_dealloc;
                 	}
 			fork_sts = fork_pps_file_handler(
 				vnode->pps_file.path, socket_fd, 
@@ -670,15 +660,24 @@ veos_alloc_ppsbuf(size_t pps_buf_size, size_t pps_file_buf_size)
 				pthread_mutex_lock_unlock(
 					&(vnode->pps_file_lock), UNLOCK,
 					"Failed to release pps_file_lock");
-				goto hndl_free_buddy;
+				goto hndl_dealloc;
 			}
-
 		}
 		vnode->pps_file.child_pid = chld_pid;
 		vnode->pps_file.sockfd = socket_fd[1];
 		pthread_mutex_lock_unlock(&(vnode->pps_file_lock), UNLOCK,
 				"Failed to release pps_file_lock");
+	}
 
+	if (pps_buf_size != 0) {
+		pps_buffer_addr = veos_pps_alloc_ppsbuf(pps_buf_size, true,
+									false);
+		if (pps_buffer_addr == NULL)
+			goto hndl_dealloc;
+
+		ret = veos_pps_init_buddy(pps_buffer_addr);
+		if (ret != 0)
+			goto hndl_free_buddy;
 	}
 
 	ret = veos_pps_create_swap_thread();

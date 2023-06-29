@@ -849,9 +849,11 @@ void ve3_psm_update_pwr_throttle(int core_id, bool ctx_switch)
 	if (first_power_throttling_occured == false
 			&& p_ve_core->pwr_throttle_cnt == 0
 			&& diff != 0) {
+#ifdef SHOW_POWER_THROTTLING
 		syslog(LOG_INFO,
 			"Power throttling occurred Core %02d %ld",
 			core_id, diff);
+#endif
 		first_power_throttling_occured = true;
 		p_ve_core->pwr_throttle_cnt = 0;
 		p_ve_core->previous_PMC14 = p_ve_core->current_PMC14;
@@ -886,8 +888,10 @@ void ve3_psm_log_pwr_throttle(int core_id, bool log_power_throttling)
 	ve3_psm_update_pwr_throttle(core_id, false);
 
 	if(log_power_throttling == true && p_ve_core->pwr_throttle_cnt > 0) {
+#ifdef SHOW_POWER_THROTTLING
 		syslog(LOG_INFO,"Power throttling occurred Core %02d %ld",
 					core_id, p_ve_core->pwr_throttle_cnt);
+#endif
 		p_ve_core->pwr_throttle_cnt = 0;
 	}
 	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,

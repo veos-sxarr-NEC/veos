@@ -92,6 +92,7 @@ enum veos_rpm_subcmd {
 	VE_GET_ARCH,
 	VE_VEOSCTL_GET_PARAM,
 	VE_VEOSCTL_SET_PARAM,
+	VE_SWAP_OUT_F,
 	VE_RPM_INVALID = -1,
 };
 
@@ -496,6 +497,14 @@ struct ve_swap_pids {
 };
 
 /**
+ * @brief Structure of VE process ID and required-free-size for PPS
+ */
+struct ve_swap_pids_f {
+	struct ve_swap_pids pids; /*!< Structure of VE process ID for PPS */
+	size_t required_free_size;  /*!< Required-free-size */
+};
+
+/**
  * @brief Structure to get swap informations of VE process
  */
 struct ve_swap_struct {
@@ -615,6 +624,7 @@ int rpm_handle_get_regvals_req(struct veos_thread_arg *pti);
 int rpm_handle_delete_dummy_task_req(struct veos_thread_arg *pti);
 int rpm_handle_numa_info_req(struct veos_thread_arg *pti);
 int rpm_handle_ve_swapout_req(struct veos_thread_arg *pti);
+int rpm_handle_ve_swapout_f_req(struct veos_thread_arg *pti);
 int rpm_handle_ve_swapin_req(struct veos_thread_arg *pti);
 int rpm_handle_ve_swapstatusinfo_req(struct veos_thread_arg *pti);
 int rpm_handle_ve_swapnodeinfo_req(struct veos_thread_arg *pti);

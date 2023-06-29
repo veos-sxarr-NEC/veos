@@ -681,6 +681,7 @@ int main(int argc, char *argv[])
 	pthread_t veos_poller_thread;
 	pthread_t veos_sigstop_thread;
 	pthread_t veos_zombie_cleaner_thread;
+	pthread_t veos_modtmp_cleaner_thread;
 	pthread_attr_t attr;
 	pthread_rwlockattr_t rw_attr;
 	size_t pps_buf_size = 0;
@@ -695,6 +696,10 @@ int main(int argc, char *argv[])
 	struct group *grp;
 	bool mem_mode_flg = false;
 	bool file_mode_flg = false;
+	char code_modification_file_path[PATH_MAX-11] = "/var/opt/nec/ve/veos";
+	int code_modification_max_file_num = 0;
+        int code_modification_per_usr_max_file_num = 0;
+	int code_modification_alive_day_inter_file = 3;
 
 	struct option long_options[] = {
 			{"pcisync1",          required_argument, NULL,  0 },
@@ -708,6 +713,9 @@ int main(int argc, char *argv[])
 			{"ve-swap-file-group",required_argument, NULL,  0 },
 			{"skip-memclear",     no_argument,       NULL,  0 },
 			{"disable-rordering", no_argument,       NULL,  0 },
+			{"ve-modcode-file-max",     required_argument,       NULL,  0 },
+			{"ve-modcode-usr-file-max",     required_argument,       NULL,  0 },
+			{"ve-modcode-alive-day-inter-file",     required_argument,       NULL,  0 },
 			{"help",              no_argument,       NULL, 'h'},
 			{"sock",              required_argument, NULL, 's'},
 			{"dev",               required_argument, NULL, 'd'},
@@ -872,6 +880,39 @@ int main(int argc, char *argv[])
 				break;
 			} else if (index == OPT_DRORDERING) {
 				opt_rordering = 0;
+				break;
+			} else if (index == OPT_MODCD_FILE_MAX) {
+				code_modification_max_file_num =
+					veos_convert_sched_options(optarg,
+						0, INT64_MAX);
+				if (code_modification_max_file_num == -1) {
+					code_modification_max_file_num = 30;
+					fprintf(stderr, "%s option error\n",
+						long_options[index].name);
+					exit(EXIT_FAILURE);
+				}
+				break;
+			} else if (index == OPT_MODCD_U_FILE_MAX) {
+				code_modification_per_usr_max_file_num =
+					veos_convert_sched_options(optarg,
+						0, INT64_MAX);
+				if (code_modification_per_usr_max_file_num == -1) {
+					code_modification_per_usr_max_file_num = 0;
+					fprintf(stderr, "%s option error\n",
+						long_options[index].name);
+					exit(EXIT_FAILURE);
+				}
+				break;
+			} else if (index == OPT_MODCD_ALIVE_INTER_FILE) {
+				code_modification_alive_day_inter_file =
+					veos_convert_sched_options(optarg,
+						0, INT64_MAX);
+				if (code_modification_alive_day_inter_file == -1) {
+					code_modification_alive_day_inter_file = 3;
+					fprintf(stderr, "%s option error\n",
+						long_options[index].name);
+					exit(EXIT_FAILURE);
+				}
 				break;
 			} else {
 				fprintf(stderr, "Wrong option specified\n");
@@ -1064,7 +1105,14 @@ int main(int argc, char *argv[])
 		retval = 1;
 		goto hndl_sem;
 	}
-	
+
+	if (veos_coredump_helper_launcher() != 0) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+				"Start coredump_helper launcher failed");
+		retval = 1;
+		goto hndl_termination;
+	}
+
 	if (veos_init_pps_file_info(pps_file_path, pps_file_size,
 		drv_sock_file, pps_file_uid, pps_file_gid) != 0) {
 			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
@@ -1073,18 +1121,19 @@ int main(int argc, char *argv[])
 		goto hndl_termination;	
 	}
 
+	if (_veos_arch_ops->arch_init_code_modification_file_info(code_modification_file_path, code_modification_max_file_num,
+		code_modification_per_usr_max_file_num, code_modification_alive_day_inter_file, get_ve_node_num_from_sock_file(drv_sock_file)) != 0) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
+				"Initializing Code Modification info failed");
+		retval = 1;
+		goto hndl_termination;
+	}
+
 	if (veos_alloc_ppsbuf(pps_buf_size, pps_file_buf_size) != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
 				"Initializing Partial Process Swapping failed");
 		retval = 1;
 		goto hndl_termination;
-	}
-
-        if (veos_coredump_helper_launcher() != 0) {
-                VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
-                                "Start coredump_helper launcher failed");
-                retval = 1;
-                goto hndl_termination;
 	}
 
 	if (veos_init_pci_sync() != 0) {
@@ -1184,6 +1233,17 @@ int main(int argc, char *argv[])
 		if (retval != 0) {
 			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
 				"Faild to create veos_zombie_cleanup_thread: %s",
+				strerror(retval));
+			retval = 1;
+			veos_request_termination(0, NULL, NULL);
+		}
+	}
+	if (retval == 0) {
+		retval = pthread_create(&veos_modtmp_cleaner_thread, &attr,
+			(void *)&veos_modtmp_cleanup_thread, NULL);
+		if (retval != 0) {
+			VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
+				"Faild to create veos_modtmp_cleanup_thread: %s",
 				strerror(retval));
 			retval = 1;
 			veos_request_termination(0, NULL, NULL);

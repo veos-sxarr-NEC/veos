@@ -40,6 +40,7 @@ typedef Elf64_Shdr Elf_Shdr;
 #define RANDOM_BYTE		16
 #define AUX_BYTE		2
 #define ALIGNED_8BYTE		7
+#define AT_VE_XTBL_ADDR		1000
 
 /* Macro to represent maximum value of hardware mask */
 #define HWCAP_VE_MASK (0xFFFFFFFF)
@@ -64,6 +65,7 @@ struct auxv_info {
 	Elf64_Addr    e_base;		/*!< ELf base*/
 	Elf64_Xword	p_align;	/*!< Segment alignment*/
 	Elf64_Xword   p_hwcap;          /* Harware Capability = AT_HWCAP (Execution Device) VE1 or VE3 */
+	Elf64_Addr	p_ve_xtblhdr;	/* address of address conversion table */
 };
 
 /**

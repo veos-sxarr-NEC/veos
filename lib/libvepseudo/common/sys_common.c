@@ -1557,6 +1557,9 @@ ret_t ve_sysve(int syscall_num, char *syscall_name, veos_handle *handle)
 	case VE_SYSVE_GET_PROGINF_DATA:
 		retval = ve_sys_get_proginf_data(handle, args[1], args[2]);
 		break;
+	case VE_SYSVE_GETORGADDR:
+		retval = ve_sys_get_original_addr(handle, args[1]);
+		break;
 	default:
 		/* write return value */
 		retval = -EINVAL;

@@ -11,7 +11,8 @@ libvepsm_ve3_a_SOURCES = \
 	udma_ve3.h \
 	udma.c \
 	ptrace_req.c \
-	ptrace_req_ve3.h
+	ptrace_req_ve3.h \
+	psm_comm.c
 
 libvepsm_ve3_a_CFLAGS = \
 	-g -Wall -Werror -D_GNU_SOURCE -std=gnu99 \

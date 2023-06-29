@@ -116,6 +116,16 @@ typedef struct addr_space_attribute {
 					 * page aligned mapping*/
 	vemva_t addr_space_64mb_next;	/*!< starting address for 64MB
 					 * page aligned mapping */
+	vemva_t addr_space_hole_start_2mb;	/*!< start address of the hole
+						 * for 2MB page aligned
+						 * mapping */
+	vemva_t addr_space_hole_start_64mb;	/*!< start address of the hole
+						 * for 64MB page aligned
+						 * mapping */
+	vemva_t addr_space_hole_end_2mb;	/*!< end address of the hole for
+						 * 2MB page aligned mapping */
+	vemva_t addr_space_hole_end_64mb;	/*!< end address of the hole for
+						 * 64MB page aligned mapping */
 	union trampoline {
 		vemva_t tramp_2MB;
 		vemva_t tramp_64MB;
@@ -151,6 +161,12 @@ void *ve_get_vemva(veos_handle *, uint64_t, uint64_t,
 		uint64_t, int, int, uint64_t);
 void *ve_get_vemva_under_64GB(veos_handle *, vemva_t, uint64_t,
 		uint64_t, int, int, uint64_t);
+void *ve_get_vemva_for_mod_code(veos_handle *, uint64_t, uint64_t,
+		uint64_t, int,  uint64_t);
+void *ve_get_vemva_for_mod_code_under_64GB(veos_handle *, vemva_t, uint64_t,
+		uint64_t, int,  uint64_t);
+void *vh_map_for_mod_code(veos_handle *, uint64_t, uint64_t, uint64_t,
+			  int, int, uint64_t);
 void *ve_get_nearby_vemva(veos_handle *, struct vemva_struct *,
 		uint64_t, int64_t, uint64_t, uint64_t);
 void *ve_get_fixed_vemva(veos_handle *, struct vemva_struct *,

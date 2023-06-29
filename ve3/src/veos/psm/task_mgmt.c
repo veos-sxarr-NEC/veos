@@ -34,6 +34,10 @@
 #include "task_mgmt_ve3.h"
 #include "veos_ve3.h"
 
+#include <dirent.h>
+#include <sys/file.h>
+#include <unistd.h>
+
 void ve3_turn_on_clock_gating(void);
 
 void ve3_psm_save_scalar_registers(ve_reg_t *buffer, const void *u,
@@ -1253,6 +1257,9 @@ void ve3_veos_prepare_acct_info(struct ve_task_struct *tsk)
 
 	acct_info->ac_max_nthread = pacct->max_thread;
 
+#ifndef SHOW_POWER_THROTTLING
+	acct_info->ac_ptcc = 0;
+#endif
 	ve3_print_accounting(pacct);
 }
 VEOS_ARCH_DEP_FUNC(ve3, arch_veos_prepare_acct_info, ve3_veos_prepare_acct_info)
@@ -1437,8 +1444,8 @@ void ve3_psm_update_pmc_check_overflow(struct ve_task_struct *tsk)
 					tsk->p_ve_thread->arch_user_regs,
 					((uint64_t)1 << (i+PMR_CONTEXT_PMCR4)));
 			tmp_pmc_pmmr = gb[i+PMR_CONTEXT_PMCR4];
-			VEOS_DEBUG("Received PMC[%d] value from register: %lu",
-							i, tmp_pmc_pmmr);
+			VEOS_DEBUG("Received PMC[%d] value from register: %lu & initial_pmc_pmmr: %lu",
+							i, tmp_pmc_pmmr, tsk->initial_pmc_pmmr[i]);
 			/* Check for overflow */
 			if((tmp_pmc_pmmr & OVERFLOW_BIT_VE3) < tsk->initial_pmc_pmmr[i]) {
 				VEOS_INFO("PMC[%d] Overflowed", i);
@@ -1731,3 +1738,539 @@ void ve3_psm_reset_perf_accounting(struct ve_task_struct *tsk)
 		tsk->pmc_pmmr[i] = 0;
 }
 VEOS_ARCH_DEP_FUNC(ve3, arch_psm_reset_perf_accounting, ve3_psm_reset_perf_accounting)
+
+int
+except_dot(const struct dirent *dir)
+{
+	if (strcmp(dir->d_name, ".") == 0){
+		return (0);
+	}
+	if (strcmp(dir->d_name, "..") == 0){
+		return (0);
+	}
+	return (1);
+}
+
+int
+only_tmp(const struct dirent *dir)
+{
+	if (strstr(dir->d_name, ".tmp") == dir->d_name){
+		return (1);
+	}
+	return (0);
+}
+
+int
+only_inter(const struct dirent *dir)
+{
+	if (strstr(dir->d_name, ".inter") == dir->d_name){
+		return (1);
+	}
+	return (0);
+}
+
+int
+only_lock(const struct dirent *dir)
+{
+	if (strstr(dir->d_name, ".lock") == dir->d_name){
+		return (1);
+	}
+	return (0);
+}
+
+int compare_file_atime(const void *p_data1, const void *p_data2){
+	int ret;
+	if(((struct del_list_data *)p_data1)->atime < ((struct del_list_data *)p_data2)->atime){
+		ret = -1;
+	}else if (((struct del_list_data *)p_data1)->atime > ((struct del_list_data *)p_data2)->atime){
+		ret = 1;
+	}else{
+		ret = 0;
+	}
+	return ret;
+}
+
+int search_files_for_temp(char *dir, uid_t uid, struct del_list_data **del_data, int point, int (*filter)(const struct dirent *))
+{
+	char tmp_dname[PATH_MAX + 1] = "";
+	char tmp[MOD_DEL_LIST_PATH_MAX] = "";
+	int ret = 0;
+	int fn_ret = 0;
+	struct dirent **namelist;
+	int dirent_num = 0;
+	struct stat st;
+	int i;
+	struct del_list_data *new_del_data;
+
+	fn_ret = sprintf(tmp_dname,"%s", dir);
+	if (fn_ret < 0) {
+		VEOS_ERROR("failed to copy dir path:%s",  strerror(errno));
+		return(-1);
+	}
+
+	dirent_num = scandir(tmp_dname, &namelist, filter, NULL);
+	if(dirent_num == -1) {
+		VEOS_ERROR("failed to opendir:%s", strerror(errno));
+		return(-1);
+	}
+	if(dirent_num == 0) {
+		// temp file entry is nothing
+		free(namelist);
+		return(0);
+	}
+	new_del_data = realloc(*del_data, (dirent_num + point)*sizeof(struct del_list_data));
+	if(new_del_data == NULL){
+		for (i = 0; i < dirent_num; ++i) {
+			free(namelist[i]);
+		}
+		free(namelist);
+		VEOS_ERROR("failed to realloc:%s", strerror(errno));
+		return(-1);
+	}
+	if (new_del_data != *del_data){
+		*del_data = new_del_data;
+	}
+
+	for (i = 0; i < dirent_num; ++i) {
+		fn_ret = snprintf(tmp,sizeof(tmp), "%s/%s", tmp_dname, namelist[i]->d_name);
+		if (fn_ret < 0) {
+			VEOS_ERROR("failed to copy file path:%s", strerror(errno));
+			ret = -1;
+		}
+		fn_ret = stat(tmp, &st);
+		if (fn_ret < 0) {
+			VEOS_ERROR("failed to stat file:%s", strerror(errno));
+			ret = -1;
+		}
+		(*del_data)[i + point].atime = st.st_atime;
+		snprintf((*del_data)[i + point].path, MOD_DEL_LIST_PATH_MAX, "%s", tmp);
+		snprintf((*del_data)[i + point].fname, MOD_DEL_LIST_NAME_MAX, "%s", namelist[i]->d_name);
+		(*del_data)[i + point].uid = uid;
+		(*del_data)[i + point].deleted = 0;
+		free(namelist[i]);
+	}
+	free(namelist);
+
+	if (ret == 0){
+		ret = dirent_num;
+	}
+	return ret;
+}
+int search_delete_files_for_temp(struct del_list_data *del_data, int data_num, struct del_list_data *del_lock_data, int data_lock_num,
+	struct del_list_user *usr_data, int uid_num, int max_del_num, int max_kept_file_per_uid)
+{
+	int ret = -1;
+	int fn_ret = -1;
+	int i;
+	int j;
+	int k;
+	char data[8][20];
+	char *token;
+	char data_match_Code[NAME_MAX + 1] = "";
+	char data_match_Mod_Code[NAME_MAX + 1] = "";
+	char data_match_Table[NAME_MAX + 1] = "";
+	char tmp_fname[NAME_MAX + 1] = "";
+	int del_num = 0;
+	uid_t del_uid = 0;
+	int cont_flag = 0;
+	int lock_sts =0;
+	int lock_fd;
+
+	// Delete excess files per user limit
+	for(i = 0; i < data_lock_num; i++){
+		if (del_lock_data[i].deleted == 0){
+			lock_fd = open(del_lock_data[i].path, O_RDWR, 0);
+			if(lock_fd > 0){
+				lock_sts = flock(lock_fd, LOCK_EX | LOCK_NB);
+				if (lock_sts == 0){
+					snprintf(tmp_fname, sizeof(tmp_fname), "%s", del_lock_data[i].fname);
+					token = strtok(tmp_fname, "_");
+					for(j = 0; (token != NULL) && (j < 8); j++){
+						snprintf(data[j], 20, "%s", token);
+						token = strtok(NULL, "_");
+					}
+					fn_ret = snprintf(data_match_Code, sizeof(data_match_Code), "%s_%s_%s_%s_%s", data[1], data[2], data[3], data[4],data[6]);
+					if (fn_ret < 0) {
+						VEOS_ERROR("failed to copy dir path:%s", strerror(errno));
+						flock(lock_fd, LOCK_UN);
+						close(lock_fd);
+						return(-1);
+					}
+					fn_ret = snprintf(data_match_Mod_Code, sizeof(data_match_Mod_Code), "%s_%s_%s_%s_%s", data[1], data[2], data[3], data[4], data[5]);
+					if (fn_ret < 0) {
+						VEOS_ERROR("failed to copy dir path:%s", strerror(errno));
+						flock(lock_fd, LOCK_UN);
+						close(lock_fd);
+						return(-1);
+					}
+					fn_ret = snprintf(data_match_Table, sizeof(data_match_Table), "%s_%s_%s_%s_%s", data[1], data[2], data[3], data[4], data[7]);
+					if (fn_ret < 0) {
+						VEOS_ERROR("failed to copy dir path:%s", strerror(errno));
+						flock(lock_fd, LOCK_UN);
+						close(lock_fd);
+						return(-1);
+					}
+
+					del_uid = del_lock_data[i].uid;
+					for(k = 0; k < uid_num; k++){
+						if(del_uid == usr_data[k].uid){
+							if((usr_data[k].num - usr_data[k].delete_num) <= max_kept_file_per_uid){
+								cont_flag = 1;
+							}else{
+								usr_data[k].delete_num+=3;
+							}
+						}
+					}
+					if(cont_flag == 1){
+						cont_flag = 0;
+						flock(lock_fd, LOCK_UN);
+						close(lock_fd);
+						continue;
+					}
+					for(j = 0; j < data_num; j++){
+						if (del_data[j].deleted == 0){
+							if ((del_data[j].uid == del_uid)){
+								if (strstr(del_data[j].fname, ".tmpCode") != NULL){
+									if(strstr(del_data[j].fname, data_match_Code) != NULL){
+										remove(del_data[j].path);
+										del_data[j].deleted = 1;
+										del_num++;
+									}
+								}else if (strstr(del_data[j].fname, ".tmpModCode") != NULL){
+									if(strstr(del_data[j].fname, data_match_Mod_Code) != NULL){
+										remove(del_data[j].path);
+										del_data[j].deleted = 1;
+										del_num++;
+									}
+								}else if (strstr(del_data[j].fname, ".tmpTable") != NULL){
+									if(strstr(del_data[j].fname, data_match_Table) != NULL){
+										remove(del_data[j].path);
+										del_data[j].deleted = 1;
+										del_num++;
+									}
+								}
+							}
+						}
+					}
+					remove(del_lock_data[i].path);
+					del_lock_data[i].deleted = 1;
+					flock(lock_fd, LOCK_UN);
+
+				}else{
+						VEOS_DEBUG("lock other:%s", strerror(errno));
+				}
+				close(lock_fd);
+			}
+		}
+		if(del_num >= max_del_num){
+			break;
+		}
+	}
+
+
+	// Delete files that exceed the maximum number of files for each VE
+	if(del_num < max_del_num){
+		for(i = 0; i < data_lock_num; i++){
+			if (del_lock_data[i].deleted == 0){
+				lock_fd = open(del_lock_data[i].path, O_RDWR, 0);
+				if(lock_fd > 0){
+					lock_sts = flock(lock_fd, LOCK_SH | LOCK_NB);
+					if (lock_sts == 0){
+						snprintf(tmp_fname, sizeof(tmp_fname), "%s", del_lock_data[i].fname);
+						token = strtok(tmp_fname, "_");
+						for(j = 0; (token != NULL) && (j < 8); j++){
+							snprintf(data[j], 20, "%s", token);
+							token = strtok(NULL, "_");
+						}
+						fn_ret = snprintf(data_match_Code, sizeof(data_match_Code), "%s_%s_%s_%s_%s", data[1], data[2], data[3], data[4],data[6]);
+						if (fn_ret < 0) {
+							VEOS_ERROR("failed to copy dir path:%s", strerror(errno));
+							flock(lock_fd, LOCK_UN);
+							close(lock_fd);
+							return(-1);
+						}
+						fn_ret = snprintf(data_match_Mod_Code, sizeof(data_match_Mod_Code), "%s_%s_%s_%s_%s", data[1], data[2], data[3], data[4], data[5]);
+						if (fn_ret < 0) {
+							VEOS_ERROR("failed to copy dir path:%s", strerror(errno));
+							flock(lock_fd, LOCK_UN);
+							close(lock_fd);
+							return(-1);
+						}
+						fn_ret = snprintf(data_match_Table, sizeof(data_match_Table), "%s_%s_%s_%s_%s", data[1], data[2], data[3], data[4], data[7]);
+						if (fn_ret < 0) {
+							VEOS_ERROR("failed to copy dir path:%s", strerror(errno));
+							flock(lock_fd, LOCK_UN);
+							close(lock_fd);
+							return(-1);
+						}
+
+						del_uid = del_lock_data[i].uid;
+						for(j = 0; j < data_num; j++){
+							if (del_data[j].deleted == 0){
+								if ((del_data[j].uid == del_uid)){
+									if (strstr(del_data[j].fname, ".tmpCode") != NULL){
+										if(strstr(del_data[j].fname, data_match_Code) != NULL){
+											remove(del_data[j].path);
+											del_data[j].deleted = 1;
+											del_num++;
+										}
+									}else if (strstr(del_data[j].fname, ".tmpModCode") != NULL){
+										if(strstr(del_data[j].fname, data_match_Mod_Code) != NULL){
+											remove(del_data[j].path);
+											del_data[j].deleted = 1;
+											del_num++;
+										}
+									}else if (strstr(del_data[j].fname, ".tmpTable") != NULL){
+										if(strstr(del_data[j].fname, data_match_Table) != NULL){
+											remove(del_data[j].path);
+											del_data[j].deleted = 1;
+											del_num++;
+										}
+									}
+								}
+							}
+						}
+						remove(del_lock_data[i].path);
+						del_lock_data[i].deleted = 1;
+						flock(lock_fd, LOCK_UN);
+					}
+					close(lock_fd);
+				}
+				if(del_num >= max_del_num){
+					break;
+				}
+			}
+		}
+	}
+	ret = del_num;
+	return ret;
+}
+
+int search_delete_files_for_inter(char *dir, time_t max_keep_time)
+{
+	char tmp_dname[PATH_MAX + 1] = "";
+	char tmp[PATH_MAX + NAME_MAX + 2] = "";
+	int ret = 0;
+	int fn_ret = 0;
+	struct dirent **namelist;
+	int dirent_num = 0;
+	struct stat st;
+	int num=0;
+	int i;
+	struct del_list_data *del_data = NULL;
+	time_t now = 0;
+
+	fn_ret = sprintf(tmp_dname, "%s", dir);
+	if (fn_ret < 0) {
+		VEOS_ERROR("failed to copy dir path:%s", strerror(errno));
+		return(-1);
+	}
+
+	dirent_num = scandir(tmp_dname, &namelist, only_inter, NULL);
+	if(dirent_num == -1) {
+		VEOS_ERROR("failed to opendir:%s", strerror(errno));
+		return(-1);
+	}
+	if(dirent_num == 0) {
+		// temp file entry is nothing
+		free(namelist);
+		return(0);
+	}
+
+	del_data = (struct del_list_data *)calloc(dirent_num, sizeof(struct del_list_data));
+	if (del_data == NULL) {
+		VEOS_ERROR("failed to allocate memory:%s", strerror(errno));
+		for (i = 0; i < dirent_num; ++i) {
+			free(namelist[i]);
+		}
+		free(namelist);
+		return(-1);
+	}
+	for (i = 0; i < dirent_num; ++i) {
+		fn_ret = snprintf(tmp, sizeof(tmp), "%s/%s", tmp_dname, namelist[i]->d_name);
+		if (fn_ret < 0) {
+			VEOS_ERROR("failed to copy file path:%s", strerror(errno));
+			ret = -1;
+		}else{
+			fn_ret = stat(tmp, &st);
+			if (fn_ret < 0) {
+				VEOS_ERROR("failed to stat file:%s", strerror(errno));
+				ret = -1;
+			}else{
+				del_data[i].atime = st.st_atime;
+				snprintf(del_data[i].path, MOD_DEL_LIST_PATH_MAX, "%s", tmp);
+				snprintf(del_data[i].fname, MOD_DEL_LIST_NAME_MAX, "%s", namelist[i]->d_name);
+			}
+		}
+		free(namelist[i]);
+	}
+	free(namelist);
+
+	if (ret != 0){
+		goto free_del_data;
+	}
+
+	now = time(NULL);
+	for(i = 0; i < dirent_num; i++){
+		if(max_keep_time < (now - del_data[i].atime)){
+			remove(del_data[i].path);
+			num++;
+		}
+	}
+
+	ret = num;
+free_del_data:
+	free(del_data);
+	return ret;
+}
+
+int ve3_veos_del_temporary_files()
+{
+	char tmp_dname[PATH_MAX + 1] = "";
+	char tmp[PATH_MAX + NAME_MAX + 2] = "";
+	int ret = 0;
+	int fn_ret = 0;
+	struct dirent **namelist;
+	int dirent_num = 0;
+	struct stat st;
+	int temp_file_num=0;
+	int i;
+	struct del_list_dir *del_data = NULL;
+	int i_for_temp=0;
+	int del_num=0;
+	int deleted_num=0;
+
+	int max_file_num=0;
+	int per_usr_max_file_num=0;
+	time_t alive_day_inter_file = 0;
+
+	struct del_list_data* del_file_data = NULL;
+	struct del_list_data* del_file_lock_data = NULL;
+	struct del_list_user* del_user_data = NULL;
+	int del_file_point = 0;
+	int del_file_lock_point = 0;
+
+	max_file_num = VE_NODE(0)->code_modification_file.max_file_num;
+	per_usr_max_file_num = VE_NODE(0)->code_modification_file.per_usr_max_file_num;
+	alive_day_inter_file = VE_NODE(0)->code_modification_file.alive_day_inter_file;
+
+	fn_ret = sprintf(tmp_dname, "%s", VE_NODE(0)->code_modification_file.path);
+	if (fn_ret < 0) {
+		VEOS_ERROR("failed to copy dir path:%s", strerror(errno));
+		return(-1);
+	}
+
+	dirent_num = scandir(tmp_dname, &namelist, except_dot, NULL);
+	if(dirent_num == -1) {
+		VEOS_ERROR("failed to opendir:%s", strerror(errno));
+		return(-1);
+	}
+	if(dirent_num == 0){
+		// temp file entry is nothing
+		free(namelist);
+		return(0);
+	}
+
+	del_data = (struct del_list_dir *)calloc(dirent_num, sizeof(struct del_list_dir));
+	if (del_data == NULL) {
+		VEOS_ERROR("failed to allocate memory:%s", strerror(errno));
+		for (i = 0; i < dirent_num; ++i) {
+			free(namelist[i]);
+		}
+		free(namelist);
+		return(-1);
+	}
+	for (i = 0; i < dirent_num; ++i) {
+		fn_ret = snprintf(tmp, sizeof(tmp), "%s/%s", tmp_dname, namelist[i]->d_name);
+		if (fn_ret < 0) {
+			VEOS_ERROR("failed to copy file path:%s", strerror(errno));
+			ret = -1;
+		}else{
+			fn_ret = stat(tmp, &st);
+			if (fn_ret < 0) {
+				VEOS_ERROR("failed to stat file:%s", strerror(errno));
+				ret = -1;
+			}else{
+				if (S_ISDIR(st.st_mode)){
+					del_data[i_for_temp].atime = st.st_atime;
+					snprintf(del_data[i_for_temp].path, MOD_DEL_LIST_PATH_MAX, "%s", tmp);
+					snprintf(del_data[i_for_temp].dname, MOD_DEL_LIST_NAME_MAX, "%s", namelist[i]->d_name);
+					i_for_temp++;
+				}
+			}
+		}
+		free(namelist[i]);
+	}
+	free(namelist);
+	if(ret != 0){
+		goto free_del_data;
+	}
+
+	if(i_for_temp > 0){ /* temp file exist */
+		del_user_data = (struct del_list_user *)calloc(i_for_temp, sizeof(struct del_list_user));
+		if (del_user_data == NULL) {
+			VEOS_ERROR("failed to allocate memory:%s", strerror(errno));
+			ret = -1;
+			goto free_del_data;
+		}
+		for (i = 0; i < i_for_temp; ++i) {
+			ret = search_files_for_temp(del_data[i].path, atoi(del_data[i].dname), &del_file_data, del_file_point, only_tmp);
+			if(ret < 0){
+				VEOS_ERROR("failed to search file for temp:%s", strerror(errno));
+				if(del_file_data != NULL){
+					free(del_file_data);
+				}
+				free(del_user_data);
+				ret = -1;
+				goto free_del_data;
+			}
+			del_user_data[i].uid = atoi(del_data[i].dname);
+			del_user_data[i].num = ret;
+			del_file_point += ret;
+			ret = search_files_for_temp(del_data[i].path, atoi(del_data[i].dname), &del_file_lock_data, del_file_lock_point, only_lock);
+			if(ret < 0){
+				VEOS_ERROR("failed to search file for temp:%s", strerror(errno));
+				if(del_file_lock_data != NULL){
+					free(del_file_lock_data);
+				}
+				free(del_user_data);
+				ret = -1;
+				goto free_del_data;
+			}
+			del_file_lock_point += ret;
+		}
+		temp_file_num = del_file_point;
+		del_num = temp_file_num - max_file_num;
+		if (del_num > 0){
+			qsort(del_file_data, del_file_point, sizeof(struct del_list_data), compare_file_atime);
+			qsort(del_file_lock_data, del_file_lock_point, sizeof(struct del_list_data), compare_file_atime);
+			deleted_num = search_delete_files_for_temp(del_file_data, temp_file_num, del_file_lock_data, del_file_lock_point, del_user_data, i_for_temp, del_num, per_usr_max_file_num);
+		}
+
+		free(del_user_data);
+		if(del_file_data != NULL){
+			free(del_file_data);
+		}
+		if(del_file_lock_data != NULL){
+			free(del_file_lock_data);
+		}
+
+		for (i = 0; i < i_for_temp; ++i) {
+			deleted_num += search_delete_files_for_inter(del_data[i].path, alive_day_inter_file);
+		}
+	}
+
+	ret = deleted_num;
+free_del_data:
+	free(del_data);
+	return(ret);
+}
+
+VEOS_ARCH_DEP_FUNC(ve3, arch_veos_del_temporary_files, ve3_veos_del_temporary_files)
+
+void ve3_veos_del_temporary_files_wake_up()
+{
+	pthread_cond_signal(&VE_NODE(0)->modtmp_cond);
+}
+
+VEOS_ARCH_DEP_FUNC(ve3, arch_veos_del_temporary_files_wake_up, ve3_veos_del_temporary_files_wake_up)

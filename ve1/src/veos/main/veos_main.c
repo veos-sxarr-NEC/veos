@@ -39,3 +39,10 @@ void ve1_turn_on_clock_gating(void)
 	return;
 }
 VEOS_ARCH_DEP_FUNC(ve1, arch_turn_on_clock_gating, ve1_turn_on_clock_gating)
+
+int ve1_init_code_modification_file_info(char *file_path, int max_file_num,
+				int per_usr_max_file_num, int alive_day_inter_file, int node_num)
+{
+	return 0;
+}
+VEOS_ARCH_DEP_FUNC(ve1, arch_init_code_modification_file_info, ve1_init_code_modification_file_info)

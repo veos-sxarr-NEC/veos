@@ -6,6 +6,13 @@
 #include <veos_ve3.h>
 #include <veos_arch_defs.h>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#include <dirent.h>
+#include <unistd.h>
+
 /* Size of 'type' in sysfs. It has a natural number which indicates kinds of HW. */
 #define SIZE_OF_TYPE_SYSFS 64 
 
@@ -109,3 +116,99 @@ hndl_return:
 	return;
 }
 VEOS_ARCH_DEP_FUNC(ve3, arch_turn_on_clock_gating, ve3_turn_on_clock_gating)
+
+
+#define CONF_FILE_PATH "/etc/opt/nec/ve/veos/vemodcode.conf"
+
+int ve3_init_code_modification_file_info(char *file_path, int max_file_num,
+		int per_usr_max_file_num, int alive_day_inter_file, int node_num)
+{
+	int retval = 0;
+	int ret = -1;
+	struct ve_node_struct *vnode = VE_NODE(0);
+
+        char str[PATH_MAX - 11 + 14];
+	char *s1, *c1;
+        FILE *ve_mod_conf = NULL;
+	DIR *ve_mod_file_dirp = NULL;
+
+	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "In Func");
+
+	if(file_path == NULL){
+		retval = -1;
+		goto hndl_return;
+	}
+
+	/* Set info to ve_node_struct */
+	snprintf(vnode->code_modification_file.path, PATH_MAX, "%s/veos%d-tmp",
+					file_path, node_num);
+	if ((ve_mod_conf = fopen(CONF_FILE_PATH, "r")) != NULL) {
+		while((fgets(str, sizeof(str), ve_mod_conf)) != NULL) {
+			if ( str[0] == '#' ){
+				continue;
+			}
+			if (strstr(str, "TMP_FILE_DIR=") != NULL) {
+				if ((c1 = strchr(str, '\n')) != NULL)
+					*c1 = '\0';
+				s1 = (char *)&str[0] + strlen("TMP_FILE_DIR=");
+				if (strlen(s1) > (PATH_MAX - 11)){
+					VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+						"Path of Code Modification is too long");
+					retval = -1;
+					fclose(ve_mod_conf);
+					return retval;
+				}
+                                ret = snprintf(vnode->code_modification_file.path, PATH_MAX,
+						"%s/veos%d-tmp", s1, node_num);
+				if (ret < 0) {
+					VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+						"Failed to snprintf(), ret=%d, "
+						" due to %s", ret, strerror(errno));
+					retval = -1;
+					fclose(ve_mod_conf);
+					return retval;
+				}
+				ve_mod_file_dirp = opendir(vnode->code_modification_file.path);
+				if (ve_mod_file_dirp == NULL) {
+					if(mkdir(vnode->code_modification_file.path, S_IRWXU) == -1) {
+						VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+							"Failed to mkdir for Code Modification"
+							" due to %s", strerror(errno));
+						retval = -1;
+						fclose(ve_mod_conf);
+						return retval;
+					}
+					ret = chmod(vnode->code_modification_file.path, 01777);
+					if (ret < 0) {
+						VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+							"Failed to chmod dir for Code Modification(), " 
+							"ret=%d, due to %s", ret, strerror(errno));
+						retval = -1;
+						fclose(ve_mod_conf);
+						return retval;
+					}
+				}else{
+					closedir(ve_mod_file_dirp);
+				}
+                                break;
+                        }
+                }
+                fclose(ve_mod_conf);
+        }
+
+	if(strlen(vnode->code_modification_file.path) > PATH_MAX) {
+		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_ERROR,
+		"Path of Code Modification is too long");
+		retval = -1;
+		goto hndl_return;
+	}
+
+	vnode->code_modification_file.max_file_num = max_file_num;
+	vnode->code_modification_file.per_usr_max_file_num = per_usr_max_file_num;
+	vnode->code_modification_file.alive_day_inter_file = alive_day_inter_file*24*60*60;
+
+hndl_return:
+	VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_TRACE, "Out Func");
+	return retval;
+}
+VEOS_ARCH_DEP_FUNC(ve3, arch_init_code_modification_file_info, ve3_init_code_modification_file_info)

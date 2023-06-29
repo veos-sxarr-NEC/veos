@@ -707,6 +707,7 @@ bool veos_acct_check_free_space(void);
 void veos_dump_acct_info(struct ve_task_struct *);
 void veos_delete_task_from_parent_and_init(struct ve_task_struct *);
 void veos_zombie_cleanup_thread(void);
+void veos_modtmp_cleanup_thread(void);
 bool check_for_zombie_deletion(struct ve_task_struct *);
 void psm_delete_zombie_task(struct ve_task_struct *);
 struct ve_task_struct*  checkpid_in_zombie_list(int pid);

@@ -183,6 +183,8 @@ fi
 @ve_os_launcher_confdir@/veos_power_throttle.options
 @ve_os_launcher_confdir@/veos_vm.options
 %config(noreplace) @ve_os_launcher_confdir@/veswap.options
+%config(noreplace) @ve_os_launcher_confdir@/vemodcode.options
+%config(noreplace) %{_sysconfdir}/vemodcode.conf
 %attr(0444,root,root) @prefix@/share/feature_list
 @ve_bindir@/*
 # GPLv2+

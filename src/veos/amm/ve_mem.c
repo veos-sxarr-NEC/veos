@@ -3383,13 +3383,14 @@ func_return:
 *
 * @param[in] pgaddr VE physical address of page whose ref count is to be decrease.
 * @param[in] is_amm True if this function is invoked by AMM functions
+* @param[in] pps_to PPS swap out destination
 * @return return 0 on success and negative of errno on failure.
 * @retval -EINVAL Page specified by pb has not been allocated
 * @retval -EINVAL Page specified by pb has invalid ref_count or dma_ref_count
 * @retval  NO_PPS_BUFF Swap-out was not performed due to lack of PPS Buffer
 * @retval -EBUSY Swap-out was not performed due to other reasons
 */
-int amm_do_put_page_no_lock(vemaa_t pb, bool is_amm)
+int amm_do_put_page_no_lock(vemaa_t pb, bool is_amm, int pps_to)
 {
 	pgno_t pgnum = 0;
 	/*
@@ -3442,7 +3443,7 @@ int amm_do_put_page_no_lock(vemaa_t pb, bool is_amm)
 				VEOS_DEBUG("Not decrement ref_cnt of Page %ld", pgnum);
 				goto func_return;
 			}
-			pps_ret = veos_pps_save_memory_content(pgnum);
+			pps_ret = veos_pps_save_memory_content(pgnum, pps_to);
 			if (pps_ret != 0) {
 				page->swapped_info->remained_page_ref_count++;
 				VEOS_DEBUG("Not Decrement ref_cnt of Page %ld", pgnum);
@@ -3513,7 +3514,7 @@ func_return:
 * @retval  NO_PPS_BUFF Swap-out was not performed due to lack of PPS Buffer
 * @retval -EBUSY Swap-out was not performed due to other reasons
 */
-int amm_do_put_page(vemaa_t pb, bool is_amm)
+int amm_do_put_page(vemaa_t pb, bool is_amm, int pps_to)
 {
 	int retval;
 	struct ve_node_struct *vnode = VE_NODE(0);
@@ -3521,7 +3522,7 @@ int amm_do_put_page(vemaa_t pb, bool is_amm)
 	/*Get lock on ve_node_struct*/
 	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
 			"Fail to acquire ve page lock");
-	retval = amm_do_put_page_no_lock(pb, is_amm);
+	retval = amm_do_put_page_no_lock(pb, is_amm, pps_to);
 	/*Release lock from ve_node_struct*/
 	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
 			"Fail to release ve page lock");
@@ -3588,7 +3589,7 @@ out:
  */
 int veos_put_page(vemaa_t pb)
 {
-	return amm_do_put_page(pb, false);
+	return amm_do_put_page(pb, false, PPS_TO_DUMY);
 }
 
 /**
@@ -3650,7 +3651,7 @@ int amm_put_page(vemaa_t pb)
 					"Fail to get mmap desc lock");
 		}
 	} 
-	ret = amm_do_put_page(pb, true);
+	ret = amm_do_put_page(pb, true, PPS_TO_DUMY);
 	if (0 > ret) 
 		VEOS_DEBUG("fail to put vemaa %lx ", pb);
 	if (ret == NO_PPS_BUFF ) {

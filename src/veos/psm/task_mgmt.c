@@ -2976,6 +2976,7 @@ int psm_handle_start_ve_request(struct veos_thread_arg *pti, int pid)
 	tsk->p_ve_mm->auxv_addr = start_ve_req.auxv_addr;
 	tsk->p_ve_mm->auxv_size = start_ve_req.auxv_size;
 	tsk->p_ve_mm->pgsz = start_ve_req.pgsz;
+	tsk->p_ve_mm->swap_required_free_size = 0;
 
 	pthread_rwlock_lock_unlock
 		(&(tsk->p_ve_core->ve_core_lock), WRLOCK,
@@ -4956,6 +4957,10 @@ void get_performance_register_for_proginf(struct ve_task_struct *tsk,
 						(group_leader, proginf);
         pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
                         "Failed to release tasklist_lock lock");
+
+#ifndef SHOW_POWER_THROTTLING
+	proginf->ac_ptcc = 0;
+#endif
 	VEOS_TRACE("Exiting");
 }
 

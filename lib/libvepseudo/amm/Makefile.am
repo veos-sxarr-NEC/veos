@@ -19,6 +19,7 @@ libpseudoamm_la_CFLAGS = \
 	-I$(srcdir)/../psm \
 	-I$(srcdir)/../common \
 	-I$(srcdir)/../sys \
+	-I$(srcdir)/../loader \
 	-I$(top_srcdir)/vhcall/include \
 	-I$(top_srcdir)/include \
 	-I$(top_builddir)/lib/libveosprotoc \

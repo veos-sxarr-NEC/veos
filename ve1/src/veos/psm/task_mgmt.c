@@ -876,8 +876,8 @@ void ve1_psm_update_pmc_check_overflow(struct ve_task_struct *tsk)
 					((uint64_t)1 << (i+PMR_CONTEXT_PMCR4)));
 			tmp_pmc_pmmr = gb[i+PMR_CONTEXT_PMCR4];
 			/* Check for overflow */
-			VEOS_DEBUG("Received PMC[%d] value from register: %lu",
-							i, tmp_pmc_pmmr);
+			VEOS_DEBUG("Received PMC[%d] value from register: %lu & initial_pmc_pmmr: %lu",
+							i, tmp_pmc_pmmr, tsk->initial_pmc_pmmr[i]);
 			if((tmp_pmc_pmmr & OVERFLOW_BIT) < tsk->initial_pmc_pmmr[i]) {
 				VEOS_INFO("PMC[%d] Overflowed", i);
 				if(regid == VE_USR_PMC00 || regid == VE_USR_PMC01)
@@ -1000,3 +1000,16 @@ void ve1_psm_reset_perf_accounting(struct ve_task_struct *tsk)
 		tsk->pmc_pmmr[i] = 0;
 }
 VEOS_ARCH_DEP_FUNC(ve1, arch_psm_reset_perf_accounting, ve1_psm_reset_perf_accounting)
+
+int ve1_veos_del_temporary_files()
+{
+	return(0);
+}
+VEOS_ARCH_DEP_FUNC(ve1, arch_veos_del_temporary_files, ve1_veos_del_temporary_files)
+
+void ve1_veos_del_temporary_files_wake_up()
+{
+	return;
+}
+
+VEOS_ARCH_DEP_FUNC(ve1, arch_veos_del_temporary_files_wake_up, ve1_veos_del_temporary_files_wake_up)

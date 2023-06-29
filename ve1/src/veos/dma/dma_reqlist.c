@@ -334,6 +334,7 @@ void ve1_dma_reqlist__cancel(ve_dma_req_hdl *req)
 			e->dst_block = NULL;
 		}
 	}
+	ve_dma__dec_ipc_sync_nolock(req);
 	req->comp = 1;
 	req->cancel = 1;
 }

@@ -1537,6 +1537,7 @@ skip_cpu_mask_request:
 	}
 
 	free(exe_name);
+	exe_name = NULL;
 
 	PSEUDO_DEBUG("LOADING SEGMENTS IS END.");
 	ret = reserve_signal_trampoline(handle);

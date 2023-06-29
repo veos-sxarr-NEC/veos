@@ -94,6 +94,96 @@ typedef enum ve_grow_err_t
 
 typedef uint64_t ve_mem_offset_t;
 
+/**
+* @brief structure to manage temporary file.
+*/
+struct mod_file_info {
+	int fd;			/*!< file descriptor of temporary file */
+	char *file_path;	/*!< file path of temporary file */
+	void *vemva;		/*!< VEMVA to map temporary file */
+	uint64_t size;		/*!< size to map temporary file */
+	ino_t org_ino;		/*!< inode number of original binary file */
+	off_t org_sz;		/*!< size of original binary file */
+	time_t org_mtime;	/*!< modified time of original binary file */
+	dev_t org_dev;		/*!< device number of original binary file */
+	struct file_stat f_stat;	/*!< file information of temporary file */
+};
+
+/**
+* @brief structure to manage and control temporary files.
+*/
+struct tmp_file_info {
+	int lock_fd;		/* file descriptor of exclusive control file */
+	char *lock_file_path;	/* file path of exclusive control file */
+	struct mod_file_info mod;	/* information of modified code */
+	struct mod_file_info org;	/* information of original code */
+	struct mod_file_info tbl;	/* information of address conversion table */
+};
+
+/**
+* @brief structure of address conversion table
+*/
+struct ve_xtbl_adr {
+	uint64_t org;	/*!< The start address of .text section in original code */
+	uint64_t *xtbl;	/*!< The address of address conversion table */
+	uint64_t xtbl_size;	/*!< The size of address conversion table */
+};
+
+/**
+* @brief structure of address conversion table header
+*/
+struct ve_xtbl_adr_hdr {
+	size_t num;	/*!< The number of address conversion table */
+	struct ve_xtbl_adr ve_xtbl_addrtbl[((PAGE_SIZE_2MB - sizeof(size_t)) / sizeof(struct ve_xtbl_adr))];
+			/*!< The list of address conversiontable */
+};
+
+/**
+* @brief structure to manage address conversion table header
+*/
+struct ve_xtbl_adr_hdr_info {
+	struct ve_xtbl_adr_hdr *xtbl_hdr;	/*!< The pointer to address conversion table header */
+	pthread_mutex_t xtbl_adr_hdr_lock;
+			/*!< pthread mutex lock for address conversion table header */
+};
+
+/* Information for relative address recalculation */
+struct d_info{
+	unsigned long mod_code_addr;
+	unsigned long org_code_addr;
+	unsigned long diff_org_code_addr;
+	int sabun;
+	int out_bound;
+};
+
+/**
+* @brief structure of address and temporary files
+*/
+struct ve_tmpfile {
+	vemva_t addr;
+	size_t  sz;
+	char fname[PATH_MAX + NAME_MAX];
+};
+
+/**
+* @brief structure of temporary file set
+*/
+struct ve_tmpfile_set {
+	char lock_fname[PATH_MAX + NAME_MAX];
+	struct ve_tmpfile mod;
+	struct ve_tmpfile org;
+	struct ve_tmpfile tbl;
+	struct list_head list;
+};
+
+/**
+* @brief structure to manage address and temporary files
+*/
+struct ve_tmpfile_info {
+	pthread_mutex_t modcode_tmpfile_lock;
+	struct ve_tmpfile_set tmpfiles;
+};
+
 /* mmap syscall function prototypes */
 ret_t ve_mmap(int syscall_num, char *syscall_name, veos_handle *handle);
 ret_t ve_munmap(int syscall_num, char *syscall_name,
@@ -135,4 +225,9 @@ int ve_sync_vhva(veos_handle *);
 void copy_vemva_dir_info(struct veshm_struct *);
 void update_ve_page_info(uint64_t *);
 int reserve_signal_trampoline(veos_handle *handle);
+int update_xtbl_adr_info(veos_handle *);
+int search_ve_xtbl_addrtbl(struct ve_xtbl_adr_hdr* , uint64_t, size_t*);
+int search_mod_addr(struct ve_xtbl_adr*, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t*);
+void get_original_addr_from_xtbl_adr(uint64_t, uint64_t*);
+void ve_modcode_init(void);
 #endif

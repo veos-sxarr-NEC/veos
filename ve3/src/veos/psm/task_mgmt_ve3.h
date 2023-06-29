@@ -97,4 +97,28 @@ struct ve_acct_v16 {
 	__u64 padding_2[5];    /* padding */
 };
 
+
+/* for delete temporary files of code modification */
+#define MOD_DEL_LIST_PATH_MAX (PATH_MAX + NAME_MAX + 2)
+#define MOD_DEL_LIST_NAME_MAX (NAME_MAX + 1)
+struct del_list_data{ /* delete file information */
+	time_t atime;
+	char path[MOD_DEL_LIST_PATH_MAX];
+	char fname[MOD_DEL_LIST_NAME_MAX];
+	uid_t uid;
+	int deleted;
+};
+struct del_list_dir{ /* delete directory information */
+	time_t atime;
+	char path[MOD_DEL_LIST_PATH_MAX];
+	char dname[MOD_DEL_LIST_NAME_MAX];
+};
+
+struct del_list_user{ /* user information of delete files */
+	uid_t uid;
+	int num;
+	int delete_num;
+};
+
+
 #endif

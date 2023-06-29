@@ -243,6 +243,11 @@ struct veos_arch_ops {
 	int (*arch_psm_save_performance_registers)(struct ve_task_struct *);
 	void (*arch_psm_reset_perf_accounting)(struct ve_task_struct *);
 
+	int (*arch_init_code_modification_file_info)(char *, int, int, int, int);
+	int (*arch_veos_del_temporary_files)();
+	void (*arch_veos_del_temporary_files_wake_up)();
+	int (*arch_psm_comm_version_compare)(char *, char *);
+
 };
 
 extern const struct veos_arch_ops *_veos_arch_ops;

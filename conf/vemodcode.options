@@ -1,0 +1,10 @@
+# The maximum number of temporary files in veosN-tmp directory
+#ve-os-launcher@*=--ve-modcode-file-max=30
+
+# The maximum number of temporary files per directory is named with
+# effective user id.
+#ve-os-launcher@*=--ve-modcode-usr-file-max=30
+
+# The alive days of intermediate files and the file for exclusive
+# control of code modification
+#ve-os-launcher@*=--ve-modcode-alive-day-inter-file=3

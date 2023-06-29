@@ -50,6 +50,7 @@
 #include "locking_handler.h"
 #include "task_mgmt.h"
 #include "psm_stat.h"
+#include "veos_arch_ops.h"
 
 /**
  * @brief This Function is used to communicate with PSM
@@ -842,11 +843,16 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 	memset(version, '\0', req_msg->veos_version.len + 1);
 	memcpy(version, req_msg->veos_version.data,
 			req_msg->veos_version.len);
-	retval = version_compare(VERSION_STRING, version);
+	retval = (*_veos_arch_ops->arch_psm_comm_version_compare)(VERSION_STRING, version);
 	VEOS_DEBUG("VEOS version: %s, Received version: %s retval: :%d",
 			VERSION_STRING, version, retval);
 	if (retval == -1) {
 		VEOS_ERROR("VEOS version is older than ve_exec version");
+		retval = -EINVAL;
+		goto hndl_return;
+	}
+	if (retval == -2) {
+		VEOS_ERROR("No compatibility between VEOS version and ve_exec version");
 		retval = -EINVAL;
 		goto hndl_return;
 	}

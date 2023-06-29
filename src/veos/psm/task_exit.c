@@ -935,6 +935,7 @@ int psm_handle_manage_ve_worker_thread(struct ve_task_struct *del_task_curr)
 	return retval;
 }
 
+
 /**
 * @brief Delete's VE process
 *
@@ -959,6 +960,9 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 
 	VEOS_TRACE("Entering");
 
+	/* Wakeup thread that clean up tempolary file for modification
+	 * */
+	(*_veos_arch_ops->arch_veos_del_temporary_files_wake_up)();
 
 	/* This is thread group wide lock for deletion. At a time only
 	 * one thread of a thread group could process its deletion */
@@ -1409,4 +1413,46 @@ terminate:
 	return;
 abort:
 	veos_abort("veos zombie cleanup thread failed");
+}
+
+void veos_modtmp_cleanup_thread()
+{
+	VEOS_TRACE("Entering");
+
+	while (!terminate_flag) {
+		/* wait until awaken */
+		pthread_mutex_lock_unlock(&(VE_NODE(0)->modtmp_mtx), LOCK
+				, "failed to acquire modtmp mutex lock"
+				" corresponding to node");
+		VEOS_DEBUG("Modtmp cleanup thread Waiting to be awaken");
+		if (pthread_cond_wait(&VE_NODE(0)->modtmp_cond,
+					&VE_NODE(0)->modtmp_mtx)) {
+			pthread_mutex_lock_unlock
+				(&(VE_NODE(0)->modtmp_mtx), UNLOCK
+				 , "failed to release modtmp mutex lock"
+				 " corresponding to node");
+			VEOS_ERROR("Conditional wait failed");
+			goto abort;
+		}
+		if (terminate_flag) {
+			pthread_mutex_lock_unlock
+				(&(VE_NODE(0)->modtmp_mtx), UNLOCK
+				 , "failed to release modtmp mutex lock"
+				 " corresponding to node");
+			goto terminate;
+		}
+		pthread_mutex_lock_unlock(&(VE_NODE(0)->modtmp_mtx), UNLOCK
+				, "failed to release modtmp mutex lock"
+				" corresponding to node");
+
+		VEOS_DEBUG("Modification temp file cleanup thread woken up");
+		(*_veos_arch_ops->arch_veos_del_temporary_files)();
+	}
+terminate:
+	VEOS_DEBUG("Termination flag SET,"
+			" VEOS modtmp cleanup  thread exiting");
+	VEOS_TRACE("Exiting");
+	return;
+abort:
+	veos_abort("veos modtmp cleanup thread failed");
 }

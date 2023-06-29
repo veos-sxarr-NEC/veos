@@ -52,6 +52,7 @@
 #include "vemva_layout.h"
 
 static struct auxv_info auxv;
+extern struct ve_xtbl_adr_hdr_info ve_xtbl_adr_hdr_info;
 
 #define VEOS_VER0
 
@@ -230,6 +231,7 @@ int pse_load_binary(char *filename, veos_handle *handle,
 	uint64_t end_addr[2] = {0,0};
 	int executeonce = 1;
 	int ret = 0;
+	void *ret_addr = NULL;
 
 	PSEUDO_TRACE("In Func");
 	PSEUDO_DEBUG("LOADING STARTS");
@@ -238,6 +240,12 @@ int pse_load_binary(char *filename, veos_handle *handle,
 	load_elf.stat.fd = -1;
 	load_elf.stat.fd_dyn = -1;
 	PSEUDO_DEBUG("VE ELF(type: ET_EXEC) name: %s", load_elf.stat.file_exec);
+
+	/* for VE1 binary loader */
+	auxv.p_ve_xtblhdr = 0;
+	ve_xtbl_adr_hdr_info.xtbl_hdr = NULL;
+	pthread_mutex_init(&ve_xtbl_adr_hdr_info.xtbl_adr_hdr_lock, NULL);
+	ve_modcode_init();
 
 	/* get elf header */
 	head = (char *)vh_map_elf(load_elf.stat.file_exec);
@@ -362,6 +370,32 @@ int pse_load_binary(char *filename, veos_handle *handle,
 				executeonce = 0;
 			}
 		}
+	}
+
+	/* allocate memory for code modification of VE1 binary*/
+	ret_addr = (void *)__ve_mmap(handle, (uint64_t)0, PAGE_SIZE_2MB,
+			PROT_WRITE|PROT_READ,
+			MAP_2MB | MAP_ANON | MAP_PRIVATE | MAP_ADDR_64GB_SPACE,
+			-1, 0);
+	if (ret_addr == MAP_FAILED) {
+		PSEUDO_ERROR("faield to alloc VE memory, errno=%d", errno);
+		ret = -errno;
+		goto err_ret;
+	}
+
+	/* update structure */
+	pthread_mutex_lock(&ve_xtbl_adr_hdr_info.xtbl_adr_hdr_lock);
+	ve_xtbl_adr_hdr_info.xtbl_hdr = (struct  ve_xtbl_adr_hdr *)ret_addr;
+	auxv.p_ve_xtblhdr = (Elf64_Addr)ve_xtbl_adr_hdr_info.xtbl_hdr;
+	pthread_mutex_unlock(&ve_xtbl_adr_hdr_info.xtbl_adr_hdr_lock);
+
+	/* send xtbl header data to VE from VH*/
+	ret = update_xtbl_adr_info(handle);
+	if (ret < 0) {
+		/* not return error, because xtbl may be updated next
+		   timing of mmap() and it is no problem to execute binary
+		   without xtbl header. */
+		PSEUDO_ERROR("failed to send ve_xtbl_adr_hdr");
 	}
 
 	PSEUDO_DEBUG("IC set : %lx", *instr_cntr);
@@ -553,6 +587,7 @@ int init_stack(veos_handle *handle, int argc,
 			break;
 		}
 	}
+	areap_8b += AUX_BYTE;	/* + ve_xtbl_adr_hdr_info.xtbl_hdr */
 	areap_8b += AUX_BYTE;	/* + NULL */
 
 	/* strings */
@@ -775,6 +810,14 @@ int init_stack(veos_handle *handle, int argc,
 		cnt_auxv++;
 		arg_p += AUX_BYTE;
 	} while (AT_NULL != ((Elf64_auxv_t *)arg_p)->a_type);
+
+	/* Update auxv info for VE1 binary loader */
+	*areap_8b++ = (long long)(AT_VE_XTBL_ADDR);
+	*areap_8b++ = (long long)ve_xtbl_adr_hdr_info.xtbl_hdr;
+	cnt_auxv++;
+	PSEUDO_DEBUG("|\t%p\tAT_VE_XTBL_ADDR: %p",
+		     (void *)areap_8b, ve_xtbl_adr_hdr_info.xtbl_hdr);
+
 	*areap_8b++ = (long long)NULL;
 	*areap_8b++ = (long long)NULL;
 

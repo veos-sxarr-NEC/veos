@@ -48,5 +48,6 @@ int ve_request_veos(veos_handle *, enum pseudo_veos_msg_id,
 int ve_sys_get_ve_product_name(veos_handle *, char *, size_t);
 ssize_t get_ve_info(veos_handle *, char *, char *, char *, ssize_t *, size_t, size_t);
 int64_t ve_sys_get_proginf_data(veos_handle *, uint64_t, uint64_t);
+int64_t ve_sys_get_original_addr(veos_handle *, uint64_t);
 
 #endif

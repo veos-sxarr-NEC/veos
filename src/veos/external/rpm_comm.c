@@ -1955,21 +1955,21 @@ hndl_return:
 }
 
 /**
- * @brief Handles the VE_SWAP_OUT request from RPM command.
+ * @brief Handles the VE_SWAP_OUT and VE_SWAP_OUT_F request from RPM command.
  *
  * @param[in] pti Contains the request message received from RPM command
+ * @param[in] target_pids_f pids and required-free-size
  *
- * @return 0 on success, -1 on failure.
+ * @return 0 on success, -errno on failure.
  */
-int rpm_handle_ve_swapout_req(struct veos_thread_arg *pti)
+static int rpm_handle_ve_swapout(struct veos_thread_arg *pti, struct ve_swap_pids_f target_pids_f)
 {
 	int retval = -1;
 	int retval_to_cmd = -errno;
 	struct ve_node_struct *p_ve_node = NULL;
 	struct ve_task_struct *ve_task = NULL;
 	struct veos_swap_request_info *request_info;
-	ProtobufCBinaryData rpm_pseudo_msg = {0};
-	struct ve_swap_pids target_pids = {};
+	struct ve_swap_pids target_pids = target_pids_f.pids;
 	struct ve_task_struct *group_leader = NULL, *tmp = NULL;
 	struct ve_ipc_sync *ipc_sync = NULL;
 	pid_t pid = 0;
@@ -1981,37 +1981,16 @@ int rpm_handle_ve_swapout_req(struct veos_thread_arg *pti)
 
 	VEOS_TRACE("In %s", __func__);
 
-	if (!pti) {
-		VEOS_ERROR("Data which veswap sent is not found");
-		retval = -1;
-		goto hndl_return;
-	}
-
 	request_info = (struct veos_swap_request_info *)malloc(
 					sizeof(struct veos_swap_request_info));
 	if (request_info == NULL) {
 		retval_to_cmd = -ECANCELED;
 		VEOS_ERROR("Failed to create Swap request due to %s",
 							strerror(errno));
-		goto hndl_sendmgs;
+		goto hndl_return;
 	}
 
 	p_ve_node = VE_NODE(0);
-	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_msg;
-	if (rpm_pseudo_msg.len != sizeof(struct ve_swap_pids)) {
-		VEOS_ERROR("Data which veswap sent is invalid");
-		retval_to_cmd = -ECANCELED;
-		free(request_info);
-		goto hndl_sendmgs;
-	}
-	memcpy(&target_pids, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
-
-	retval = swap_pid_check(target_pids);
-	if (retval != 0) {
-		retval_to_cmd = -ECANCELED;
-		free(request_info);
-		goto hndl_sendmgs;
-	}
 
 	pid_num = target_pids.process_num;
 	for (i = 0; i < pid_num; i++) {
@@ -2165,6 +2144,9 @@ int rpm_handle_ve_swapout_req(struct veos_thread_arg *pti)
 			}
 			/* Change sub-status */
 			veos_update_substatus(group_leader, SWAPPING_OUT);
+			/* Get required-free-size */
+			ve_task->p_ve_mm->swap_required_free_size =
+				target_pids_f.required_free_size;
 			veos_operate_all_ve_task_lock(group_leader, UNLOCK);
 			pthread_mutex_lock_unlock(&(ve_task->p_ve_mm->
 					thread_group_mm_lock), UNLOCK,
@@ -2270,7 +2252,7 @@ int rpm_handle_ve_swapout_req(struct veos_thread_arg *pti)
 	} else {
 		retval_to_cmd = -EPERM;
 	}
-	goto hndl_sendmgs;
+	goto hndl_return;
 
 hndl_free_req:
 	retval_to_cmd = -ENOTSUP;
@@ -2282,6 +2264,105 @@ hndl_open_fail_req:
 		ve_put_ipc_sync(request_info->ipc_sync_array[i]);
 	}
 	free(request_info);
+
+hndl_return:
+	VEOS_TRACE("Out %s", __func__);
+	return retval_to_cmd;
+}
+
+/**
+ * @brief Handles the VE_SWAP_OUT request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_ve_swapout_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	int retval_to_cmd = -errno;
+	struct ve_swap_pids target_pids = {};
+	struct ve_swap_pids_f target_pids_f = {};
+	ProtobufCBinaryData rpm_pseudo_msg = {0};
+
+	VEOS_TRACE("In %s", __func__);
+
+	if (!pti) {
+		VEOS_ERROR("Data which veswap sent is not found");
+		retval = -1;
+		goto hndl_return;
+	}
+
+	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_msg;
+	if (rpm_pseudo_msg.len != sizeof(struct ve_swap_pids)) {
+		VEOS_ERROR("Data which veswap sent is invalid");
+		retval_to_cmd = -ECANCELED;
+		goto hndl_sendmgs;
+	}
+	memcpy(&target_pids, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
+
+	retval = swap_pid_check(target_pids);
+	if (retval != 0) {
+		retval_to_cmd = -ECANCELED;
+		goto hndl_sendmgs;
+	}
+
+	target_pids_f.pids = target_pids;
+	target_pids_f.required_free_size = 0;
+	retval_to_cmd = rpm_handle_ve_swapout(pti, target_pids_f);
+
+hndl_sendmgs:
+	retval = 0;
+	/* Send the response back to RPM command */
+	VEOS_DEBUG("Send the response back %d to RPM command", retval_to_cmd);
+	retval = veos_rpm_send_cmd_ack(pti->socket_descriptor, NULL, 0,
+					retval_to_cmd);
+	if (retval == -1) {
+		VEOS_ERROR("Failed send the response back to RPM command");
+	}
+
+hndl_return:
+	VEOS_TRACE("Out %s", __func__);
+	return retval;
+}
+
+/**
+ * @brief Handles the VE_SWAP_OUT_F request from RPM command.
+ *
+ * @param[in] pti Contains the request message received from RPM command
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int rpm_handle_ve_swapout_f_req(struct veos_thread_arg *pti)
+{
+	int retval = -1;
+	int retval_to_cmd = -errno;
+	struct ve_swap_pids_f target_pids_f = {};
+	ProtobufCBinaryData rpm_pseudo_msg = {0};
+
+	VEOS_TRACE("In %s", __func__);
+
+	if (!pti) {
+		VEOS_ERROR("Data which veswap sent is not found");
+		retval = -1;
+		goto hndl_return;
+	}
+
+	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->pseudo_msg;
+	if (rpm_pseudo_msg.len != sizeof(struct ve_swap_pids_f)) {
+		VEOS_ERROR("Data which veswap sent is invalid");
+		retval_to_cmd = -ECANCELED;
+		goto hndl_sendmgs;
+	}
+	memcpy(&target_pids_f, rpm_pseudo_msg.data, rpm_pseudo_msg.len);
+
+	retval = swap_pid_check(target_pids_f.pids);
+	if (retval != 0) {
+		retval_to_cmd = -ECANCELED;
+		goto hndl_sendmgs;
+	}
+
+	retval_to_cmd = rpm_handle_ve_swapout(pti, target_pids_f);
 
 hndl_sendmgs:
 	retval = 0;
@@ -3329,6 +3410,14 @@ int veos_rpm_hndl_cmd_req(struct veos_thread_arg *pti)
 	case VE_DEL_DUMMY_TASK:
 		VEOS_DEBUG("RPM request : VE_DEL_DUMMY_TASK");
 		retval = rpm_handle_delete_dummy_task_req(pti);
+		if (0 > retval) {
+			VEOS_ERROR("Query request failed");
+			goto hndl_return;
+		}
+		break;
+	case VE_SWAP_OUT_F:
+		VEOS_DEBUG("RPM request : VE_SWAP_OUT_F");
+		retval = rpm_handle_ve_swapout_f_req(pti);
 		if (0 > retval) {
 			VEOS_ERROR("Query request failed");
 			goto hndl_return;
