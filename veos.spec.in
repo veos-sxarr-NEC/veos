@@ -168,7 +168,7 @@ done
 # During upgrade argument is received 1
 if [ $1 == 0 ]; then
     for no in `seq 0 7`; do
-	rm -r %{_localstatedir}/veos${no}-tmp
+	rm -fr %{_localstatedir}/veos${no}-tmp
     done
 fi
 

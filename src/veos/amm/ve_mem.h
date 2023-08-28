@@ -191,15 +191,21 @@ struct mapping_desc {
  *	functionality.
  */
 struct mapping_attri {
-	struct list_head *insert_after;	/*!< specify the mapping address after
-					 * which current mapping descriptor to
-					 * added*/
-	struct list_head *merge_start;	/*!< specify the address of mapping from
-					 * where to start merging*/
-	struct list_head *merge_end;	/*!< specify the address of mapping from
-					 * where to end merging*/
+	struct mapping_desc *reuse_map_desc; /* specify the address reuse mappin
+						descriptor */
 	off_t offset_start;		/*!< offset start for new mapping*/
 	off_t offset_end;		/*!< offset end  for new mapping*/
+};
+
+struct attri_entry {
+	struct list_head list;
+	struct mapping_attri *map_attri;
+	struct mapping_desc *create_map_desc;
+	int64_t page_count;
+	pgno_t *new_pgno;
+	pgno_t *get_pgno;
+	pgno_t *map_desc_pgno;
+	int add_mapping_desc;
 };
 
 /* Mmaped page structure */
@@ -270,10 +276,9 @@ ret_t amm_do_file_back_handling(vemva_t, struct file_desc *,
 struct file_desc *init_file_desc(struct file_stat *);
 struct file_desc *scan_global_list(struct file_stat *file, flag_t, int);
 struct mapping_desc *init_mapping_desc(struct mapping_attri *);
-void init_page_array(struct mapping_desc *, struct mapping_attri *);
 ret_t update_mapping_desc(vemva_t, pgno_t *,
 		uint64_t, int, struct ve_task_struct *,
-		struct file_desc *, off_t, pgno_t *);
+		struct file_desc *, off_t, pgno_t *, pgno_t *, pgno_t *);
 struct list_head *free_redundant_list(struct list_head *,
 		struct list_head *);
 void dump_mapping_desc(struct mapping_desc *);
@@ -282,6 +287,7 @@ struct mapping_attri *collect_map_attri(struct file_desc *, int64_t,
 		int64_t);
 void add_mapping_desc(struct file_desc *,
 		struct mapping_desc *, struct mapping_attri *);
+void del_mapping_desc(struct file_desc *, struct mapping_desc *);
 void set_bit(uint64_t *, uint64_t);
 void set_bits(uint64_t *, uint64_t, uint16_t);
 int check_bits_set(uint64_t *, uint64_t, uint64_t);

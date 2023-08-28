@@ -2938,6 +2938,12 @@ ret_t amm_do_file_back_handling(vemva_t vaddr, struct file_desc *file_desc,
 	struct ve_node_struct *vnode = VE_NODE(0);
 	uint64_t start = 0;
 
+	struct list_head attri_list;
+	int now_off_s = -1;
+	int now_off_e = -1;
+	struct attri_entry *attri_entry;
+	struct attri_entry *attri_entry_n = NULL;
+
 	VEOS_TRACE("invoked");
 
 	VEOS_DEBUG("tsk:pid(%d) mmaps file range [(%ld) -- (%ld)] with %ld %s"
@@ -2958,68 +2964,143 @@ ret_t amm_do_file_back_handling(vemva_t vaddr, struct file_desc *file_desc,
 
 	/*
 	 * This interface will scan the mapping list under file_descriptor
-	 * and will decide from where to where the previous mapping will be
-	 * merged and where the new mapping Should be inserted. All This
-	 * Information will be populated in struct mapping_attribute
+	 * to determine the list of previous and new mappings.
+	 * All this information is entered in the list of the struct Mapping_attribute.
 	 */
-	map_attri = collect_map_attri(file_desc, off_s, off_e);
-	if (NULL == map_attri) {
-		VEOS_DEBUG("failed to get map attr for file");
-		ret = -ENOMEM;
-		goto err_attri;
+
+	INIT_LIST_HEAD(&attri_list);
+	now_off_s = off_s;
+	while(now_off_e < off_e){
+		map_attri = collect_map_attri(file_desc, now_off_s, off_e);
+		if (NULL == map_attri) {
+			VEOS_DEBUG("failed to get map attr for file");
+			ret = -ENOMEM;
+			goto err_clean;
+		}
+		now_off_e = map_attri->offset_end;
+		now_off_s = map_attri->offset_end+1;
+
+		attri_entry = malloc(sizeof(struct attri_entry));
+		if(attri_entry == NULL){
+			VEOS_DEBUG("failed to alloc for attr entry");
+			ret = -ENOMEM;
+			free(map_attri);
+			goto err_clean;
+		}
+		attri_entry->map_attri = map_attri;
+		attri_entry->create_map_desc = NULL;
+		attri_entry->page_count = 0;
+		attri_entry->new_pgno = NULL;
+		attri_entry->get_pgno = NULL;
+		attri_entry->map_desc_pgno = NULL;
+		attri_entry->add_mapping_desc = 0;
+		list_add(&attri_entry->list, &attri_list);
 	}
 
-	/*
-	 * This interface will initialize the mapping descriptor to be added
-	 * in list.
-	 */
-	map_desc = init_mapping_desc(map_attri);
-	if (NULL == map_desc) {
-		VEOS_DEBUG("failed to init file map desc");
-		ret = -ENOMEM;
-		goto err_map_desc;
-	}
+	list_for_each_entry_safe(attri_entry, attri_entry_n, &attri_list, list) {
 
-	/*Update reverse reference*/
-	map_desc->file_desc = file_desc;
-	count = (off_e - off_s) + 1;
+		/*
+		* This interface will initialize the mapping descriptor to be added
+		* in list.
+		*/
+		if (attri_entry->map_attri->reuse_map_desc){
+			map_desc = attri_entry->map_attri->reuse_map_desc;
+			attri_entry->create_map_desc = NULL;
+		}else{
+			map_desc = init_mapping_desc(attri_entry->map_attri);
+			if (NULL == map_desc) {
+				VEOS_DEBUG("failed to init file map desc");
+				ret = -ENOMEM;
+				goto err_clean;
+			}
+			attri_entry->create_map_desc = map_desc;
+		}
 
-	pgno = map_desc->pg_array + (off_s - map_attri->offset_start);
+		/*Update reverse reference*/
+		map_desc->file_desc = file_desc;
+		off_t use_off_s = 0;
+		off_t use_off_e = 0;
+		if(attri_entry->map_attri->offset_start < off_s){
+			use_off_s = off_s;
+		}else{
+			use_off_s = attri_entry->map_attri->offset_start;
+		}
+		if(attri_entry->map_attri->offset_end > off_e){
+			use_off_e = off_e;
+		}else{
+			use_off_e = attri_entry->map_attri->offset_end;
+		}
+		count = (use_off_e - use_off_s) + 1;
 
-	/*
-	 * This interface will update the mapping_descriptor.
-	 * This will allocate the new pages required for the mapping
-	 * and will accordingly update the page array.
-	 */
-	ret = update_mapping_desc(vaddr, pgno, count, pgmod, tsk,
-							file_desc, off_s, map);
-	if (0 > ret) {
-		VEOS_DEBUG("Error (%s) in updating pg map of map desc",
-			strerror(-ret));
-		goto err_update_desc;
-	}
+		pgno = map_desc->pg_array + (use_off_s - attri_entry->map_attri->offset_start);
 
-	/*Updating Reverese reference*/
-	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
+		/*
+		 * This interface will update the mapping_descriptor.
+		 * This will allocate the new pages required for the mapping
+		 * and will accordingly update the page array.
+		 */
+		size_t pgsz = 0;
+		pgsz = (size_t)pgmod_to_pgsz(pgmod);
+		attri_entry->page_count = count;
+		attri_entry->new_pgno = malloc(sizeof(pgno_t)*count);
+		if(attri_entry->new_pgno == NULL){
+			VEOS_DEBUG("failed to alloc for attr entry");
+			ret = -ENOMEM;
+			goto err_clean;
+		}
+		memset((void *)attri_entry->new_pgno, 0xff, sizeof(pgno_t)*count);
+		attri_entry->get_pgno = calloc((count + 1), (sizeof(uint64_t)));
+		if(attri_entry->get_pgno == NULL){
+			VEOS_DEBUG("failed to alloc for attr entry");
+			ret = -ENOMEM;
+			goto err_clean;
+		}
+		attri_entry->map_desc_pgno = pgno;
+		ret = update_mapping_desc(vaddr+((use_off_s - off_s)*pgsz), pgno, count, pgmod, tsk,
+							file_desc, off_s, (map + (use_off_s - off_s)),
+							attri_entry->new_pgno, attri_entry->get_pgno);
+		if (0 > ret) {
+			VEOS_DEBUG("Error (%s) in updating pg map of map desc",
+				strerror(-ret));
+			goto err_clean;
+		}
+
+		/*Updating Reverese reference*/
+		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
 			"Fail to acquire ve page lock");
-	mapping_size = map_attri->offset_end - map_attri->offset_start;
-	pgno = map_desc->pg_array;
+		mapping_size = use_off_e - use_off_s;
+		pgno = map_desc->pg_array + (use_off_s - attri_entry->map_attri->offset_start);
 
-	for (index = 0; index <= mapping_size; index++) {
-		VEOS_DEBUG("update VE page(%ld) map desc(%p)",
+		for (index = 0; index <= mapping_size; index++) {
+			VEOS_DEBUG("update VE page(%ld) map desc(%p)",
 				pgno[index], map_desc);
-		if (pgno[index] > 0)
-			VE_PAGE(vnode, pgno[index])->private_data =
+			if (pgno[index] > 0)
+				VE_PAGE(vnode, pgno[index])->private_data =
 							(void *)map_desc;
-	}
-	/* This interface will add the mapping descriptor in the list */
-	add_mapping_desc(file_desc, map_desc, map_attri);
+		}
+		/* This interface will add the mapping descriptor in the list */
+		if (!(attri_entry->map_attri->reuse_map_desc)){
+			add_mapping_desc(file_desc, map_desc, attri_entry->map_attri);
+			attri_entry->add_mapping_desc = 1;
+		}
 
-	/*Release amm_node_lock here*/
-	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
+		/*Release amm_node_lock here*/
+		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
 			"Fail to release ve page lock");
-	free(map_attri);
+        }
 
+	list_for_each_entry_safe(attri_entry, attri_entry_n, &attri_list, list) {
+		amm_get_page(attri_entry->get_pgno); /*Increament the ref count of all newly allocate pages*/
+		if(attri_entry->new_pgno != NULL){
+			free(attri_entry->new_pgno);
+		}
+		if(attri_entry->get_pgno != NULL){
+			free(attri_entry->get_pgno);
+		}
+		free(attri_entry->map_attri);
+		list_del(&attri_entry->list);
+		free(attri_entry);
+	}
 	/* search the mapping_page structure */
 	list_for_each_entry(fmem_tmp, &mm->list_file_backed_mem, list_map_pages) {
 		if (fmem_tmp->file_descripter == file_desc) {
@@ -3045,15 +3126,52 @@ ret_t amm_do_file_back_handling(vemva_t vaddr, struct file_desc *file_desc,
 
 	return ret;
 
-err_update_desc:
-	VEOS_DEBUG("freeing:pg arr(%p) map desc(%p)",
-					map_desc->pg_array, map_desc);
-	free(map_desc->pg_array);
-	free(map_desc);
-err_map_desc:
-	VEOS_DEBUG("freeing map attri(%p)", map_attri);
-	free(map_attri);
-err_attri:
+err_clean:
+	VEOS_DEBUG("freeing:pg arr map desc");
+	uint64_t idx = 0;
+	list_for_each_entry_safe(attri_entry, attri_entry_n, &attri_list, list) {
+		for (idx = 0; idx < attri_entry->page_count; idx++) {
+			if (attri_entry->new_pgno != NULL){
+				if (0 < attri_entry->new_pgno[idx]) {
+					pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+						LOCK, "Fail to acquire ve page lock");
+					if (veos_free_page(attri_entry->new_pgno[idx]))
+						VEOS_DEBUG("fail to free page number 0x%lx",
+							attri_entry->new_pgno[idx]);
+					pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+						UNLOCK, "Fail to release ve page lock");
+					if (file_desc->in_mem_pages)
+						file_desc->in_mem_pages--;
+					if(attri_entry->map_desc_pgno > 0){
+						attri_entry->map_desc_pgno[idx] = -1;
+					}
+				}
+			}
+
+		}
+		if(attri_entry->create_map_desc != NULL){
+			if(attri_entry->add_mapping_desc == 1){
+				pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+						LOCK, "Fail to acquire ve page lock");
+				del_mapping_desc(file_desc, attri_entry->create_map_desc);
+				pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
+						UNLOCK, "Fail to release ve page lock");
+			}
+			free(attri_entry->create_map_desc->pg_array);
+			free(attri_entry->create_map_desc);
+		}
+		if(attri_entry->new_pgno != NULL){
+			free(attri_entry->new_pgno);
+		}
+		if(attri_entry->get_pgno != NULL){
+			free(attri_entry->get_pgno);
+		}
+		if(attri_entry->map_attri != NULL){
+			free(attri_entry->map_attri);
+		}
+		list_del(&attri_entry->list);
+		free(attri_entry);
+	}
 	free(fmem);
 err_exit:
 	VEOS_TRACE("returned");
@@ -3247,7 +3365,6 @@ struct mapping_desc *init_mapping_desc(
 		(((off_e - off_s) + 1), sizeof(pgno_t));
 	if (NULL == map_desc->pg_array) {
 		VEOS_CRIT("failed to allocate page map");
-		list_del(&map_desc->mapping_list);
 		free(map_desc);
 		return NULL;
 	}
@@ -3258,7 +3375,6 @@ struct mapping_desc *init_mapping_desc(
 	memset(map_desc->pg_array, -1,
 		((off_e - off_s) + 1) * sizeof(pgno_t));
 
-	init_page_array(map_desc, map_attri);
 	VEOS_TRACE("returned");
 	return map_desc;
 }
@@ -3992,86 +4108,6 @@ unshare_vemva:
 }
 
 /**
-* @brief This function initialize the page array within  mapping descriptor.
-*
-* @param[in] map_desc map_desc mapping descriptor page array of which has to be updated.
-* @param[in] map_attri map_attri Pointer to struct mapping attributes.
-*/
-void init_page_array(struct mapping_desc *map_desc,
-		struct mapping_attri *map_attri)
-{
-	struct list_head *list_tmp = NULL;
-	struct list_head *list_start = NULL;
-	struct list_head *list_end = NULL;
-	struct mapping_desc *map_desc_tmp = NULL;
-	int64_t cur_off_start = 0;
-	int64_t cur_off_end = 0;
-	int64_t off_s = 0;
-	int64_t off_e = 0;
-	pgno_t *cur_pgno = NULL;
-	pgno_t *pgno = NULL;
-	int64_t idx = 0, count = 0;
-
-	VEOS_TRACE("invoked");
-
-	VEOS_DEBUG("map merge [start(%p) - end(%p)\n"
-			"map off range [%ld -- %ld]\n"
-			"insert after(%p)",
-			map_attri->merge_start,
-			map_attri->merge_end,
-			map_attri->offset_start,
-			map_attri->offset_end,
-			map_attri->insert_after);
-
-	pgno = map_desc->pg_array;
-
-	list_start = map_attri->merge_start;
-	list_end = map_attri->merge_end;
-	off_s = map_attri->offset_start;
-	off_e = map_attri->offset_end;
-
-	if ((!list_start) || (!list_end)) {
-		for (idx = off_s; idx <= off_e;
-				idx++)
-			pgno[idx-off_s] = -1;
-		return;
-	}
-
-	idx = 0;
-	list_tmp = list_start;
-	count = off_e - off_s;
-
-	/*Traverse from merge start to merge end*/
-	while (idx <= count) {
-		map_desc_tmp = list_entry(list_tmp,
-				struct mapping_desc, mapping_list);
-		cur_off_start = map_desc_tmp->offset_start;
-		cur_off_end = map_desc_tmp->offset_end;
-		cur_pgno = map_desc_tmp->pg_array;
-
-		while ((off_s + idx) <= cur_off_end) {
-			if ((off_s + idx) < cur_off_start)
-				pgno[idx] = -1;
-			else
-				pgno[idx] =
-					cur_pgno[idx -
-					(cur_off_start - off_s)];
-
-			idx++;
-		}
-
-		if (list_tmp == list_end) {
-			while (idx <= count) {
-				pgno[idx] = -1;
-				idx++;
-			}
-		}
-		list_tmp = list_tmp->next;
-	}
-	VEOS_TRACE("returned");
-}
-
-/**
  * @brief This function remove the redundant mapping_descriptor
  *        instances left after merging.
  *
@@ -4250,12 +4286,14 @@ void dump_mapping_desc(struct mapping_desc *map_desc)
 * @param[in] file file descriptor associated with the given mapping.
 * @param[in] off_s staring offset withing file from where mapping is started.
 * @param[out] map this array will contain page number of old and newly allocated VE papes.
+* @param[out] new_pgno this array will contain page number of newly allocated VE papes.
+* @param[out] get_pgno this array will contain page number of map VE papes for amm_get_page().
 *
 * @return on success return 0 and negative of errno on failure.
 */
 ret_t update_mapping_desc(vemva_t vaddr, pgno_t *pgno,
 		uint64_t count, int pgmod, struct ve_task_struct *tsk,
-		struct file_desc *file, off_t off_s, pgno_t *map)
+		struct file_desc *file, off_t off_s, pgno_t *map, pgno_t *new_pgno, pgno_t *get_pgno)
 {
 	uint64_t idx = 0;
 	size_t pgsz = 0;
@@ -4265,7 +4303,6 @@ ret_t update_mapping_desc(vemva_t vaddr, pgno_t *pgno,
 	ssize_t tmp_size = 0;
 	ssize_t rest_size = 0;
 	ret_t ret = 0;
-	pgno_t *p_array = NULL;
 	struct ve_node_struct *vnode_info = VE_NODE(0);
 	ve_dma_hdl *dh = vnode_info->dh;
 
@@ -4310,6 +4347,7 @@ ret_t update_mapping_desc(vemva_t vaddr, pgno_t *pgno,
 			 */
 			pgno[idx] = map[idx];
 			pg_no[idx] = map[idx];
+			new_pgno[idx] = map[idx];
 			/* Update Number of In memory pages */
 			file->in_mem_pages++;
 			VEOS_DEBUG("index(%ld), pgno(%ld) and %ld in"
@@ -4353,24 +4391,13 @@ ret_t update_mapping_desc(vemva_t vaddr, pgno_t *pgno,
 		}
 	}
 
-	p_array = calloc((count + 1), (sizeof(uint64_t)));
-	if (NULL == p_array) {
-		VEOS_CRIT("failed to allocate page map to hold %ld pages",
-				(count+1));
-		ret = -ENOMEM;
-		goto err;
-	}
-
 	/*Convert page number into physical address*/
 	for (idx = 0; idx < count; idx++) {
-		p_array[idx] = pbaddr(map[idx], PG_2M);
+		get_pgno[idx] = pbaddr(map[idx], PG_2M);
 		VEOS_DEBUG("Page is :%ld allocated for vemva :%lx",
 				map[idx], vaddr);
 	}
 
-	/*Increament the ref count of all newly allocate pages*/
-	amm_get_page(p_array);
-	free(p_array);
 	return ret;
 err:
 	for (idx = 0; idx < count; idx++) {
@@ -4385,6 +4412,7 @@ err:
 				UNLOCK, "Fail to release ve page lock");
 			if (file->in_mem_pages)
 				file->in_mem_pages--;
+			new_pgno[idx] = -1;
 		}
 	}
 	return ret;
@@ -4461,21 +4489,17 @@ int stat_cmp(struct file_desc *filed, struct file_stat *file, flag_t flags, int 
 *
 * @param[in] file_desc_t reference to the file descriptor.
 * @param[in] offset_start start offset within file.
-* @param[in] off_e end offset within file.
+* @param[in] offset_end end offset within file.
 *
 * @return on success returns mapping attribute and null on failure.
 */
 struct mapping_attri *collect_map_attri(struct file_desc *file_desc_t,
-		off_t offset_start, off_t off_e)
+		off_t offset_start, off_t offset_end)
 {
 	struct list_head *temp_head = NULL;
-	struct list_head *insert_after = NULL;
-	struct list_head *merge_start = NULL;
-	struct list_head *merge_end = NULL;
 	struct mapping_attri *map_attri = NULL;
 	struct mapping_desc *fmap_desc = NULL;
-	struct mapping_desc *start_merge_desc = NULL;
-	struct mapping_desc *end_merge_desc = NULL;
+	struct mapping_desc *use_map_desc = NULL;
 	off_t cur_offset_start = 0;
 	off_t cur_offset_end = 0;
 	off_t new_offset_start = 0;
@@ -4485,12 +4509,14 @@ struct mapping_attri *collect_map_attri(struct file_desc *file_desc_t,
 	/*
 	 * Traverse through the existing mapping list.
 	 * Here we will compare the offest start and end of the new mapping
-	 * with offset start and end of existing mappings in the list and
-	 * will decide which of the existing mappings will be merged with
-	 * the new mapping.
+	 * with offset start and end of existing mappings in the list
+	 * and will check if there is an existing matching mappings
 	 */
 	VEOS_TRACE("iterating file(%p) maps for s_off(%ld) e_off(%ld)",
-			file_desc_t, offset_start, off_e);
+			file_desc_t, offset_start, offset_end);
+
+	new_offset_start = offset_start;
+	new_offset_end = offset_end;
 	list_for_each(temp_head, &file_desc_t->mapping_list) {
 		fmap_desc = list_entry(temp_head,
 				struct mapping_desc, mapping_list);
@@ -4502,76 +4528,37 @@ struct mapping_attri *collect_map_attri(struct file_desc *file_desc_t,
 
 		cur_offset_start = fmap_desc->offset_start;
 		cur_offset_end = fmap_desc->offset_end;
-		if (!merge_start) {
-			VEOS_TRACE("valid merge start(%p)",
-					merge_start);
 
-			VEOS_TRACE("start off(%ld) and curr end off(%ld)",
+		VEOS_TRACE("start off(%ld) and curr end off(%ld)",
 					offset_start, cur_offset_end);
 
-			if (offset_start <= cur_offset_end + 1) {
-				merge_start = temp_head;
-				if (off_e <= cur_offset_end) {
-					if (off_e < (cur_offset_start - 1)) {
-						merge_start = NULL;
-						merge_end = NULL;
-						insert_after = temp_head->prev;
-					} else {
-						merge_end = temp_head;
-					}
+		if (offset_end >= cur_offset_start) {
+			if (offset_start >= cur_offset_start) {
+				if (offset_start <= cur_offset_end) {
+					/* overlapping with existing
+					 * Reuse existing mapping_desc
+					 */
+					use_map_desc = fmap_desc;
+					new_offset_start = cur_offset_start;
+					new_offset_end = cur_offset_end;
 					break;
 				}
-			}
-		} else if (!merge_end) {
-			VEOS_TRACE("valid merge end(%p)",
-					merge_end);
-			VEOS_TRACE("end off(%ld) and curr end off(%ld)",
-					off_e, cur_offset_end);
-			if (off_e <= cur_offset_end) {
-				if (off_e < cur_offset_start - 1)
-					merge_end = temp_head->prev;
-				else
-					merge_end = temp_head;
+			}else{
+				/* Part of the back overlaps with the existing
+				 * Cut out parts that don't overlap for new mapping_desc
+				 */
+				new_offset_start = offset_start;
+				new_offset_end = cur_offset_start -1;
 				break;
 			}
 		}
 	}
 	VEOS_TRACE("iterating file maps end");
-
-	VEOS_DEBUG("merge_start(%p) and merge_end(%p)",
-			merge_start, merge_end);
-
-	if (merge_start && (!merge_end))
-		merge_end = merge_start;
-
-	VEOS_DEBUG("merge_start(%p) and merge_end(%p)",
-			merge_start, merge_end);
-
-	/*We must have merge_start and merge_end by now*/
-	if ((!merge_start) && (!merge_end)) {
-		new_offset_start = offset_start;
-		new_offset_end = off_e;
-	} else {
-		start_merge_desc = list_entry(merge_start, struct mapping_desc,
-				mapping_list);
-		end_merge_desc = list_entry(merge_end, struct mapping_desc,
-				mapping_list);
-		cur_offset_start = start_merge_desc->offset_start;
-		cur_offset_end = end_merge_desc->offset_end;
-
-		new_offset_start = cur_offset_start < offset_start ?
-			cur_offset_start : offset_start;
-		new_offset_end = cur_offset_end > off_e ?
-			cur_offset_end : off_e;
-	}
-
-	VEOS_DEBUG("merge_start(%p) and merge_end(%p)",
-			merge_start, merge_end);
-
+	VEOS_DEBUG("reuse map_desc(%p)", use_map_desc);
 	VEOS_DEBUG("offset start(%ld) and new start(%ld)",
 			offset_start, new_offset_start);
 	VEOS_DEBUG("offset end(%ld) and new end(%ld)",
-			off_e, new_offset_end);
+			offset_end, new_offset_end);
 
 	map_attri = calloc(1, sizeof(struct mapping_attri));
 	if (NULL == map_attri) {
@@ -4579,20 +4566,15 @@ struct mapping_attri *collect_map_attri(struct file_desc *file_desc_t,
 		goto map_attr_end;
 	}
 
-	map_attri->merge_start = merge_start;
-	map_attri->merge_end = merge_end;
+	map_attri->reuse_map_desc = use_map_desc;
 	map_attri->offset_start = new_offset_start;
 	map_attri->offset_end = new_offset_end;
-	map_attri->insert_after = insert_after;
 
-	VEOS_DEBUG("map merge [start(%p) - end(%p)\n"
-			"map off range [%ld -- %ld]\n"
-			"insert after(%p)",
-			map_attri->merge_start,
-			map_attri->merge_end,
+	VEOS_DEBUG("map reuse [(%p)\n"
+			"map off range [%ld -- %ld]\n",
+			map_attri->reuse_map_desc,
 			map_attri->offset_start,
-			map_attri->offset_end,
-			map_attri->insert_after);
+			map_attri->offset_end);
 
 	/* We Must have offset_start and offset end of the
 	 * new descriptor till Now
@@ -4613,23 +4595,41 @@ void add_mapping_desc(struct file_desc *file_desc,
 		struct mapping_desc *map_desc,
 		struct mapping_attri *map_attri)
 {
-	struct list_head *merge_start = NULL;
-	struct list_head *merge_end = NULL;
-	struct list_head *insert_after = NULL;
+	int insert_flag=0;
+	struct list_head *temp_head = NULL;
+	struct mapping_desc *fmap_desc = NULL;
 
 	VEOS_TRACE("invoked");
-	merge_start = map_attri->merge_start;
-	merge_end = map_attri->merge_end;
-	insert_after = map_attri->insert_after;
 
-	if ((merge_start) && (merge_end)) {
-		insert_after = free_redundant_list(merge_start, merge_end);
-		list_add(&map_desc->mapping_list, insert_after);
-	} else if (insert_after) {
-		list_add(&map_desc->mapping_list, insert_after);
-	} else {
+	list_for_each(temp_head, &file_desc->mapping_list) {
+		fmap_desc = list_entry(temp_head,
+                                struct mapping_desc, mapping_list);
+		if (map_attri->offset_start < fmap_desc->offset_start) {
+			list_add(&map_desc->mapping_list, temp_head->prev);
+			insert_flag=1;
+			break;
+		}
+	}
+	if(insert_flag == 0){
 		list_add_tail(&map_desc->mapping_list,
 				&file_desc->mapping_list);
+	}
+
+	VEOS_TRACE("returned");
+}
+
+void del_mapping_desc(struct file_desc *file_desc,
+		struct mapping_desc *map_desc)
+{
+	struct mapping_desc *mapping = NULL, *tmp_map = NULL;
+
+	VEOS_TRACE("invoked");
+
+	list_for_each_entry_safe(mapping, tmp_map,
+			&file_desc->mapping_list, mapping_list) {
+		if (mapping == map_desc) {
+			list_del(&mapping->mapping_list);
+		}
 	}
 
 	VEOS_TRACE("returned");

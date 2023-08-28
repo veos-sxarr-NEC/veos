@@ -164,9 +164,9 @@ ve1_pps_allocate_new_dmaatb_dir(struct ve_task_struct *tsk)
 		pgmod = ps_getpgsz(&(tsk_p_ve_mm_dmaatb->dir[old_dir]));
 		ps = ps_getps(&(tsk_p_ve_mm_dmaatb->dir[old_dir]), pgmod);
 		if (pgmod == PG_2M) {
-			vehva = (ps << ps_shft) | (ent << PSSHFT);
+			vehva = (ps << ps_shft) | (pbaddr_l(ent));
 		} else {
-			vehva = (ps << ps_shft_h) | (ent << PSSHFT_H);
+			vehva = (ps << ps_shft_h) | (pbaddr_h(ent));
 		}
 		PPS_DEBUG(cat_os_pps, "Picked VEHVA : 0x%lx", vehva);
 		pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, LOCK,
