@@ -2043,6 +2043,7 @@ hndl_return:
  *
  * @param[in] psm_sigval sigval coming from start timer function
  */
+
 void psm_sched_interval_handler(union sigval psm_sigval)
 {
 	int ret = -1;
@@ -2051,6 +2052,10 @@ void psm_sched_interval_handler(union sigval psm_sigval)
 	struct ve_core_struct *p_ve_core = NULL;
 	struct ve_task_struct *ve_task_list_head = NULL;
 	struct ve_task_struct *temp = NULL;
+	struct list_head get_task_list;
+	struct task_entry *task_entry;
+	struct task_entry *task_entry_n = NULL;
+
 	static struct timeval now_tv = {0}, prev_check_tv = {0};
 	static struct timeval prev_check_tv_pmc = {0};
 	bool log_power_throttling = false;
@@ -2140,6 +2145,8 @@ void psm_sched_interval_handler(union sigval psm_sigval)
 		psm_find_sched_new_task_on_core(p_ve_core,
 						true, false);
 		if(pmc_overflow_check == true) {
+			INIT_LIST_HEAD(&get_task_list);
+
 			VEOS_TRACE("PMC Checking Initiated");
 			pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), WRLOCK,
 					"Failed to aquire ve core lock");
@@ -2152,15 +2159,29 @@ void psm_sched_interval_handler(union sigval psm_sigval)
 			temp = ve_task_list_head;
 			do {
 				if(temp->exec_time > 0) {
-					(*_veos_arch_ops->arch_psm_save_performance_registers)
-						(temp);
-					(*_veos_arch_ops->arch_psm_update_pmc_check_overflow)
-						(temp);
+					task_entry = malloc(sizeof(struct task_entry));
+					if(task_entry == NULL){
+						VEOS_ERROR("failed to alloc for task entry");
+					}else{
+						if(!get_ve_task_struct(temp)){
+							task_entry->task = temp;
+							list_add(&task_entry->list, &get_task_list);
+							(*_veos_arch_ops->arch_psm_save_performance_registers)
+								(temp);
+							(*_veos_arch_ops->arch_psm_update_pmc_check_overflow)
+								(temp);
+						}
+					}
 				}
 				temp = temp->next;
 			} while (temp != ve_task_list_head);
 			pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock), UNLOCK,
 					"Failed to release ve core lock");
+			list_for_each_entry_safe(task_entry, task_entry_n, &get_task_list, list) {
+				put_ve_task_struct(task_entry->task);
+				list_del(&task_entry->list);
+				free(task_entry);
+			}
 		}
 	}
 	pthread_rwlock_lock_unlock(&(veos_scheduler_lock),UNLOCK,

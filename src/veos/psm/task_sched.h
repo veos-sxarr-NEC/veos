@@ -87,6 +87,11 @@ extern int64_t power_throttle_log_interval;
 /* To record the first power throttling event occured in any VE core */
 extern bool first_power_throttling_occured;
 
+struct task_entry{
+	struct list_head list;
+	struct ve_task_struct *task;
+};
+
 int psm_alloc_udma_context_region(struct ve_task_struct *);
 int psm_free_udma_context_region(struct ve_task_struct *);
 bool psm_compare_jid(struct ve_task_struct *, struct ve_task_struct *);
