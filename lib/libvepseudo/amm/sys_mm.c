@@ -522,9 +522,12 @@ void modify_new_code(unsigned char *org_code_mem, unsigned char **o_mod_code_mem
 	case 0xe3: // VFNMAD
 	case 0xf3: // VFNMSB
 		memcpy(mod_code_mem,org_code_mem,8);
-		if ((org_code_mem[0] != org_code_mem[1]) & (org_code_mem[0] != org_code_mem[2]) & (org_code_mem[0] != org_code_mem[3]) & (org_code_mem[1] != org_code_mem[2]) & (org_code_mem[1] != org_code_mem[3]) & (org_code_mem[2] != org_code_mem[3])){
-			mod_code_mem += 8; n_addr += 8;
-			mod_code_mem[0]=0x00;mod_code_mem[1]=org_code_mem[3];mod_code_mem[2]=org_code_mem[3];mod_code_mem[3]=org_code_mem[3];mod_code_mem[4]=0x00;mod_code_mem[5]=0x00;mod_code_mem[6]=0x00;mod_code_mem[7]=0xc5;
+		/* cs == 0 && cs2 == 0 (use 4 vector registers) */
+		if (!(org_code_mem[6] & 0x10) && !(org_code_mem[6] & 0x20)){
+			if ((org_code_mem[0] != org_code_mem[1]) & (org_code_mem[0] != org_code_mem[2]) & (org_code_mem[0] != org_code_mem[3]) & (org_code_mem[1] != org_code_mem[2]) & (org_code_mem[1] != org_code_mem[3]) & (org_code_mem[2] != org_code_mem[3])){
+				mod_code_mem += 8; n_addr += 8;
+				mod_code_mem[0]=0x00;mod_code_mem[1]=org_code_mem[3];mod_code_mem[2]=org_code_mem[3];mod_code_mem[3]=org_code_mem[3];mod_code_mem[4]=0x00;mod_code_mem[5]=0x00;mod_code_mem[6]=0x00;mod_code_mem[7]=0xc5;
+			}
 		}
 		break;
 	case 0x08: // BSIC
@@ -1038,9 +1041,12 @@ int64_t code_modify_size(int fd)
 		case 0xf2: // VFMSB
 		case 0xe3: // VFNMAD
 		case 0xf3: // VFNMSB
-			if ((org_code_mem[0] != org_code_mem[1]) & (org_code_mem[0] != org_code_mem[2]) & (org_code_mem[0] != org_code_mem[3]) & (org_code_mem[1] != org_code_mem[2]) & (org_code_mem[1] != org_code_mem[3]) & (org_code_mem[2] != org_code_mem[3])){
-				n_addr += 8;
-				vor_num++;
+			/* cs == 0 && cs2 == 0 (use 4 vector registers) */
+			if (!(org_code_mem[6] & 0x10) && !(org_code_mem[6] & 0x20)){
+				if ((org_code_mem[0] != org_code_mem[1]) & (org_code_mem[0] != org_code_mem[2]) & (org_code_mem[0] != org_code_mem[3]) & (org_code_mem[1] != org_code_mem[2]) & (org_code_mem[1] != org_code_mem[3]) & (org_code_mem[2] != org_code_mem[3])){
+					n_addr += 8;
+					vor_num++;
+				}
 			}
 			break;
 		case 0x08: // BSIC

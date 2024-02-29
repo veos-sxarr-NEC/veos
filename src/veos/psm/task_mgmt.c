@@ -250,7 +250,6 @@ hndl_return2:
 	}
 	/* Release core lock */
 hndl_return:
-	put_ve_task_struct(tsk);
 	VEOS_TRACE("Exiting");
 	return retval;
 }
@@ -4443,6 +4442,8 @@ int psm_handle_set_reg_req(struct ve_task_struct *tsk, ve_usr_reg_name_t regid,
 		retval = (*_veos_arch_ops->arch_psm_fetch_performance_registers)(tsk, &regids, &pmc);
 		if (0 > retval) {
 			VEOS_ERROR("failed to get task's performance registers");
+			pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
+				UNLOCK, "Failed to release core's write lock");
 			return retval;
 		}
 	}
@@ -4929,12 +4930,18 @@ void get_performance_register_for_proginf(struct ve_task_struct *tsk,
 				"group leader PID : %d", group_leader->pid);
 		pthread_rwlock_lock_unlock(&(group_leader->p_ve_core->ve_core_lock),
 			WRLOCK, "Failed to acquire task's core write lock");
-		(*_veos_arch_ops->arch_psm_save_performance_registers)(group_leader);
-		(*_veos_arch_ops->arch_psm_update_pmc_check_overflow)(group_leader);
-		(*_veos_arch_ops->arch_psm_get_performance_register_info)
-			(group_leader, clock_val_mhz, proginf);
-		pthread_rwlock_lock_unlock(&(group_leader->p_ve_core->ve_core_lock),
-			UNLOCK, "Failed to release task's core write lock");
+		if(!get_ve_task_struct(group_leader)){
+			(*_veos_arch_ops->arch_psm_save_performance_registers)(group_leader);
+			(*_veos_arch_ops->arch_psm_update_pmc_check_overflow)(group_leader);
+			(*_veos_arch_ops->arch_psm_get_performance_register_info)
+				(group_leader, clock_val_mhz, proginf);
+			pthread_rwlock_lock_unlock(&(group_leader->p_ve_core->ve_core_lock),
+				UNLOCK, "Failed to release task's core write lock");
+			put_ve_task_struct(group_leader);
+		}else{
+			pthread_rwlock_lock_unlock(&(group_leader->p_ve_core->ve_core_lock),
+				UNLOCK, "Failed to release task's core write lock");
+		}
 	}
 	/* To fetch the accounting information for proginf */
 	if (!list_empty(&group_leader->thread_group)) {
@@ -4945,12 +4952,18 @@ void get_performance_register_for_proginf(struct ve_task_struct *tsk,
 			VEOS_DEBUG("Get the proginf information for task: %d", tmp_tsk->pid);
 			pthread_rwlock_lock_unlock(&(tmp_tsk->p_ve_core->ve_core_lock),
 				WRLOCK, "Failed to acquire task's core write lock");
-			(*_veos_arch_ops->arch_psm_save_performance_registers)(tmp_tsk);
-			(*_veos_arch_ops->arch_psm_update_pmc_check_overflow)(tmp_tsk);
-			(*_veos_arch_ops->arch_psm_get_performance_register_info)
+			if(!get_ve_task_struct(tmp_tsk)){
+				(*_veos_arch_ops->arch_psm_save_performance_registers)(tmp_tsk);
+				(*_veos_arch_ops->arch_psm_update_pmc_check_overflow)(tmp_tsk);
+				(*_veos_arch_ops->arch_psm_get_performance_register_info)
 						(tmp_tsk, clock_val_mhz, proginf);
-			pthread_rwlock_lock_unlock(&(tmp_tsk->p_ve_core->ve_core_lock),
-				UNLOCK, "Failed to release task's core write lock");
+				pthread_rwlock_lock_unlock(&(tmp_tsk->p_ve_core->ve_core_lock),
+					UNLOCK, "Failed to release task's core write lock");
+				put_ve_task_struct(tmp_tsk);
+			}else{
+				pthread_rwlock_lock_unlock(&(tmp_tsk->p_ve_core->ve_core_lock),
+					UNLOCK, "Failed to release task's core write lock");
+			}
 		}
 	}
 	(*_veos_arch_ops->arch_psm_get_performance_of_terminated_thread)

@@ -2043,7 +2043,6 @@ hndl_return:
  *
  * @param[in] psm_sigval sigval coming from start timer function
  */
-
 void psm_sched_interval_handler(union sigval psm_sigval)
 {
 	int ret = -1;
@@ -2239,6 +2238,10 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 	struct ve_core_struct *p_another_core;
 	struct ve_core_struct *p_given_core;
 
+	struct list_head get_task_list;
+	struct task_entry *task_entry;
+	struct task_entry *task_entry_n = NULL;
+
 	VEOS_TRACE("Entering");
 
 	p_given_core = VE_CORE(ve_node_id, ve_core_id);
@@ -2256,6 +2259,8 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 		return NULL;
 	}
 
+
+	INIT_LIST_HEAD(&get_task_list);
 
 	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores;
 			core_loop++) {
@@ -2340,27 +2345,36 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 
 		/* Check wether curr_ve_task->next should be rabalanced. */
 		while (task_to_rebalance != loop_start) {
-			if (CPU_ISSET(ve_core_id,
+			task_entry = malloc(sizeof(struct task_entry));
+			if(task_entry == NULL){
+				VEOS_ERROR("failed to alloc for task entry");
+			}else{
+				if (CPU_ISSET(ve_core_id,
 					&(task_to_rebalance->cpus_allowed)) &&
-				!(get_ve_task_struct(task_to_rebalance))) {
-				pthread_mutex_lock_unlock(
-					&task_to_rebalance->ve_task_lock, LOCK,
-					"Failed to acquire ve_task_lock");
-				state = task_to_rebalance->ve_task_state;
-				if (((state == WAIT) ||
-					(state == RUNNING)) &&
-					((task_to_rebalance->ve_task_worker_belongs == NULL) &&
-					!(task_to_rebalance->ve_task_worker_belongs_chg))) {
-					rebalance_flag = 1;
+					!(get_ve_task_struct(task_to_rebalance))) {
 					pthread_mutex_lock_unlock(
-						&task_to_rebalance->ve_task_lock, UNLOCK,
-						"Failed to release ve_task_lock");
-					break;
-				} else {
-					pthread_mutex_lock_unlock(
-						&task_to_rebalance->ve_task_lock, UNLOCK,
-						"Failed to release ve_task_lock");
-					put_ve_task_struct(task_to_rebalance);
+						&task_to_rebalance->ve_task_lock, LOCK,
+						"Failed to acquire ve_task_lock");
+					state = task_to_rebalance->ve_task_state;
+					if (((state == WAIT) ||
+						(state == RUNNING)) &&
+						((task_to_rebalance->ve_task_worker_belongs == NULL) &&
+						!(task_to_rebalance->ve_task_worker_belongs_chg))) {
+						rebalance_flag = 1;
+						pthread_mutex_lock_unlock(
+							&task_to_rebalance->ve_task_lock, UNLOCK,
+							"Failed to release ve_task_lock");
+						free(task_entry);
+						break;
+					} else {
+						pthread_mutex_lock_unlock(
+							&task_to_rebalance->ve_task_lock, UNLOCK,
+							"Failed to release ve_task_lock");
+						task_entry->task = task_to_rebalance;
+						list_add(&task_entry->list, &get_task_list);
+					}
+				}else{
+					free(task_entry);
 				}
 			}
 			task_to_rebalance = task_to_rebalance->next;
@@ -2403,6 +2417,11 @@ struct ve_task_struct *find_and_remove_task_to_rebalance(
 		task_to_rebalance = NULL;
 		pthread_rwlock_lock_unlock(&(p_another_core->ve_core_lock),
 				UNLOCK, "Failed to release core's write lock");
+	}
+	list_for_each_entry_safe(task_entry, task_entry_n, &get_task_list, list) {
+		put_ve_task_struct(task_entry->task);
+		list_del(&task_entry->list);
+		free(task_entry);
 	}
 	/* if task_to_rebalance is not NULL, ve_task_lock is still acquired */
 	VEOS_TRACE("Exiting");
@@ -2718,27 +2737,21 @@ void psm_find_parent_of_ve_worker(struct ve_task_struct *mv_task)
 				pthread_mutex_lock_unlock(
 					&(mv_to->ve_task_lock),UNLOCK,
 					"Failed to release task lock");
-				pthread_mutex_lock_unlock(
-					&group_leader->p_ve_mm->
-					thread_group_mm_lock,UNLOCK,
-					"Failed to release thread-group-mm-lock");
-				pthread_rwlock_lock_unlock(&(VE_CORE(0, mv_to->core_id)->ve_core_lock),
-					RDLOCK, "Failed to acquire Core %d read lock",
-					mv_to->core_id);
 				if(!(get_ve_task_struct(mv_to))){
-					pthread_rwlock_lock_unlock(&(VE_CORE(0,mv_to->core_id)->ve_core_lock),
-						UNLOCK,
-						"Failed to release Core %d read lock",
-						mv_to->core_id);
+					pthread_mutex_lock_unlock(
+						&group_leader->p_ve_mm->
+						thread_group_mm_lock,UNLOCK,
+						"Failed to release thread-group-mm-lock");
 					psm_change_parent_ve_worker(mv_task,mv_to);
 
 					put_ve_task_struct(mv_to);
 					goto hndl_return;
 				}
-				pthread_rwlock_lock_unlock(&(VE_CORE(0, mv_to->core_id)->ve_core_lock),
-					UNLOCK, "Failed to release Core %d read lock",
-					mv_to->core_id);
-					goto hndl_return;
+				pthread_mutex_lock_unlock(
+					&group_leader->p_ve_mm->
+					thread_group_mm_lock,UNLOCK,
+					"Failed to release thread-group-mm-lock");
+				goto hndl_return;
 			}
 			pthread_mutex_lock_unlock(
 				&(mv_to->ve_task_lock),

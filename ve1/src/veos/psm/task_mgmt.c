@@ -346,13 +346,6 @@ int ve1_psm_fetch_performance_registers(struct ve_task_struct *tsk, int **regids
 	int tmp_regids[PMC_REG_VE1] = {0};
 	uint64_t tmp_pmc[PMC_REG_VE1] = {0};
 
-	retval = get_ve_task_struct(tsk);
-	if (0 > retval) {
-		VEOS_ERROR("failed to get task reference");
-		retval = -ESRCH;
-		goto handle_return;
-	}
-
 	for (int i = 0; i < PMC_REG_VE1; i++)
 		tmp_regids[i] = VE_USR_PMC00 + i;
 	retval = psm_get_regval(tsk, PMC_REG_VE1, tmp_regids, tmp_pmc);
@@ -917,13 +910,6 @@ int ve1_psm_save_performance_registers(struct ve_task_struct *tsk)
 	ve_reg_t tmp_pmc[PMC_REG_VE1+1] = {0};
 	ve_reg_t pmmr_mode = 0x00, pmmr_mode_val = 0x00;
 	ve1_core_user_reg_t *user_regs = tsk->p_ve_thread->arch_user_regs;
-
-	retval = get_ve_task_struct(tsk);
-	if (0 > retval) {
-		VEOS_ERROR("failed to get task reference");
-		retval = -ESRCH;
-		goto handle_return;
-	}
 
 	for (i = 0; i < 16; i++)
 		tmp_regids[i] = VE_USR_PMC00 + i;

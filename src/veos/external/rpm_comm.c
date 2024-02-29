@@ -642,9 +642,8 @@ int rpm_handle_get_regvals_req(struct veos_thread_arg *pti)
 	}
 	if (tsk->uid != pti->cred.uid && pti->cred.uid != 0) {
 		VEOS_DEBUG("VE regvals access not permitted");
-		put_ve_task_struct(tsk);
 		retval = -EPERM;
-		goto hndl_return;
+		goto hndl_return_find_tsk;
 	}
 
 	rpm_pseudo_msg = ((PseudoVeosMessage *)pti->pseudo_proc_msg)->
@@ -654,7 +653,7 @@ int rpm_handle_get_regvals_req(struct veos_thread_arg *pti)
 		VEOS_ERROR("illegal value for numregs: %d", numregs);
 		retval = -EINVAL;
 		numregs = 0;
-		goto hndl_return;
+		goto hndl_return_find_tsk;
 	}
 
 	memcpy(&regids[0], rpm_pseudo_msg.data, rpm_pseudo_msg.len);
@@ -668,13 +667,18 @@ int rpm_handle_get_regvals_req(struct veos_thread_arg *pti)
 		VEOS_ERROR("Populating information failed for PID: %d",
 				pid);
 		VEOS_DEBUG("PSM populate regvals returned %d", retval);
-		goto hndl_return;
+		pthread_rwlock_lock_unlock(&(tsk->p_ve_core->ve_core_lock), UNLOCK,
+			"Failed to release Core %d write lock",
+			tsk->p_ve_core->core_num);
+		goto hndl_return_find_tsk;
 	}
 	pthread_rwlock_lock_unlock(&(tsk->p_ve_core->ve_core_lock), UNLOCK,
 			"Failed to release Core %d write lock",
 			tsk->p_ve_core->core_num);
 
 	retval = 0;
+hndl_return_find_tsk:
+	put_ve_task_struct(tsk);
 hndl_return:
 	/* Send the response back to RPM command */
 
