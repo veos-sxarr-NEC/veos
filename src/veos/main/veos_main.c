@@ -1129,6 +1129,8 @@ int main(int argc, char *argv[])
 		goto hndl_termination;
 	}
 
+	VE_NODE(0)->ve_num = get_ve_node_num_from_sock_file(drv_sock_file);
+
 	if (veos_alloc_ppsbuf(pps_buf_size, pps_file_buf_size) != 0) {
 		VE_LOG(CAT_OS_CORE, LOG4C_PRIORITY_FATAL,
 				"Initializing Partial Process Swapping failed");

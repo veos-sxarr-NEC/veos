@@ -237,7 +237,7 @@ struct veos_arch_ops {
 	void (*arch_psm_reinitialize_acct)(struct ve_task_struct *);
 	uint64_t (*arch_veos_acct_size)();
 	void (*arch_psm_initialize_pmc)(struct ve_task_struct *, struct ve_task_struct *);
-	void (*arch_psm_update_pmc_check_overflow)(struct ve_task_struct *);
+	int (*arch_psm_update_pmc_check_overflow)(struct ve_task_struct *);
 	void (*arch_psm_get_performance_of_terminated_thread)(struct ve_task_struct *, struct proginf_v1 *);
 	ve_reg_t (*arch_psm_get_PMMR_on_thread_struct)(struct ve_task_struct *);
 	int (*arch_psm_save_performance_registers)(struct ve_task_struct *);

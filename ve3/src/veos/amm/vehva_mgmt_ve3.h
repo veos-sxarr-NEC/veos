@@ -13,6 +13,4 @@
 #define VEHVA_256M_START        0x100000000000  /*!< Start of 256M region*/
 #define VEHVA_256M_END          0x1fffffffffff  /*!< End of 256M region*/
 
-#define PAGE_SIZE_256MB		(256 * 1024 * 1024)
-
 #endif

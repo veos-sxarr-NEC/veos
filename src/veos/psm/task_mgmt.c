@@ -68,6 +68,8 @@
 #include "ve_swap.h"
 #include <sys/sysmacros.h>
 
+#include <sys/syslog.h>
+
 bool veos_term ;
 extern int __amm_get_sysfs_info(char *out, char *fname, size_t out_sz);
 
@@ -241,9 +243,16 @@ int psm_get_regval(struct ve_task_struct *tsk,
 hndl_return2:
 	if (core_stopped) {
 		/* Start VE core if no exception is pending */
-		if (!(exception_reg & VE_EXCEPTION))
-			psm_start_ve_core(0, core_id);
-
+		if (!(exception_reg & VE_EXCEPTION)){
+			if(tsk->atb_dirty){
+				VEOS_DEBUG("ATB is dirty, so the core "
+					"won't start:%d,%d,0x%lx,%s",
+					core_id, tsk->pid,
+					tsk->atb_dirty,__func__);
+			}else{
+				psm_start_ve_core(0, core_id);
+			}
+		}
 		pthread_mutex_lock_unlock(&tsk->p_ve_mm->
 				thread_group_mm_lock, UNLOCK,
 				"Failed to release thread-group-mm-lock");
@@ -1920,6 +1929,8 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 	uint64_t clock_val_mhz = 0;
 	char temp[LINE_MAX] = { '\0' };
 	char *endptr = NULL;
+	int ovfl_ret = 0;
+	int svpmc_ret = 0;
 
 	VEOS_TRACE("Entering");
 	if (!del_task_struct)
@@ -2119,8 +2130,16 @@ skip_wakeup:
 		psm_unassign_migrate_task(del_task_struct);
 		del_task_struct->reg_dirty = false;
 	}
-	(*_veos_arch_ops->arch_psm_save_performance_registers)(del_task_struct);
-	(*_veos_arch_ops->arch_psm_update_pmc_check_overflow)(del_task_struct);
+	svpmc_ret = (*_veos_arch_ops->arch_psm_save_performance_registers)(del_task_struct);
+	if(svpmc_ret){
+		VEOS_ERROR("Failed to save the PMC value in %s", __func__);
+		syslog(LOG_INFO, "Failed to save the PMC value while clearing the ve task");
+	}
+	ovfl_ret = (*_veos_arch_ops->arch_psm_update_pmc_check_overflow)(del_task_struct);
+	if(ovfl_ret){
+		VEOS_ERROR("The PMC value has become abnormal in %s", __func__);
+		syslog(LOG_INFO, "The PMC value has become abnormal while clearing the ve task");
+	}
 	(*_veos_arch_ops->arch_psm_get_performance_register_info)
 		(del_task_struct, clock_val_mhz, NULL);
 	/* ve_set_user_reg() may or may not be called to set PMMR register
@@ -2317,6 +2336,7 @@ void update_accounting_data(struct ve_task_struct *tsk,
 static void get_performance_register_info(struct ve_task_struct *tsk)
 {
 	int ret = 0;
+	int ovfl_ret = 0;
 	char tmp[LINE_MAX] = { '\0' };
 	char *endptr = NULL;
 	uint64_t clock_val_mhz = 0;
@@ -2335,7 +2355,11 @@ static void get_performance_register_info(struct ve_task_struct *tsk)
 			return;
         }
 	VEOS_DEBUG("Value of ClockHz = %lu", clock_val_mhz);
-	(*_veos_arch_ops->arch_psm_update_pmc_check_overflow)(tsk);
+	ovfl_ret = (*_veos_arch_ops->arch_psm_update_pmc_check_overflow)(tsk);
+	if(ovfl_ret){
+		VEOS_ERROR("The PMC value has become abnormal in %s", __func__);
+		syslog(LOG_INFO, "The PMC value has become abnormal while getting acct information");
+	}
 	(*_veos_arch_ops->arch_psm_get_performance_register_info)(tsk,
 							clock_val_mhz, NULL);
 
@@ -4423,6 +4447,7 @@ int psm_handle_set_reg_req(struct ve_task_struct *tsk, ve_usr_reg_name_t regid,
 				ve_reg_t regval, int64_t mask)
 {
 	int retval = -1;
+	int svpmc_ret = 0;
 	int core_id = -1;
 	struct ve_core_struct *p_ve_core = NULL;
 	bool sync_reg = false;
@@ -4439,6 +4464,14 @@ int psm_handle_set_reg_req(struct ve_task_struct *tsk, ve_usr_reg_name_t regid,
 	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
 			WRLOCK, "Failed to acquire core's write lock");
 	if (regid == VE_USR_PMMR) {
+		svpmc_ret = (*_veos_arch_ops->arch_psm_save_performance_registers)(tsk);
+		if(svpmc_ret){
+			VEOS_ERROR("Failed to save the PMC value in %s", __func__);
+			syslog(LOG_INFO, "Failed to save the PMC value while setting the register value");
+			pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
+				UNLOCK, "Failed to release core's write lock");
+			return retval;
+		}
 		retval = (*_veos_arch_ops->arch_psm_fetch_performance_registers)(tsk, &regids, &pmc);
 		if (0 > retval) {
 			VEOS_ERROR("failed to get task's performance registers");
@@ -4893,6 +4926,8 @@ void get_performance_register_for_proginf(struct ve_task_struct *tsk,
 						struct proginf_v1 *proginf)
 {
 	int ret = 0;
+	int ovfl_ret = 0;
+	int svpmc_ret = 0;
 	char tmp[LINE_MAX] = { '\0' };
 	char *endptr = NULL;
 	uint64_t clock_val_mhz = 0;
@@ -4931,8 +4966,16 @@ void get_performance_register_for_proginf(struct ve_task_struct *tsk,
 		pthread_rwlock_lock_unlock(&(group_leader->p_ve_core->ve_core_lock),
 			WRLOCK, "Failed to acquire task's core write lock");
 		if(!get_ve_task_struct(group_leader)){
-			(*_veos_arch_ops->arch_psm_save_performance_registers)(group_leader);
-			(*_veos_arch_ops->arch_psm_update_pmc_check_overflow)(group_leader);
+			svpmc_ret = (*_veos_arch_ops->arch_psm_save_performance_registers)(group_leader);
+			if(svpmc_ret){
+				VEOS_ERROR("Failed to save the PMC value in %s", __func__);
+				syslog(LOG_INFO, "Failed to save the PMC value while getting proginf");
+			}
+			ovfl_ret=(*_veos_arch_ops->arch_psm_update_pmc_check_overflow)(group_leader);
+			if(ovfl_ret){
+				VEOS_ERROR("The PMC value has become abnormal in %s", __func__);
+				syslog(LOG_INFO, "The PMC value has become abnormal while getting proginf");
+			}
 			(*_veos_arch_ops->arch_psm_get_performance_register_info)
 				(group_leader, clock_val_mhz, proginf);
 			pthread_rwlock_lock_unlock(&(group_leader->p_ve_core->ve_core_lock),
@@ -4953,8 +4996,16 @@ void get_performance_register_for_proginf(struct ve_task_struct *tsk,
 			pthread_rwlock_lock_unlock(&(tmp_tsk->p_ve_core->ve_core_lock),
 				WRLOCK, "Failed to acquire task's core write lock");
 			if(!get_ve_task_struct(tmp_tsk)){
-				(*_veos_arch_ops->arch_psm_save_performance_registers)(tmp_tsk);
-				(*_veos_arch_ops->arch_psm_update_pmc_check_overflow)(tmp_tsk);
+				svpmc_ret = (*_veos_arch_ops->arch_psm_save_performance_registers)(tmp_tsk);
+				if(svpmc_ret){
+					VEOS_ERROR("Failed to save the PMC value in %s", __func__);
+					syslog(LOG_INFO, "Failed to save the PMC value while gettng proginf");
+				}
+				ovfl_ret = (*_veos_arch_ops->arch_psm_update_pmc_check_overflow)(tmp_tsk);
+				if(ovfl_ret){
+					VEOS_ERROR("The PMC value has become abnormal in %s", __func__);
+					syslog(LOG_INFO, "The PMC value has become abnormal while gettng proginf");
+				}
 				(*_veos_arch_ops->arch_psm_get_performance_register_info)
 						(tmp_tsk, clock_val_mhz, proginf);
 				pthread_rwlock_lock_unlock(&(tmp_tsk->p_ve_core->ve_core_lock),

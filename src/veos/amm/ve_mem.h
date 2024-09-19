@@ -393,6 +393,7 @@ void amm_dump_atb(struct ve_task_struct *);
 int amm_do_set_tproc(struct ve_jid_cmd cmd, struct ve_task_struct *tsk);
 int veos_handle_ptrace_poke_req(struct ve_task_struct *, vemva_t);
 pgno_t __replace_page(veos_atb_entry_t *, struct ve_mm_struct *, int);
+pgno_t replace_page_for_mprotect(veos_atb_entry_t *, struct ve_mm_struct *, int, prot_t);
 int64_t replace_page(vemva_t, struct ve_task_struct *);
 
 ret_t amm_mem_clear(size_t);

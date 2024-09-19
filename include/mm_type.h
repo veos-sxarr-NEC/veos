@@ -42,10 +42,10 @@ typedef uint64_t prot_t;
 
 #define VE_MMAP_FAILED ((void *)-1)
 
-#define pgmod_to_pgstr(p) ((p == PG_2M) ? "large page" : ((p == PG_HP) ? "huge page" : "small page"))
-#define pgsz_to_pgstr(p) ((p == PAGE_SIZE_2MB) ? "large page" : ((p == PAGE_SIZE_64MB) ? "huge page" : "small page"))
-#define pgmod_to_pgsz(p) ((p == PG_2M) ? PAGE_SIZE_2MB : ((p == PG_HP) ? PAGE_SIZE_64MB : PAGE_SIZE_4KB))
-#define pgsz_to_pgmod(p) ((p == PAGE_SIZE_2MB) ? PG_2M : PG_HP)
+#define pgmod_to_pgstr(p) ((p == PG_2M) ? "large page" : ((p == PG_HP) ? "huge page" : ((p == PG_SHP) ? "super huge page" : "small page")))
+#define pgsz_to_pgstr(p) ((p == PAGE_SIZE_2MB) ? "large page" : ((p == PAGE_SIZE_64MB) ? "huge page" : ((p == PAGE_SIZE_256MB) ? "super huge page" : "small page")))
+#define pgmod_to_pgsz(p) ((p == PG_2M) ? PAGE_SIZE_2MB : ((p == PG_HP) ? PAGE_SIZE_64MB : ((p == PG_SHP) ? PAGE_SIZE_256MB : PAGE_SIZE_4KB)))
+#define pgsz_to_pgmod(p) ((p == PAGE_SIZE_2MB) ? PG_2M : ((p == PAGE_SIZE_64MB) ? PG_HP : ((p == PAGE_SIZE_256MB) ? PG_SHP : PG_4K)))
 #define perm_to_shmstr(p) ((p & SHM_RDONLY) ? "SHM_RDONLY" : "PROT_READ and PROT_WRITE")
 #define chsz_to_chstr(p) ((p == CHUNK_512GB) ? "CHUNK_512GB" :\
 	((p == CHUNK_512MB) ? "CHUNK_512MB" : "CHUNK_16GB"))

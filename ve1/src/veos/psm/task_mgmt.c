@@ -34,6 +34,8 @@
 #include "task_mgmt_ve1.h"
 #include <task_sched.h>
 
+#include <sys/syslog.h>
+
 void ve1_psm_save_scalar_registers(ve_reg_t *buffer, const void *u,
 					uint64_t bitmap)
 {
@@ -345,13 +347,11 @@ int ve1_psm_fetch_performance_registers(struct ve_task_struct *tsk, int **regids
 	int retval = -1;
 	int tmp_regids[PMC_REG_VE1] = {0};
 	uint64_t tmp_pmc[PMC_REG_VE1] = {0};
+	ve1_core_user_reg_t *user_regs = tsk->p_ve_thread->arch_user_regs;
 
-	for (int i = 0; i < PMC_REG_VE1; i++)
+	for (int i = 0; i < PMC_REG_VE1; i++){
 		tmp_regids[i] = VE_USR_PMC00 + i;
-	retval = psm_get_regval(tsk, PMC_REG_VE1, tmp_regids, tmp_pmc);
-	if (retval < 0) {
-		VEOS_ERROR("failed to get task's register");
-		goto handle_return;
+		tmp_pmc[i] = user_regs->PMC[i];
 	}
 
 	*regids = (int *)calloc(PMC_REG_VE1, sizeof(int));
@@ -851,14 +851,17 @@ void ve1_psm_initialize_pmc(struct ve_task_struct *new_task, struct ve_task_stru
 }
 VEOS_ARCH_DEP_FUNC(ve1, arch_psm_initialize_pmc, ve1_psm_initialize_pmc)
 
-void ve1_psm_update_pmc_check_overflow(struct ve_task_struct *tsk)
+int ve1_psm_update_pmc_check_overflow(struct ve_task_struct *tsk)
 {
 	uint64_t tmp_pmc_pmmr = 0, diff = 0;
 	ve_reg_t gb[PMR_CONTEXT_LOOP_VE1];
+	int ret_val = 0;
+	int ovfl_chk = 0;
 
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
 			"Failed to acquire task lock [PID = %d]", tsk->pid);
 	for(int i = 0; i < PMC_REG_VE1; i++) {
+		ovfl_chk = 0;
 		int regid = VE_USR_PMC00 + i;
 		if (tsk->pmc_pmmr[i] != -1) {
 			/* Condition for pmc_mmr[i] reached to the max */
@@ -872,13 +875,36 @@ void ve1_psm_update_pmc_check_overflow(struct ve_task_struct *tsk)
 			VEOS_DEBUG("Received PMC[%d] value from register: %lu & initial_pmc_pmmr: %lu",
 							i, tmp_pmc_pmmr, tsk->initial_pmc_pmmr[i]);
 			if((tmp_pmc_pmmr & OVERFLOW_BIT) < tsk->initial_pmc_pmmr[i]) {
-				VEOS_INFO("PMC[%d] Overflowed", i);
-				if(regid == VE_USR_PMC00 || regid == VE_USR_PMC01)
+				VEOS_ERROR("PMC[%d] Overflowed", i);
+				if(regid == VE_USR_PMC00 || regid == VE_USR_PMC01){
+					if((tsk->initial_pmc_pmmr[i] - (tmp_pmc_pmmr & OVERFLOW_BIT))
+							< (MAX_PMC_VALUE_52BIT / 2)){
+						/* There's no overflow, but the value is inverted */
+						ovfl_chk = 1;
+					}
 					diff = (MAX_PMC_VALUE_52BIT - (tsk->initial_pmc_pmmr[i]))
 						+ (tmp_pmc_pmmr & OVERFLOW_BIT) + 1;
-				else
+				}else{
+					if((tsk->initial_pmc_pmmr[i] - (tmp_pmc_pmmr & OVERFLOW_BIT))
+							< (MAX_PMC_VALUE_56BIT / 2)){
+						/* There's no overflow, but the value is inverted */
+						ovfl_chk = 1;
+					}
 					diff = (MAX_PMC_VALUE_56BIT - (tsk->initial_pmc_pmmr[i]))
 						+ (tmp_pmc_pmmr & OVERFLOW_BIT) + 1;
+				}
+				if(ovfl_chk){
+					VEOS_ERROR("PMC[%d] the value is invalid. sid[%d], "
+						"pid[%d], curr[%ld], init[%ld]", i, tsk->sid,
+						tsk->pid, tmp_pmc_pmmr, tsk->initial_pmc_pmmr[i]);
+					syslog(LOG_INFO, "PMC[%d] the value is invalid. ve[%d],"
+						"sid[%d], pid[%d], curr[%ld], init[%ld]", i,
+						VE_NODE(0)->ve_num, tsk->sid, tsk->pid, tmp_pmc_pmmr,
+						tsk->initial_pmc_pmmr[i]);
+					ret_val = 1;
+				}
+
+
 				VEOS_DEBUG("PMC[%d]'s current and initial value difference: %lu",
 						i, diff);
 				if(tsk->pmc_pmmr[i] > (diff + (tsk->pmc_pmmr[i])))  {
@@ -900,6 +926,7 @@ void ve1_psm_update_pmc_check_overflow(struct ve_task_struct *tsk)
 	}
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
 			"Failed to release task lock [PID = %d]", tsk->pid);
+	return ret_val;
 }
 VEOS_ARCH_DEP_FUNC(ve1, arch_psm_update_pmc_check_overflow, ve1_psm_update_pmc_check_overflow)
 
@@ -917,7 +944,10 @@ int ve1_psm_save_performance_registers(struct ve_task_struct *tsk)
 
 	retval = psm_get_regval(tsk, PMC_REG_VE1+1, tmp_regids, tmp_pmc);
 	if (retval < 0) {
-		VEOS_ERROR("failed to get task's register");
+		VEOS_ERROR("failed to get task's register. sid[%d], "
+			"pid[%d]", tsk->sid, tsk->pid);
+		syslog(LOG_INFO, "Failed to get task's register. ve[%d], sid[%d], "
+			"pid[%d]", VE_NODE(0)->ve_num, tsk->sid, tsk->pid);
 		goto handle_return;
 	}
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,

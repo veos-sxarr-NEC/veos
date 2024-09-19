@@ -44,6 +44,7 @@
 #include "ve_shm.h"
 
 #include <sys/syscall.h>
+#include <sys/syslog.h>
 
 /* To record the first power throttling event occured in any VE core */
 bool first_power_throttling_occured = false;
@@ -1486,6 +1487,7 @@ int veos_update_crd(uint64_t core_set, void *reg_sw, int dir_num,
 {
 	int retval = -1;
 	int core_loop = 0;
+	struct ve_task_struct *curr_ve_task = NULL;
 
 	VEOS_TRACE("Entering");
 	VEOS_DEBUG("Directory num: %d Count: %d",
@@ -1510,8 +1512,18 @@ int veos_update_crd(uint64_t core_set, void *reg_sw, int dir_num,
 	/* Start all core */
 	for (core_loop = 0; core_loop < VE_NODE(0)->nr_avail_cores; core_loop++) {
 		if (CHECK_BIT(core_set, core_loop)) {
-			if (VE_CORE(0, core_loop)->curr_ve_task != tsk) {
-				psm_start_ve_core(0, core_loop);
+			curr_ve_task = VE_CORE(0, core_loop)->curr_ve_task;
+			if (curr_ve_task != tsk) {
+				if (curr_ve_task && curr_ve_task->atb_dirty){
+					VEOS_DEBUG("ATB is dirty, so the core "
+						"won't start:%d,%d,0x%lx,%s",
+						core_loop, curr_ve_task->pid,
+						curr_ve_task->atb_dirty,__func__);
+					SET_CORE_STATE(VE_CORE(0, core_loop)
+						->ve_core_state, STOPPED);
+				}else{
+					psm_start_ve_core(0, core_loop);
+				}
 			} else {
 				SET_CORE_STATE(VE_CORE(0, core_loop)
 						->ve_core_state,
@@ -1592,8 +1604,17 @@ int veos_update_atb(uint64_t core_set, int16_t *dir_num,
 			if (curr_ve_tsk != tsk) {
 				VEOS_DEBUG("Start core id : %d",
 						core_loop);
-				curr_ve_tsk->invalidate_branch_history = true;
-				psm_start_ve_core(0, core_loop);
+				if (curr_ve_tsk && curr_ve_tsk->atb_dirty){
+					VEOS_DEBUG("ATB is dirty, so the core "
+						"won't start:%d,%d,0x%lx,%s",
+						core_loop, curr_ve_tsk->pid,
+						curr_ve_tsk->atb_dirty,__func__);
+					SET_CORE_STATE(VE_CORE(0, core_loop)
+						->ve_core_state, STOPPED);
+				}else{
+					curr_ve_tsk->invalidate_branch_history = true;
+					psm_start_ve_core(0, core_loop);
+				}
 			} else {
 				SET_CORE_STATE(VE_CORE(0, core_loop)
 						->ve_core_state,
@@ -1673,7 +1694,16 @@ int veos_update_dmaatb(uint64_t core_set, veos_dmaatb_reg_t *reg_sw, int dir_num
 					!(*(arr_exs + core_loop) & VE_EXCEPTION)) {
 				VEOS_DEBUG("Start core id : %d",
 						core_loop);
-				psm_start_ve_core(0, core_loop);
+				if (curr_ve_task->atb_dirty){
+					VEOS_DEBUG("ATB is dirty, so the core "
+						"won't start:%d,%d,0x%lx,%s",
+					       core_loop, curr_ve_task->pid,
+						curr_ve_task->atb_dirty,__func__);
+					SET_CORE_STATE(VE_CORE(0, core_loop)
+							->ve_core_state, STOPPED);
+				}else{
+					psm_start_ve_core(0, core_loop);
+				}
 			} else {
 				VEOS_DEBUG("Not starting Core %d EXS : %lx",
 						core_loop, *(arr_exs + core_loop));
@@ -2046,6 +2076,8 @@ hndl_return:
 void psm_sched_interval_handler(union sigval psm_sigval)
 {
 	int ret = -1;
+	int ovfl_ret = 0;
+	int svpmc_ret = 0;
 	int node_loop = 0, core_loop = 0;
 	struct ve_node_struct *p_ve_node = NULL;
 	struct ve_core_struct *p_ve_core = NULL;
@@ -2165,10 +2197,19 @@ void psm_sched_interval_handler(union sigval psm_sigval)
 						if(!get_ve_task_struct(temp)){
 							task_entry->task = temp;
 							list_add(&task_entry->list, &get_task_list);
-							(*_veos_arch_ops->arch_psm_save_performance_registers)
+							svpmc_ret = (*_veos_arch_ops->arch_psm_save_performance_registers)
 								(temp);
-							(*_veos_arch_ops->arch_psm_update_pmc_check_overflow)
+							if(svpmc_ret){
+								VEOS_ERROR("Failed to save the PMC value in %s", __func__);
+								syslog(LOG_INFO, "Failed to save the PMC value while checking at hourly intervals");
+							}
+
+							ovfl_ret = (*_veos_arch_ops->arch_psm_update_pmc_check_overflow)
 								(temp);
+							if(ovfl_ret){
+								VEOS_ERROR("The PMC value has become abnormal in %s", __func__);
+								syslog(LOG_INFO, "The PMC value has become abnormal while checking at hourly intervals");
+							}
 						}
 					}
 				}

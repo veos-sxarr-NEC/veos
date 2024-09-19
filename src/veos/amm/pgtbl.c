@@ -1658,3 +1658,225 @@ error_memcpy:
 	}
 	return ret;
 }
+
+/**
+* @brief This function will allocate new VE page for mprotect and update
+* array, structure and pointer related the new VE page.
+*
+* @param[in] pte reference to the page table.
+* @param[in] mempolicy Memory policy for partitioning mode.
+* @param[in] numa_node NUMA node number of the VE process requires memories
+*           is running on.
+* @param[in] new_perm the permission of newly allocated page.
+*
+* @return on success returns new page number and on failure returns -1.
+* @note Acquire thread_group_mm_lock before invoke this.
+*/
+pgno_t replace_page_for_mprotect(veos_atb_entry_t *pte,
+                                struct ve_mm_struct *mm, int numa_node,
+                                prot_t new_perm)
+{
+	int mempolicy = mm->mem_policy;
+	ret_t ret = 0;
+	pgno_t old_pgno = 0, new_pgno = 0;
+	ssize_t pgsz = 0;
+	vemaa_t pb[2] = {0};
+	struct ve_page *old_ve_page = NULL, *new_ve_page = NULL;
+	struct ve_node_struct *vnode = VE_NODE(0);
+	int mp_num = 0;
+	struct mmap_desc *new_mmap_desc = NULL;
+	struct mmap_mem *mmap_m = NULL;
+	flag_t old_flag = 0;
+	bool found = false;
+
+	VEOS_TRACE("invoked");
+	VEOS_DEBUG("replace VE page for pte %p", pte);
+
+	if (pthread_mutex_trylock(&mm->thread_group_mm_lock) != EBUSY)
+		veos_abort("thread group mm lock is not acquired");
+
+	old_pgno = pg_getpb(pte, PG_2M);
+	if (PG_BUS == old_pgno) {
+		VEOS_ERROR("pte is mapped to PG_BUS page");
+		return -1;
+	}
+
+	old_ve_page = VE_PAGE(vnode, old_pgno);
+	pgsz = old_ve_page->pgsz;
+	old_flag = old_ve_page->flag;
+
+	if ((old_flag & MAP_VDSO) || (old_flag & PG_SHM) || (old_flag & MAP_SHARED)){
+		VEOS_ERROR("old flag is MAP_VDSO or PG_SHM or MAP_SHARED.");
+		return -1;
+	}
+
+	if (!(new_perm & PROT_WRITE)) {
+		VEOS_ERROR("new perm is not set PROT_WRITE.");
+		return -1;
+	}
+
+	if (!(MMAP_DESC_PRIVATE(old_flag, new_perm))) {
+		VEOS_ERROR("Invalid old flag or new permission");
+		return -1;
+	}
+
+	ret = alloc_ve_pages(1, &new_pgno, pgsz_to_pgmod(pgsz),
+			     mempolicy, numa_node, NULL);
+	if (0 > ret) {
+		VEOS_TRACE("returned, Error (%s) in allocating VE Page",
+			   strerror(-ret));
+		return -1;
+	}
+
+	/*First clear page base bits*/
+	pg_clearpfn(pte);
+
+	/*Then update page base bits with new pgno*/
+	pg_setpb(pte, new_pgno, PG_2M);
+
+	pb[0] = pbaddr(new_pgno, PG_2M);
+	pb[1] = 0;
+
+	if (vnode->partitioning_mode == 1) {
+		/*bypassbit setting*/
+		mp_num = (int)paddr2mpnum(pb[0],
+					  numa_sys_info.numa_mem_blk_sz,
+					  numa_sys_info.first_mem_node);
+		if (mp_num != 0)
+			pg_setbypass(pte);
+		else
+			pg_unsetbypass(pte);
+	}
+
+	/*Increament ref count*/
+	if (amm_get_page(pb) < 0) {
+		VEOS_DEBUG("Failed to increment ref count");
+		goto error_memcpy;
+	}
+
+	/*
+	 * copy physical page before doing put page.
+	 */
+	ret = memcpy_petoe(pbaddr(old_pgno, PG_2M),
+			   pbaddr(new_pgno, PG_2M), pgsz);
+	if (0 > ret) {
+		VEOS_DEBUG("Error (%s) in page copy from src %lx to dst %lx",
+			   strerror(-ret), old_pgno, new_pgno);
+		goto error_memcpy;
+	}
+
+	new_ve_page = VE_PAGE(vnode, new_pgno);
+
+	/* set for new page*/
+	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
+				  "Failed to get ve page lock");
+	new_ve_page->perm = new_perm;
+	new_ve_page->flag = old_flag;
+	new_ve_page->private_data = NULL;
+	new_ve_page->buddy_order = old_ve_page->buddy_order;
+	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
+				  "Failed to release ve page lock");
+
+	if (!old_ve_page->private_data){
+		VEOS_DEBUG("no private data in ve pages");
+		goto no_private_data;
+	} else {
+		VEOS_DEBUG("Old VE page %ld", old_pgno);
+		list_for_each_entry(mmap_m, &mm->mmap_page_priv, list_mmap_pages) {
+			new_mmap_desc = mmap_m->mmap_descripter;
+			if (new_mmap_desc->pgsz == pgsz) {
+				found = true;
+				pthread_mutex_lock_unlock(&new_mmap_desc->mmap_desc_lock,
+							  LOCK,
+							  "Failed to get mmap_desc_lock");
+				break;
+			}
+		}
+		if(!found) {
+			new_mmap_desc = init_mmap_desc();
+			if (!new_mmap_desc) {
+				VEOS_DEBUG("Error init_mmap_desc in fdesc to mdesc");
+				goto error_memcpy;
+			}
+			new_mmap_desc->pgsz = pgsz;
+			pthread_mutex_lock_unlock(&new_mmap_desc->mmap_desc_lock, LOCK,
+						  "Failed to get mmap_desc_lock");
+			mmap_m = init_mmap_mem();
+			if (mmap_m == NULL) {
+				VEOS_ERROR("mmap_mem initialization is failed");
+				pthread_mutex_lock_unlock(&new_mmap_desc->mmap_desc_lock,
+							  UNLOCK,
+							  "Failed to release mmap_desc_lock");
+				goto error_init_mmem;
+			}
+			mmap_m->mmap_descripter = new_mmap_desc;
+			list_add_tail(&mmap_m->list_mmap_pages, &mm->mmap_page_priv);
+		}
+		mmap_m->virt_page += 1;
+		new_mmap_desc->in_mem_pages += 1;
+		new_mmap_desc->reference_count += 1;
+		new_mmap_desc->sum_virt_pages += 1;
+		pthread_mutex_lock_unlock(&new_mmap_desc->mmap_desc_lock,
+					  UNLOCK,
+					  "Failed to release mmap_desc_lock");
+		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
+					  "Failed to get ve page lock");
+		new_ve_page->private_data = (void *)new_mmap_desc;
+
+		/* update non swappable pages count */
+		ret = is_ve_page_swappable_core(new_ve_page->pci_ns_count,
+					  old_flag, new_perm, new_pgno,
+					  new_ve_page->owner);
+		pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
+					  "Failed to release ve page lock");
+		if (ret) {
+			pthread_mutex_lock_unlock(&new_mmap_desc->mmap_desc_lock,
+						  LOCK,
+						  "Failed to get mmap_desc_lock");
+			new_mmap_desc->ns_pages += 1;
+			pthread_mutex_lock_unlock(&new_mmap_desc->mmap_desc_lock,
+						  UNLOCK,
+						  "Failed to release mmap_desc_lock");
+		}
+		/* decrement count of virt pages*/
+		if (0 > decrement_virt_page(old_ve_page, mm))
+			goto error_dec_virt;
+	}
+no_private_data:
+	/*Decrement ref count*/
+	ret = amm_put_page(pbaddr(old_pgno, PG_2M));
+
+	VEOS_TRACE("returned with new page %lx", new_pgno);
+	return new_pgno;
+error_dec_virt:
+	if (!found) {
+		list_del(&mmap_m->list_mmap_pages);
+		free(mmap_m);
+	}
+error_init_mmem:
+	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, LOCK,
+				  "Failed to get ve page lock");
+	new_ve_page->private_data = NULL;
+	pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock, UNLOCK,
+				  "Failed to release ve page lock");
+	if((new_mmap_desc) && (!found) ){
+		pthread_mutex_destroy(&new_mmap_desc->mmap_desc_lock);
+		free(new_mmap_desc);
+	}
+error_memcpy:
+	pg_clearpfn(pte);
+	pg_setpb(pte, old_pgno, PG_2M);
+	if (amm_put_page(pb[0]))
+		VEOS_DEBUG("Error while freeing new page 0x%lx", new_pgno);
+
+	if (vnode->partitioning_mode == 1) {
+		mp_num = (int)paddr2mpnum(pbaddr(old_pgno, PG_2M),
+					  numa_sys_info.numa_mem_blk_sz,
+					  numa_sys_info.first_mem_node);
+		if (mp_num != 0)
+			pg_setbypass(pte);
+		else
+			pg_unsetbypass(pte);
+	}
+	return -1;
+}

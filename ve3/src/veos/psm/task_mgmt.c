@@ -38,6 +38,8 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+#include <sys/syslog.h>
+
 void ve3_turn_on_clock_gating(void);
 
 void ve3_psm_save_scalar_registers(ve_reg_t *buffer, const void *u,
@@ -421,15 +423,15 @@ int ve3_psm_fetch_performance_registers(struct ve_task_struct *tsk, int **regids
 	int retval = -1;
 	int tmp_regids[PMC_REG_VE3] = {0};
 	uint64_t tmp_pmc[PMC_REG_VE3] = {0};
+	ve3_core_user_reg_pre_t *user_regs = tsk->p_ve_thread->arch_user_regs;
 
-	for (int i = 0; i < 16; i++)
+	for (int i = 0; i < 16; i++){
 		tmp_regids[i] = VE_USR_PMC00 + i;
-	for (int i = 16; i < PMC_REG_VE3; i++)
+		tmp_pmc[i] = user_regs->PMC[i];
+	}
+	for (int i = 16; i < PMC_REG_VE3; i++){
 		tmp_regids[i] = VE_USR_PMC16 + i - 16;
-	retval = psm_get_regval(tsk, PMC_REG_VE3, tmp_regids, tmp_pmc);
-	if (retval < 0) {
-		VEOS_ERROR("failed to get task's register");
-		goto handle_return;
+		tmp_pmc[i] = user_regs->PMC[i];
 	}
 
 	*regids = (int *)calloc(PMC_REG_VE3, sizeof(int));
@@ -1421,10 +1423,11 @@ void ve3_psm_initialize_pmc(struct ve_task_struct *new_task, struct ve_task_stru
 }
 VEOS_ARCH_DEP_FUNC(ve3, arch_psm_initialize_pmc, ve3_psm_initialize_pmc)
 
-void ve3_psm_update_pmc_check_overflow(struct ve_task_struct *tsk)
+int ve3_psm_update_pmc_check_overflow(struct ve_task_struct *tsk)
 {
 	uint64_t tmp_pmc_pmmr = 0, diff = 0;
 	ve_reg_t gb[PMR_CONTEXT_LOOP_VE3];
+	int ret_val = 0;
 
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,
 			"Failed to acquire task lock [PID = %d]", tsk->pid);
@@ -1441,6 +1444,19 @@ void ve3_psm_update_pmc_check_overflow(struct ve_task_struct *tsk)
 							i, tmp_pmc_pmmr, tsk->initial_pmc_pmmr[i]);
 			/* Check for overflow */
 			if((tmp_pmc_pmmr & OVERFLOW_BIT_VE3) < tsk->initial_pmc_pmmr[i]) {
+				if((tsk->initial_pmc_pmmr[i] - (tmp_pmc_pmmr & OVERFLOW_BIT_VE3))
+					< (MAX_PMC_VALUE_VE3 / 2)){
+					/* There's no overflow, but the value is inverted */
+
+					VEOS_ERROR("PMC[%d] the value is invalid. sid[%d], "
+						"pid[%d], curr[%ld], init[%ld]", i, tsk->sid,
+						tsk->pid, tmp_pmc_pmmr, tsk->initial_pmc_pmmr[i]);
+					syslog(LOG_INFO, "PMC[%d] the value is invalid. ve[%d],"
+						"sid[%d], pid[%d], curr[%ld], init[%ld]", i,
+						VE_NODE(0)->ve_num, tsk->sid, tsk->pid, tmp_pmc_pmmr,
+						tsk->initial_pmc_pmmr[i]);
+					ret_val = 1;
+                                }
 				VEOS_INFO("PMC[%d] Overflowed", i);
 				diff = (MAX_PMC_VALUE_VE3 - (tsk->initial_pmc_pmmr[i]))
 					+ (tmp_pmc_pmmr & OVERFLOW_BIT_VE3) +1;
@@ -1465,6 +1481,7 @@ void ve3_psm_update_pmc_check_overflow(struct ve_task_struct *tsk)
 	}
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), UNLOCK,
 			"Failed to release task lock [PID = %d]", tsk->pid);
+	return ret_val;
 }
 VEOS_ARCH_DEP_FUNC(ve3, arch_psm_update_pmc_check_overflow, ve3_psm_update_pmc_check_overflow)
 
@@ -1644,7 +1661,10 @@ int ve3_psm_save_performance_registers(struct ve_task_struct *tsk)
 
 	retval = psm_get_regval(tsk, PMC_REG_VE3+1, tmp_regids, tmp_pmc);
 	if (retval < 0) {
-		VEOS_ERROR("failed to get task's register");
+		VEOS_ERROR("failed to get task's register. sid[%d], "
+			"pid[%d]", tsk->sid, tsk->pid);
+		syslog(LOG_INFO, "Failed to get task's register. ve[%d], sid[%d], "
+			"pid[%d]", VE_NODE(0)->ve_num, tsk->sid, tsk->pid);
 		goto handle_return;
 	}
 	pthread_mutex_lock_unlock(&(tsk->ve_task_lock), LOCK,

@@ -273,6 +273,7 @@ struct ve_node_struct {
 	int couredump_launcher_sockfd;
 	pid_t couredump_launcher_pid;
 	struct ve_code_modification_file_info code_modification_file;
+	int ve_num;
 };
 
 /**

@@ -361,6 +361,7 @@ static int psm_udma_do_migration(struct ve_task_struct *curr_ve_task,
 	int migrate_core_id = -1;
 	int core_loop = 0;
 	int retval = -1;
+	struct ve_task_struct *chk_ve_tsk = NULL;
 
 	VEOS_TRACE("Entering");
 	/* Find migrate core id*/
@@ -411,7 +412,17 @@ static int psm_udma_do_migration(struct ve_task_struct *curr_ve_task,
 	/* Start all core of core_set */
 	for (; core_loop < VE_NODE(0)->nr_avail_cores; core_loop++) {
 		if (CHECK_BIT(core_bitmap_set, core_loop)) {
-			psm_start_ve_core(0, core_loop);
+			chk_ve_tsk = VE_CORE(0, core_loop)->curr_ve_task;
+			if (chk_ve_tsk && chk_ve_tsk->atb_dirty){
+				VEOS_DEBUG("ATB is dirty, so the core "
+					"won't start:%d,%d,0x%lx,%s", core_loop,
+					chk_ve_tsk->pid, chk_ve_tsk->atb_dirty,
+					__func__);
+				SET_CORE_STATE(VE_CORE(0, core_loop)
+						->ve_core_state, STOPPED);
+			}else{
+				psm_start_ve_core(0, core_loop);
+			}
 			SET_SCHED_STATE(VE_CORE(0, core_loop)->scheduling_status,
 					COMPLETED);
 		}

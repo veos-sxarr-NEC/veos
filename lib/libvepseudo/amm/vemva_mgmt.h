@@ -48,6 +48,7 @@
 #define PAGE_SIZE_4KB		(2 * 2 * 1024)
 #define PAGE_SIZE_2MB		(2 * 1024 * 1024)
 #define PAGE_SIZE_64MB		(64 * 1024 * 1024)
+#define PAGE_SIZE_256MB		(256 * 1024 * 1024)
 #define MASK_2MB_ALIGN		(PAGE_SIZE_2MB - 1)
 #define MASK_64MB_ALIGN		(PAGE_SIZE_64MB - 1)
 

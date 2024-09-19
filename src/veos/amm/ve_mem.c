@@ -1865,6 +1865,12 @@ int amm_do_mprotect(vemva_t vaddr, ssize_t size, uint64_t perm,
 						pg_unsetbypass(&(atb[index].entry[dir_num][pgoff]));
 				}
 			} else {
+				/*
+				 * ATB ENTRY will be not allcated yet,
+				 * such as when MAP_STACK is specified
+				 * without MAP_FIXED and the physical
+				 * page has not been allocated.
+				 */
 				VEOS_DEBUG("ATB ENTRY not yet allocated");
 				goto mprot_error;
 			}
@@ -1880,20 +1886,19 @@ int amm_do_mprotect(vemva_t vaddr, ssize_t size, uint64_t perm,
 			VEOS_DEBUG("Setting permission: PROT_NONE");
 			for (index = 0; index < vnode->numa_count; index++)
 				pg_invalid(&(atb[index].entry[dir_num][pgoff]));
-		} else if (perm == PROT_READ) {
+		} else if ((perm & (PROT_READ|PROT_WRITE)) == PROT_READ) {
 			for (index = 0; index < vnode->numa_count; index++)
 				pg_setprot(&(atb[index].entry[dir_num][pgoff]));
 		} else if ((perm & PROT_WRITE)) {
-			if (pg_isprot(&(atb[0].entry[dir_num][pgoff]))) {
+			if (!(ve_page->perm & PROT_WRITE)) {
 				VEOS_DEBUG("changing %s vemva 0x%lx perm from read to write",
 						pgsz_to_pgstr(pgsz), vaddr);
-				if (((ve_page->ref_count > 1) ||
-					!(ve_page->flag & MAP_ANON)) &&
-						!(ve_page->flag & PG_SHM) &&
-						!(ve_page->flag & MAP_SHARED)) {
+				if (!(ve_page->flag & PG_SHM) &&
+				    !(ve_page->flag & MAP_SHARED)) {
 					/* change_mapped_physical_page */
-					if (0 > __replace_page(&atb[0].entry[dir_num][pgoff],
-							tsk->p_ve_mm, tsk->numa_node)){
+					if (0 > replace_page_for_mprotect(
+							&atb[0].entry[dir_num][pgoff],
+							tsk->p_ve_mm, tsk->numa_node, perm)){
 						/*
 						 * Here we will Copy ATB to mm_struct and sync with hardware
 						 * explicitly to avoid VE memory leak.
@@ -1919,11 +1924,14 @@ int amm_do_mprotect(vemva_t vaddr, ssize_t size, uint64_t perm,
 						}
 					}
 				}
-				for (index = 0; index < vnode->numa_count; index++)
-					pg_unsetprot(&(atb[index].entry[dir_num][pgoff]));
-			} else
-				VEOS_DEBUG("Permission already: PROT_WRITE");
+			}
+			for (index = 0; index < vnode->numa_count; index++)
+				pg_unsetprot(&(atb[index].entry[dir_num][pgoff]));
 		} else {
+			/*
+			 * If an invalid "perm" is specified, it will
+			 * return an error on the pseudo process side.
+			 */
 			VEOS_DEBUG("Invalid permmision %lx", perm);
 			goto mprot_error;
 		}
@@ -1946,8 +1954,7 @@ done:
         if( 0 == psm_sync_hw_regs_atb(tsk, true, -1, 1, bmap))
         {
                 VEOS_DEBUG("Syncing ATB");
-                ret = veos_update_atb(tsk->core_set, dirs, dir_cnt, tsk);
-                if(-1 == ret)
+                if( -1 == veos_update_atb(tsk->core_set, dirs, dir_cnt, tsk))
                 {
                         VEOS_ERROR("Updating ATB failed");
                         veos_abort("Syncing ATB registers failed");

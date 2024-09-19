@@ -49,6 +49,7 @@
 #define PG_4K   0
 #define PG_2M   1
 #define PG_HP   2
+#define PG_SHP  3
 
 #define BUF_SIZ 8192
 #define SYSVIPC_FILE "/proc/sysvipc/shm"

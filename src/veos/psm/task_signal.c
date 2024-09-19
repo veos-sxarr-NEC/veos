@@ -310,6 +310,8 @@ void psm_stop_ve_process(struct ve_task_struct *p_ve_task, int flag, int *traver
 
 	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
 			WRLOCK, "Failed to acquire core's write lock");
+	pthread_mutex_lock_unlock(&p_ve_task->p_ve_mm->thread_group_mm_lock,
+			LOCK, "failed to acquire thread group lock");
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), LOCK,
 			"failed to acquire task lock");
 
@@ -322,6 +324,8 @@ void psm_stop_ve_process(struct ve_task_struct *p_ve_task, int flag, int *traver
 				p_ve_task->pid);
 		pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK,
 				"failed to release task lock");
+		pthread_mutex_lock_unlock(&p_ve_task->p_ve_mm->thread_group_mm_lock,
+				UNLOCK, "failed to release thread group lock");
 		pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
 				UNLOCK, "Failed to release core's write lock");
 		VEOS_TRACE("Exiting");
@@ -333,13 +337,9 @@ void psm_stop_ve_process(struct ve_task_struct *p_ve_task, int flag, int *traver
 
 	pthread_mutex_lock_unlock(&(p_ve_task->ve_task_lock), UNLOCK,
 			"failed to release task lock");
-	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
-			UNLOCK, "Failed to release core's write lock");
 
 	/* It may happen that the core's curr_ve_task is changed by the scheduler
 	 * and hence, it doesn't need to be halted */
-	pthread_mutex_lock_unlock(&p_ve_task->p_ve_mm->thread_group_mm_lock,
-			LOCK, "failed to acquire thread group lock");
 	if (p_ve_core->curr_ve_task == p_ve_task) {
 		VEOS_DEBUG("STOP the VE core %d PID: %d",
 				p_ve_core->core_num
@@ -355,7 +355,8 @@ void psm_stop_ve_process(struct ve_task_struct *p_ve_task, int flag, int *traver
 	}
 	pthread_mutex_lock_unlock(&p_ve_task->p_ve_mm->thread_group_mm_lock,
 			UNLOCK, "failed to release thread group lock");
-
+	pthread_rwlock_lock_unlock(&(p_ve_core->ve_core_lock),
+			UNLOCK, "Failed to release core's write lock");
 	VEOS_TRACE("Exiting");
 }
 
