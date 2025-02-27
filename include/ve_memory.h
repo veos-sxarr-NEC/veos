@@ -81,9 +81,9 @@
 
 #define PG_ADDR		0x0000FFFFFFFFF000LL	/* physical page frame number. */
 #define PG_TYPE		0x0000000000000E00LL	/* type */
-#define PG_NS		0x0000000000000080LL	/* PCIe attr:No snoop */
+
 #define PG_RO		0x0000000000000040LL	/* PCIe attr:Relaxed ordering */
-#define PG_IDO		0x0000000000000020LL	/* PCIe attr:ID based */
+
 #define PG_BYPS		0x0000000000000002LL	/* cache bypass bit. */
 #define PG_WRITI	0x0000000000000004LL	/* write protection bit. */
 #define	PG_NP		0x0000000000000001LL	/* invalid bit. */
@@ -130,12 +130,6 @@
 
 #define pg_unsetro(P)		((P)->data &= ~PG_RO)
 /* Unset memory ro */
-
-#define pg_setido(P)		((P)->data |=  PG_IDO)
-/* Set memory ido. */
-
-#define pg_unsetido(P)		((P)->data &= ~PG_IDO)
-/* Unset memory ido */
 
 #define pg_setprot(P)		((P)->data |=  PG_WRITI)
 /* Set write protection bit. */

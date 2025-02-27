@@ -180,9 +180,9 @@ int ve3_dma_reqlist__entry_post(ve_dma_reqlist_entry *e)
 	e->entry = entry;
 
 	is_last = (e->req_head->reqlist.prev == &e->list);
-	is_sync = (e->opt && VE_DMA_OPT_SYNC);
-        is_ro   = (e->opt && VE_DMA_OPT_RO);
-        is_ido  = (e->opt && VE_DMA_OPT_IDO);
+	is_sync = (e->opt & VE_DMA_OPT_SYNC);
+        is_ro   = (e->opt & VE_DMA_OPT_RO);
+        is_ido  = (e->opt & VE_DMA_OPT_IDO);
 
 	/* If it is the last entry before exhausted, set the SYNC bit */
 	/* If it is the last area of split transmissions, set the SYNC bit */

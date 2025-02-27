@@ -68,6 +68,13 @@
  *	   ua: UnAvailable (1=unavailable)
  *
  */
+#define PG_NS		0x0000000000000020LL	/* PCIe attr:No snoop */
+#define PG_IDO		0x0000000000000080LL	/* PCIe attr:ID based */
+
+#define pg_setido(P)		((P)->data |=  PG_IDO)
+/* Set memory ido. */
+#define pg_unsetido(P)		((P)->data &= ~PG_IDO)
+/* Unset memory ido */
 
 #define NBPSHP		0x10000000	/* bytes of SHP */
 

@@ -174,9 +174,9 @@ int ve1_dma_reqlist__entry_post(ve_dma_reqlist_entry *e)
 	VE_DMA_TRACE("DMA request %p is posted as entry %d", e, entry);
 	usage->req_entry[entry] = e;
 	e->entry = entry;
-	is_sync = (e->opt && VE_DMA_OPT_SYNC);
-        is_ro   = (e->opt && VE_DMA_OPT_RO);
-        is_ido  = (e->opt && VE_DMA_OPT_IDO);
+	is_sync = (e->opt & VE_DMA_OPT_SYNC);
+        is_ro   = (e->opt & VE_DMA_OPT_RO);
+        is_ido  = (e->opt & VE_DMA_OPT_IDO);
 
 
 	is_last = (e->req_head->reqlist.prev == &e->list);
