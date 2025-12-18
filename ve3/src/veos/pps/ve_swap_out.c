@@ -256,6 +256,8 @@ int ve3_pps_veos_swap_out_dmaatb(struct ve_task_struct *tsk)
 		}
 	}
 
+	pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock),
+				LOCK, "Failed to acquire thread_group_mm_lock");
 	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, LOCK,
 					"Failed to acquire node dmaatb lock");
 	ve3_dmaatb_reg_t *vnode_dmaatb = &((ve3_veos_dmaatb_reg_t *)vnode->dmaatb)->dmaatb_reg;
@@ -278,8 +280,6 @@ int ve3_pps_veos_swap_out_dmaatb(struct ve_task_struct *tsk)
 	pthread_mutex_lock_unlock(&vnode->dmaatb_node_lock, UNLOCK,
 					"Failed to release node dmaatb lock");
 
-	pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock),
-				LOCK, "Failed to acquire thread_group_mm_lock");
 	tsk->p_ve_mm->dmaatb_progress = SWAPPED;
 	pthread_mutex_lock_unlock(&(tsk->p_ve_mm->thread_group_mm_lock),
 			UNLOCK, "Failed to release thread_group_mm_lock");

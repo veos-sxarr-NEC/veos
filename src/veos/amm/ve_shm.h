@@ -31,7 +31,11 @@
 #include "ve_mem.h"
 #include <sys/mman.h>
 #include <sys/shm.h>
+#ifdef USE_OPENPROC
 #include <proc/readproc.h>
+#else
+#include "libproc_readproc.h"
+#endif
 #include <sys/capability.h>
 
 /* declarations from external/rpm_comm.h */

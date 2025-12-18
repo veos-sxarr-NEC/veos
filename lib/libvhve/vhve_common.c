@@ -32,6 +32,11 @@
 #include <limits.h>
 #include <stdlib.h>
 
+/* list of vhve_veos_handle */
+struct list_head veos_hndl_list;
+/* A lock for veos_hndl_list  */
+pthread_mutex_t vhve_veos_hndl_list_lock;
+
 log4c_category_t *cat_vhve_core;
 log4c_appender_t *app_vhve_core;
 

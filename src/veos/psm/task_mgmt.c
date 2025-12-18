@@ -62,6 +62,7 @@
 #include "velayout.h"
 #include "veos_ived.h"
 #include "ptrace_req.h"
+#include "psm_procinfo.h"
 #include "locking_handler.h"
 #include "psm_stat.h"
 #include "veos_sock.h"
@@ -1552,6 +1553,11 @@ int get_ve_task_struct_zombie(struct ve_task_struct *task)
 				"Failed to release task reference lock");
 		goto hndl_return;
 	}
+	if (task->zombie_deleting != 0){
+		pthread_mutex_lock_unlock(&task->ref_lock, UNLOCK,
+				"Failed to release task reference lock");
+		goto hndl_return;
+	}
 	task->ref_count++;
 
 	pthread_mutex_lock_unlock(&task->ref_lock, UNLOCK,
@@ -1984,7 +1990,6 @@ void clear_ve_task_struct(struct ve_task_struct *del_task_struct)
 	/* task exit status is set to 0 so that it does not invoke delete
 	 * in put_ve_task_struct()
 	 */
-	del_task_struct->exit_status = 0;
 
 	pthread_rwlock_lock_unlock(&(del_task_struct->p_ve_core->ve_core_lock),
 			WRLOCK,	"Failed to acquire core lock");
@@ -2100,10 +2105,13 @@ skip_wakeup:
 			"Failed to acquire task lock");
 
 	/* unmap the LHM/SHM area */
-	if (false == del_task_struct->vforked_proc)
-		munmap((void *)del_task_struct->sighand->lshm_addr,
+	if (false == del_task_struct->vforked_proc){
+		if (del_task_struct->sighand->lshm_addr != 0){
+			munmap((void *)del_task_struct->sighand->lshm_addr,
 				PAGE_SIZE_4KB);
-	else
+			del_task_struct->sighand->lshm_addr = 0;
+		}
+	}else
 		VEOS_DEBUG("vforked process(%d) not unmapping LHM/SHM",
 				del_task_struct->pid);
 
@@ -2606,7 +2614,9 @@ int psm_handle_exec_ve_process(struct veos_thread_arg *pti,
 	tsk->is_dlt_drv = false;
 	tsk->cpu_lim_exceed = false;
 	tsk->ref_count = 0;
+	tsk->zombie_deleting = 0;
 	tsk->exit_status = 0;
+	tsk->driver_released = false;
 	tsk->exit_code = 0;
 	tsk->exit_code_set = false;
 	tsk->thread_execed = false;
@@ -4529,6 +4539,8 @@ struct ve_task_struct *find_child_ve_task_struct(pid_t parent_pid,
 	struct ve_task_struct *c_tsk = NULL;
 	struct ve_task_struct *p_tsk = NULL;
 	struct ve_task_struct *tmp_tsk = NULL;
+	pid_t host_pid = -1;
+	struct list_head *p = NULL, *n = NULL;
 
 	VEOS_TRACE("Entering");
 	VEOS_DEBUG("Parent(%d) finding child's(%d) host pid",
@@ -4541,7 +4553,39 @@ struct ve_task_struct *find_child_ve_task_struct(pid_t parent_pid,
 		goto hndl_return;
 	}
 
-	tmp_tsk = checkpid_in_zombie_list(child_namespace_pid);
+        VEOS_DEBUG("Acquiring tasklist_lock");
+        pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), LOCK,
+                        "Failed to acquire tasklist_lock lock");
+
+        /* Traverse the parent's children list */
+        if (!list_empty(&p_tsk->children)) {
+                list_for_each_safe(p, n, &p_tsk->children) {
+                        tmp_tsk = list_entry(p,
+                                        struct ve_task_struct,
+                                        siblings);
+                        if (tmp_tsk->namespace_pid == child_namespace_pid) {
+                                VEOS_DEBUG("Found Child PID %d namespace %d",
+                                                tmp_tsk->pid,
+                                                tmp_tsk->namespace_pid);
+                                host_pid = tmp_tsk->pid;
+                                break;
+                        }
+                }
+	}
+	if (host_pid == -1){
+                VEOS_DEBUG("Not Found Child PID for Parent %d", parent_pid);
+		pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
+                        "Failed to release tasklist_lock lock");
+		VEOS_DEBUG("Released tasklist_lock");
+		goto hndl_return;
+        }
+
+        pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock), UNLOCK,
+                        "Failed to release tasklist_lock lock");
+        VEOS_DEBUG("Released tasklist_lock");
+
+
+	tmp_tsk = checkpid_in_zombie_list(host_pid);
 	if (tmp_tsk == NULL) {
 		VEOS_DEBUG("Child PID: %d not found.", child_namespace_pid);
 		goto hndl_return;

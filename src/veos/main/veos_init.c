@@ -48,6 +48,8 @@
 #endif
 #include "vesync.h"
 
+struct ve_acct_struct veos_acct;
+
 #define CLEAN_PSEUDO_SLEEP_TIME 3
 #define TERMINATE_DMA_SLEEP_TIME 3
 #define VE_MIN_NUMA_NODE 1

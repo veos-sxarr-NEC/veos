@@ -305,10 +305,10 @@ ret_t ve_rt_sigprocmask(int syscall_num, char *syscall_name
 	/* unblock all signals except the one actualy blocked by VE process */
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
 	sigfillset(&signal_mask);
-	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	/* Post-processing of syscall started, blocking signals */
-	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 	/* send the old signal mask */
 	if (NULL != (void *)args[2]) {
 		if (0 >  ve_send_data(handle, args[2],
@@ -386,10 +386,10 @@ ret_t ve_rt_sigreturn(int syscall_num, char *syscall_name, veos_handle *handle)
 	/* unblock all signals except the one actualy blocked by VE process */
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
 	sigfillset(&signal_mask);
-	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	/* Post-processing of syscall started, blocking signals */
-	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 
 hndl_return:
 	PSEUDO_TRACE("Exiting");
@@ -584,11 +584,11 @@ ret_t ve_rt_sigtimedwait(int syscall_num, char *syscall_name,
 	sigfillset(&signal_mask);
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
 
-	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	/* call VH system call */
 	signo = syscall(syscall_num, &waitset, &info, timeout, args[3]);
-	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 	/* Post-processing of syscall started, blocking signals */
 	if (!(signo > 0)) {
 		retval = -errno;
@@ -674,13 +674,13 @@ ret_t ve_rt_sigqueueinfo(int syscall_num, char *syscall_name
 	/* unblock all signals except the one actualy blocked by VE process */
 	sigfillset(&signal_mask);
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
-	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	/* call VH system call */
 	retval = syscall(syscall_num, args[0], args[1]
 			, args[2] ? &uinfo : NULL);
 	/* Post-processing of syscall started, blocking signals */
-	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 
 	if (-1 == retval) {
 		retval = -errno;
@@ -778,12 +778,12 @@ ret_t ve_rt_sigsuspend(int syscall_num, char *syscall_name, veos_handle *handle)
 	/* unblock all signals except the one actualy blocked by VE process */
 	sigfillset(&signal_mask);
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
-	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	/* call VH system call */
 	retval = syscall(syscall_num, &maskset, args[1]);
 	/* Post-processing of syscall started, blocking signals */
-	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 	if (retval) {
 		retval = -errno;
 		PSEUDO_ERROR("sigsuspend(): failed %ld",
@@ -1034,7 +1034,7 @@ ret_t ve_tkill(int syscall_num, char *syscall_name, veos_handle *handle)
 	 */
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
 	sigfillset(&signal_mask);
-	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	/* call VH system call */
 	retval = syscall(syscall_num,
@@ -1042,7 +1042,7 @@ ret_t ve_tkill(int syscall_num, char *syscall_name, veos_handle *handle)
 			args[1]);
 
 	/* Post-processing of syscall started, blocking signals */
-	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 
 	/* write return value */
 	if (-1 == retval) {
@@ -1100,7 +1100,7 @@ ret_t ve_kill(int syscall_num, char *syscall_name, veos_handle *handle)
 	 */
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
 	sigfillset(&signal_mask);
-	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	/* call VH system call */
 	retval = syscall(syscall_num,
@@ -1108,7 +1108,7 @@ ret_t ve_kill(int syscall_num, char *syscall_name, veos_handle *handle)
 			args[1]);
 
 	/* Post-processing of syscall started, blocking signals */
-	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 
 	/* write return value */
 	if (-1 == retval) {
@@ -1191,7 +1191,7 @@ ret_t ve_tgkill(int syscall_num, char *syscall_name, veos_handle *handle)
 	/* unblock all signals except the one actualy blocked by VE process */
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
 	sigfillset(&signal_mask);
-	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	/* call VH system call */
 	retval = syscall(syscall_num,
@@ -1200,7 +1200,7 @@ ret_t ve_tgkill(int syscall_num, char *syscall_name, veos_handle *handle)
 			args[2]);
 
 	/* Post-processing of syscall started, blocking signals */
-	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 
 	if (-1 == retval) {
 		retval = -errno;
@@ -1384,13 +1384,13 @@ ret_t ve_rt_tgsigqueueinfo(int syscall_num, char *syscall_name,
 	/* unblock all signals except the one actualy blocked by VE process */
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
 	sigfillset(&signal_mask);
-	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 	/* call VH system call */
 	retval = syscall(syscall_num, args[0], args[1], args[2]
 			, args[3] ? &uinfo : NULL);
 
 	/* Post-processing of syscall started, blocking signals */
-	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 	if (-1 == retval) {
 		retval = -errno;
 		PSEUDO_ERROR("rt_tgsigqueueinfo(): failed %d",

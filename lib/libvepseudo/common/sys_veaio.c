@@ -318,7 +318,7 @@ _sys_ve_aio2_io(void *varg)
 			break;
 
 		case VE_AIO_OP_WRITE:
-			if (*leave != 1 && count > 0) {
+			if (*leave != 1 && count >= 0) {
 				int ret = 0;
 				ret = ve_recv_data_tid(handle, buf, count, p, tid);
 				if (ret < 0) {
@@ -329,7 +329,7 @@ _sys_ve_aio2_io(void *varg)
 
 			sem_wait(fence_self);
 
-			if (*leave != 1 && count > 0) {
+			if (*leave != 1 && count >= 0) {
 				retval = pwrite(fd, p, count, offset);
 				if (retval == -1) {
 					errval = errno;

@@ -89,8 +89,8 @@ void ve_sa_sigaction_handler(int signum,
 	/* Block all signals
 	 * Fetch the pseudo process current signal mask
 	 * */
-	pthread_sigmask(SIG_BLOCK, NULL, &curr_sigmask);
-	pthread_sigmask(SIG_SETMASK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, NULL, &curr_sigmask);
+	sub_pthread_sigmask(SIG_SETMASK, &signal_mask, NULL);
 
 
 	if (pending_hw_signal) {
@@ -120,7 +120,7 @@ void ve_sa_sigaction_handler(int signum,
 hndl_return:
 	/* Unblock all signals
 	 * */
-	pthread_sigmask(SIG_SETMASK, &curr_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &curr_sigmask, NULL);
 }
 
 /**
@@ -323,12 +323,12 @@ again:
 		 * is stored in "ve_proc_sigmask"*/
 		PSEUDO_DEBUG("Task blocked set: %lx",
 				ve_proc_sigmask.__val[0]);
-		pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+		sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 		/* wait for exception and start program */
 		errno = 0;
 		ret = vedl_wait_exception(handle->ve_handle, &exs);
 		/* Block the signal for system call processing*/
-		pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+		sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 		if (ret) {
 			if (errno == EINTR) {
 				goto again;

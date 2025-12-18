@@ -763,8 +763,10 @@ struct ve_task_struct *copy_ve_process(unsigned long clone_flags,
 	new_task->ve_task_state = WAIT;
 
 	new_task->ref_count = 0;
+	new_task->zombie_deleting = 0;
 	new_task->exit_code = 0;
 	new_task->exit_status = 0;
+	new_task->driver_released = false;
 	new_task->exit_code_set = false;
 	new_task->reg_dirty = false;
 	new_task->invalidate_branch_history = true;

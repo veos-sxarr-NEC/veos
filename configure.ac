@@ -2,14 +2,14 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([veos], [3.5.0])
+AC_INIT([veos], [3.6.1])
 AC_CONFIG_SRCDIR([lib/libvepseudo/psm/exception.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([./build-aux])
 AM_INIT_AUTOMAKE([foreign -Wall -Werror])
 
-RHEL_VERSION=$(cat /etc/redhat-release |  sed -e 's/.*\s\(@<:@0-9@:>@\)\..*/\1/')
-PY_V=$(if test $RHEL_VERSION -eq 8 ; then echo 3; else echo 2; fi )
+RHEL_VERSION=$(cat /etc/redhat-release |  sed -e 's/.*\s\(@<:@0-9@:>@@<:@0-9@:>@*\)\..*/\1/')
+PY_V=$(if test $RHEL_VERSION -ge 8 ; then echo 3; else echo 2; fi )
 AM_PATH_PYTHON([$PY_V])
 
 AC_ARG_WITH([release-id], [AS_HELP_STRING([--with-release-id],
@@ -135,6 +135,12 @@ AC_PATH_PROG([UDEVADM], [udevadm], [no])
 if test "x$UDEVADM" = xno; then
   AC_MSG_ERROR([udevadm is not found.])
 fi
+
+# Check for libprocps
+AC_CHECK_LIB([procps], [openproc], [], [AC_MSG_ERROR([procps-ng-devel library support missing/incomplete])])
+AC_DEFINE([USE_OPENPROC], [1], [Use openproc when libprocps is present])
+CFLAGS="$CFLAGS -DUSE_OPENPROC"
+
 # Checks for libraries.
 LDFLAGS="$LDFLAGS -L${prefix}/lib -L${prefix}/lib64"
 AC_CHECK_LIB(ved, vedl_wait_exception, [have_libved=yes], [have_libved=no])
@@ -154,7 +160,6 @@ AC_CHECK_LIB([ved], [vedl_get_syscall_args], [], [AC_MSG_ERROR([libved support m
 AC_CHECK_LIB([protobuf-c], [protobuf_c_message_pack], [], [AC_MSG_ERROR([protobuf library  support missing/incomplete])])
 AC_CHECK_LIB([uuid], [uuid_generate], [], [AC_MSG_ERROR([uuid library support missing/incomplete])])
 AC_CHECK_LIB([systemd], [sd_notify], [], [AC_MSG_ERROR([systemd library support missing/incomplete])])
-AC_CHECK_LIB([procps], [openproc], [], [AC_MSG_ERROR([procps-ng-devel library support missing/incomplete])])
 AC_CHECK_LIB([dhash], [hash_count], [], [AC_MSG_ERROR([dhash-devel library support missing/incomplete])])
 
 # Checks for header files.

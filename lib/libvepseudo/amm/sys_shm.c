@@ -71,11 +71,11 @@ int get_shm_stat_proc(int shmid, key_t key, struct shmid_ds *buf)
 	/*Reading information related shm segment*/
 	while (fgets(t_buf, sizeof(t_buf), f) != NULL) {
 		if (sscanf(t_buf,
-		"%d %d  %ho %"SCNu64 " %u %u  "
+		"%d %d  %o %"SCNu64 " %u %u  "
 		"%"SCNu64 " %u %u %u %u %"SCNi64 " %"SCNi64 " %"SCNi64" \n",
 		&buf->shm_perm.__key,
 		&proc_shmid,
-		&buf->shm_perm.mode,
+		(unsigned int *)&buf->shm_perm.mode,
 		&buf->shm_segsz,
 		&buf->shm_cpid,
 		&buf->shm_lpid,
@@ -878,11 +878,11 @@ int get_shmid_stat_proc(int shmid, struct shmid_ds *buf)
         /*Reading information related shm segment*/
         while (fgets(t_buf, sizeof(t_buf), f) != NULL) {
                 if (sscanf(t_buf,
-                "%d %d  %ho %"SCNu64 " %u %u  "
+                "%d %d  %o %"SCNu64 " %u %u  "
                 "%"SCNu64 " %u %u %u %u %"SCNi64 " %"SCNi64 " %"SCNi64" \n",
                 &buf->shm_perm.__key,
                 &proc_shmid,
-                &buf->shm_perm.mode,
+                (unsigned int *)&buf->shm_perm.mode,
                 &buf->shm_segsz,
                 &buf->shm_cpid,
                 &buf->shm_lpid,

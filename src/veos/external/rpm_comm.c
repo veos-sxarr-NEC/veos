@@ -28,7 +28,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef USE_OPENPROC
 #include <proc/readproc.h>
+#else
+#include "libproc_readproc.h"
+#endif
 #include <sys/types.h>
 #include <errno.h>
 #include <stdbool.h>
@@ -39,7 +43,7 @@
 #include "mm_stat.h"
 #include "proto_buff_schema.pb-c.h"
 #include "velayout.h"
-#include "ptrace_req.h"
+#include "psm_procinfo.h"
 #include "ve_shm.h"
 #include "buddy.h"
 #include "ve_swap.h"

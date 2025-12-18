@@ -618,9 +618,13 @@ int __amm_get_sysfs_info(char *out, char *fname, size_t out_sz)
 		retval = -EINVAL;
 		goto hndl_ret;
 	}
-	snprintf(filename, sizeof(filename), "%s/%s",
+	ret = snprintf(filename, sizeof(filename), "%s/%s",
 		 VE_SYSFS_PATH(0), fname);
-
+	if (ret < 0 || ret >= sizeof(filename)){
+		VEOS_ERROR("Failed to create filename");
+		retval = -EINVAL;
+		goto hndl_ret;
+	}
 	fd = open(filename, (O_RDONLY|O_NOFOLLOW));
 	if (fd == -1) {
 		sverrno = errno;

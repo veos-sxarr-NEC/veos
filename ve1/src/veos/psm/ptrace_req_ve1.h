@@ -26,7 +26,11 @@
 
 #include <sys/types.h>
 #include <sys/ptrace.h>
+#ifdef USE_OPENPROC
 #include <proc/readproc.h>
+#else
+#include "ptrace_req.h"
+#endif
 
 #include <libved.h>
 #include <ve_hw.h>

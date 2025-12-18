@@ -44,13 +44,7 @@
 #include "velayout.h"
 #include "psm_stat.h"
 #include "locking_handler.h"
-
-
-/**
- * @brief mutex lock to make sure readproc() is threadsafe
- *
- */
-pthread_mutex_t readproc_mutex = PTHREAD_MUTEX_INITIALIZER;
+#include "psm_procinfo.h"
 
 /**
  * @brief Change the state to RUNNING of the provided VE process.
@@ -305,7 +299,7 @@ ok:
 	retval = process_vm_writev(p_ve_task->pid, &local_iov,
 			1, &remote_iov, 1, 0);
 	if (-1 == retval) {
-		VEOS_DEBUG("process_vm_writev() fails: %s", strerror(errno));
+		VEOS_ERROR("process_vm_writev() fails: %s", strerror(errno));
 		free(ptrace_info);
 		goto hndl_return;
 	}
@@ -347,7 +341,7 @@ ok:
 	 */
 	retval = psm_ptrace_setoptions(p_ve_task, p_ops);
 	if (-1 == retval) {
-		VEOS_DEBUG("Fails to set options in pseudo: %d",
+		VEOS_ERROR("Fails to set options in pseudo: %d",
 				p_ve_task->pid);
 		free(ptrace_info);
 	}
@@ -387,7 +381,7 @@ int psm_ptrace_peekdata(struct ve_task_struct *p_ve_task, uint64_t addr,
 	retval = amm_dma_xfer(VE_DMA_VEMVA_WO_PROT_CHECK, addr, pid, VE_DMA_VHVA,
 			(uint64_t)data, getpid(), sizeof(uint64_t), node_id);
 	if (-1 == retval) {
-		VEOS_DEBUG("DMA failed during ptrace PEEKDATA");
+		VEOS_ERROR("DMA failed during ptrace PEEKDATA");
 		goto hndl_return;
 	} else {
 		update_accounting_data(p_ve_task, ACCT_TRANSDATA,
@@ -429,7 +423,7 @@ int psm_ptrace_pokedata(struct ve_task_struct *p_ve_task, uint64_t addr,
 	 */
 	retval = veos_handle_ptrace_poke_req(p_ve_task, addr);
 	if (0 > retval) {
-		VEOS_DEBUG("veos_handle_ptrace_poke_req fails: %d", retval);
+		VEOS_ERROR("veos_handle_ptrace_poke_req fails: %d", retval);
 		retval = -1;
 		goto hndl_return;
 	}
@@ -440,7 +434,7 @@ int psm_ptrace_pokedata(struct ve_task_struct *p_ve_task, uint64_t addr,
 	retval = amm_dma_xfer(VE_DMA_VHVA, (uint64_t)&data, getpid(),
 			VE_DMA_VEMVA_WO_PROT_CHECK, addr, pid, sizeof(uint64_t), node_id);
 	if (-1 == retval) {
-		VEOS_DEBUG("DMA failed during ptrace POKEDATA");
+		VEOS_ERROR("DMA failed during ptrace POKEDATA");
 		goto hndl_return;
 	} else {
 		update_accounting_data(p_ve_task, ACCT_TRANSDATA,
@@ -478,7 +472,7 @@ int psm_ptrace_peekuser(struct ve_task_struct *p_ve_task, uint64_t addr,
 	/* Find the offset of the given VE register */
 	reg_offset = (*_veos_arch_ops->arch_psm_get_reg_offset)((ve_usr_reg_name_t)addr);
 	if (-1 == reg_offset) {
-		VEOS_DEBUG("Reg: %ld offset not found", addr);
+		VEOS_ERROR("Reg: %ld offset not found", addr);
 		goto hndl_return;
 	}
 
@@ -524,7 +518,7 @@ int psm_ptrace_pokeuser(struct ve_task_struct *p_ve_task, uint64_t addr,
 	/* Find the offset of the given VE register */
 	reg_offset = (*_veos_arch_ops->arch_psm_get_reg_offset)((ve_usr_reg_name_t)addr);
 	if (-1 == reg_offset) {
-		VEOS_DEBUG("Reg: %ld offset not found", addr);
+		VEOS_ERROR("Reg: %ld offset not found", addr);
 		goto hndl_return;
 	}
 
@@ -643,7 +637,7 @@ int psm_ptrace_detach(struct ve_task_struct *p_ve_task)
 	 * failure of process_vm_writev() when errno is EFAULT.
 	 */
 	if (-1 == retval && errno != EFAULT) {
-		VEOS_DEBUG("process_vm_writev() fails: %s", strerror(errno));
+		VEOS_ERROR("process_vm_writev() fails: %s", strerror(errno));
 		goto hndl_return;
 	}
 
@@ -689,7 +683,7 @@ int psm_ptrace_syscall(struct ve_task_struct *p_ve_task, bool on)
 	retval = process_vm_writev(p_ve_task->pid, &local_iov,
 			1, &remote_iov, 1, 0);
 	if (-1 == retval) {
-		VEOS_DEBUG("process_vm_writev() fails: %s", strerror(errno));
+		VEOS_ERROR("process_vm_writev() fails: %s", strerror(errno));
 		goto hndl_return;
 	}
 
@@ -723,7 +717,7 @@ int psm_get_ice_regval(int pid, uint64_t *ice)
 
 	tsk = find_ve_task_struct(pid);
 	if (NULL == tsk) {
-		VEOS_DEBUG("Task with pid %d not found", pid);
+		VEOS_ERROR("Task with pid %d not found", pid);
 		retval = -ESRCH;
 		goto hndl_return;
 	}
@@ -736,7 +730,7 @@ int psm_get_ice_regval(int pid, uint64_t *ice)
 		retval = vedl_get_usr_reg(VE_CORE_USR_REG(0, core_id),
 				VE_USR_ICE, ice);
 		if (0 != retval) {
-			VEOS_DEBUG("vedl_get_usr_reg fail for core %d",
+			VEOS_ERROR("vedl_get_usr_reg fail for core %d",
 					core_id);
 			retval = -EFAULT;
 			goto hndl_return;
@@ -776,7 +770,7 @@ int psm_ptrace_setoptions(struct ve_task_struct *p_ve_task, uint64_t data)
 
 	/* Check the ptrace bitmap received is valid or not */
 	if (data & ~(uint64_t)(PTRACE_O_MASK | PTRACE_O_EXITKILL)) {
-		VEOS_DEBUG("Invalid ptrace option bitmask received: %lx", data);
+		VEOS_ERROR("Invalid ptrace option bitmask received: %lx", data);
 		goto hndl_return;
 	}
 
@@ -798,60 +792,13 @@ int psm_ptrace_setoptions(struct ve_task_struct *p_ve_task, uint64_t data)
 	retval = process_vm_writev(p_ve_task->pid, &local_iov,
 			1, &remote_iov, 1, 0);
 	if (-1 == retval) {
-		VEOS_DEBUG("process_vm_writev() fails: %s", strerror(errno));
+		VEOS_ERROR("process_vm_writev() fails: %s", strerror(errno));
 		goto hndl_return;
 	}
 
 	VEOS_DEBUG("process_vm_writev() written %d bytes", retval);
 	retval = 0;
 hndl_return:
-	VEOS_TRACE("Exiting");
-	return retval;
-}
-
-/**
- * @brief Get the /proc/## entry information for the given pid.
- *
- * @param[in] pid Pid of VE process
- * @param[out] ve_proc_info Pointer to struct proc_t
- *
- * @return 0 on success, -1 on failure.
- */
-int psm_get_ve_proc_info(pid_t pid, proc_t *ve_proc_info)
-{
-	int retval = -1;
-	PROCTAB* proc = NULL;
-	proc_t *proc_info = NULL;
-
-	VEOS_TRACE("Entering");
-
-	pthread_mutex_lock_unlock(&readproc_mutex, LOCK,
-                        "Failed to acquire readproc lock");
-	if (!ve_proc_info)
-		goto hndl_return;
-	/* initialize process information from /proc/ */
-	proc = openproc(PROC_FILLMEM|PROC_FILLSTAT|PROC_FILLSTATUS|PROC_PID|
-			PROC_FILLNS, &pid);
-	if (NULL == proc) {
-		VEOS_DEBUG("Fails to open proc interface for pid: %d", pid);
-		goto hndl_return;
-	}
-
-	/* read the proc information */
-	proc_info = readproc(proc, NULL);
-	if (NULL == proc_info) {
-		VEOS_DEBUG("Fail to read proc information for pid: %d", pid);
-		goto hndl_return1;
-	}
-
-	memcpy(ve_proc_info, proc_info, sizeof(proc_t));
-	freeproc(proc_info);
-	retval = 0;
-hndl_return1:
-	closeproc(proc);
-hndl_return:
-	pthread_mutex_lock_unlock(&readproc_mutex, UNLOCK,
-                        "Failed to release readproc lock");
 	VEOS_TRACE("Exiting");
 	return retval;
 }

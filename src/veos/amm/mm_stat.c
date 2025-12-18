@@ -520,7 +520,8 @@ int veos_pmap(pid_t pid, uid_t gid, uid_t uid, struct ve_mapheader *header)
 
 	file_base_name = basename(filename);
 	header->length = (unsigned int)pmapcount;
-	strncpy(header->filename, file_base_name, S_FILE_LEN);
+	strncpy(header->filename, file_base_name, S_FILE_LEN - 1);
+	header->filename[S_FILE_LEN - 1] = '\0'; //add null character
 	VEOS_DEBUG("File name: %s", file_base_name);
 
 	if (msync(shmaddr, pmapcount*sizeof(struct ve_mapinfo), MS_SYNC)) {

@@ -62,8 +62,8 @@
 #include "locking_handler.h"
 #include "task_mgmt.h"
 #include "veos_arch_ops.h"
+#include "psm_procinfo.h"
 
-extern pthread_mutex_t readproc_mutex;
 #define ZOMBIE_TASK_CLEANUP_INTERVAL 5
 
 /**
@@ -81,11 +81,12 @@ void psm_do_execve_wait(struct ve_task_struct *del_task)
 	pthread_mutex_lock_unlock(&del_task->ref_lock, LOCK,
 			"Failed to acquire task reference lock");
 	VEOS_DEBUG("Acquired ref_lock, waiting for conditional signal");
-	if (!(del_task->ref_count == 1) &&
-			pthread_cond_wait(&del_task->ref_lock_signal,
-				&del_task->ref_lock)) {
-		veos_abort("pthread_cond_wait failed %s",
+	while (del_task->ref_count > 1) {
+		if (pthread_cond_wait(&del_task->ref_lock_signal,
+			&del_task->ref_lock)) {
+			veos_abort("pthread_cond_wait failed %s",
 				strerror(errno));
+		}
 	}
 	pthread_mutex_lock_unlock(&del_task->ref_lock, UNLOCK,
 			"Failed to release task reference lock");
@@ -266,9 +267,12 @@ int psm_del_sighand_struct(struct ve_task_struct *p_ve_task)
 		pthread_mutex_destroy(&(sighand->siglock));
 		pthread_mutex_destroy(&(sighand->del_lock));
 
-		if (false == p_ve_task->vforked_proc)
-			munmap((void *)sighand->lshm_addr, PAGE_SIZE_4KB);
-		else
+		if (false == p_ve_task->vforked_proc){
+			if (sighand->lshm_addr != 0){
+				munmap((void *)sighand->lshm_addr, PAGE_SIZE_4KB);
+				sighand->lshm_addr = 0;
+			}
+		}else
 			VEOS_DEBUG("vforked process(%d) not unmapping LHM/SHM",
 					p_ve_task->pid);
 
@@ -339,22 +343,26 @@ one:
 					tmp->pid);
 
 			if ((list_empty(&tmp->thread_group)) &&
-					(ZOMBIE == tmp->ve_task_state)) {
+					(ZOMBIE == tmp->ve_task_state) &&
+					(tmp->zombie_partial_cleanup == CLEANUP_DONE) &&
+					(tmp->zombie_deleting == 0)) {
 
 				pthread_mutex_lock_unlock(&(VE_NODE(0)->ve_tasklist_lock),
 					UNLOCK,	"Failed to release tasklist_lock lock");
 
 				pthread_mutex_lock_unlock(&(tmp->sighand->del_lock),
 					LOCK, "Failed to acquire thread group delete lock");
+				tmp->zombie_deleting = DELETING_CHILDREN;
 				tmp->ve_task_state = EXIT_DEAD;
 				pthread_mutex_lock_unlock(&tmp->ref_lock, LOCK,
 						"Failed to acquire task reference lock");
 				tmp->ref_count++;
-				if (!(tmp->ref_count == 1) &&
-						pthread_cond_wait(&tmp->ref_lock_signal,
-							&tmp->ref_lock)) {
-					veos_abort("pthread_cond_wait failed %s",
+				while (tmp->ref_count > 1) {
+					if (pthread_cond_wait(&tmp->ref_lock_signal,
+						&tmp->ref_lock)) {
+						veos_abort("pthread_cond_wait failed %s",
 							strerror(errno));
+					}
 				}
 				pthread_mutex_lock_unlock(&tmp->ref_lock, UNLOCK,
 					"Failed to release task reference lock");
@@ -403,8 +411,19 @@ void psm_reparent_children(struct ve_task_struct *ve_tsk)
 			tmp = list_entry(p, struct ve_task_struct,
 					siblings);
 
+			/* When a task is in the ZOMBIE state and marked as
+			 * CLEANUP_DONE, it has essentially already been deleted
+			 * and is only retained for RUSAGE purposes, so it remains
+			 * in the child process list and is deleted later by
+			 * psm_traverse_children_for_zombie().
+			 * In the CLEANUP_NO or CLEANUP_NEEDED states, although
+			 * the task is in the ZOMBIE state, it has not yet been
+			 * deleted and is still valid, so it should be reparented and
+			 * removed from the child process list. This task will be deleted
+			 * when a delete request is issued later.
+			 */
 			if (list_empty(&tmp->thread_group) &&
-					tmp->ve_task_state == ZOMBIE)
+					(tmp->ve_task_state == ZOMBIE) && (tmp->zombie_partial_cleanup == CLEANUP_DONE))
 				continue;
 
 			list_del(p);
@@ -1021,16 +1040,23 @@ int psm_handle_delete_ve_process(struct ve_task_struct *del_task_curr)
 
 	if (del_task_curr->ve_task_state == ZOMBIE
 			&& !thread_group_empty(del_task_curr)) {
-		retval = vedl_delete_ve_task(VE_HANDLE(0), del_task_curr->pid);
-		if (retval) {
-			VEOS_DEBUG("Failed (%s) to delete task with PID %d",
+		if (del_task_curr->driver_released){
+			retval = vedl_delete_ve_task(VE_HANDLE(0), del_task_curr->pid);
+			if (retval) {
+				VEOS_DEBUG("Failed (%s) to delete task with PID %d",
 					strerror(errno),
 					del_task_curr->pid);
-			veos_abort("Failed to delete task with PID %d from driver",
+				veos_abort("Failed to delete task with PID %d from driver",
 					del_task_curr->pid);
+			}
+			del_task_curr->is_dlt_drv = true;
+			del_task_curr->is_crt_drv = false;
+		}else{
+			/* Since the driver has not been released, the task should be retained.
+			 * Therefore, reset exit_status to its initial value. When the driver
+			 * is released, delete the task. */
+			del_task_curr->exit_status = 0;
 		}
-		del_task_curr->is_dlt_drv = true;
-		del_task_curr->is_crt_drv = false;
 
 		pthread_rwlock_lock_unlock(&(VE_CORE(0, core_id)->ve_core_lock),
 				UNLOCK, "Failed to release core write lock");
@@ -1194,10 +1220,12 @@ skip_wakup:
 
 	VEOS_DEBUG("pid %d ref_count = %d",
 			group_leader->pid, group_leader->ref_count);
-	if (!(group_leader->ref_count == 1) &&
-			pthread_cond_wait(&group_leader->ref_lock_signal,
-				&group_leader->ref_lock)) {
-		veos_abort("pthread_cond_wait failed %s", strerror(errno));
+	while (group_leader->ref_count > 1) {
+		if (pthread_cond_wait(&group_leader->ref_lock_signal,
+			&group_leader->ref_lock)) {
+			veos_abort("pthread_cond_wait failed %s",
+				strerror(errno));
+		}
 	}
 	group_leader->ref_count--;
 	pthread_mutex_lock_unlock(&group_leader->ref_lock, UNLOCK,
@@ -1265,62 +1293,6 @@ void psm_delete_zombie_task (struct ve_task_struct *tsk)
 	}
 
 }
-bool check_for_zombie_deletion(struct ve_task_struct *tsk)
-{
-	bool retval = false;
-	PROCTAB* proc = NULL;
-	proc_t *proc_info = NULL;
-	unsigned long long ve_proc_start_time = 0, time_proc_start_time = 0;
-	pid_t time_pid = tsk->real_parent_pid;
-
-	VEOS_TRACE("Entering");
-
-	/* Check if the task's parent 'time' process has already been terminated
-	 * The task can ve safely removed than
-	 */
-	if (kill(time_pid, 0) && errno == ESRCH) {
-		VEOS_DEBUG("'time' command already terminated. Proceed for zombie cleanup");
-		retval = true;
-		goto hndl_return;
-	}
-	VEOS_DEBUG("'time' command already terminated and its pid(%d) has been recycled", time_pid);
-	pthread_mutex_lock_unlock(&readproc_mutex, LOCK,
-			"Failed to acquire readproc lock");
-
-	/* initialize process information from /proc/ */
-	proc = openproc(PROC_FILLSTAT, &time_pid);
-	if (NULL == proc) {
-		VEOS_DEBUG("Fails to open proc interface for 'time' pid: %d", time_pid);
-		retval = true;
-		goto hndl_return;
-	}
-
-	/* read the proc information */
-	proc_info = readproc(proc, NULL);
-	if (NULL == proc_info) {
-		VEOS_DEBUG("Fail to read proc information for 'time' pid: %d", time_pid);
-		retval = true;
-		goto hndl_return1;
-	}
-
-	time_proc_start_time = proc_info->start_time;
-	freeproc(proc_info);
-
-	ve_proc_start_time = (unsigned long long)tsk->start_time.tv_sec;
-	VEOS_DEBUG("'time' command start time = %llu", time_proc_start_time);
-	VEOS_DEBUG("zombie process start time = %llu", ve_proc_start_time);
-
-	if (time_proc_start_time > ve_proc_start_time)
-		retval = true;
-	VEOS_DEBUG("Found zombie task pid = %d", tsk->pid);
-hndl_return1:
-	closeproc(proc);
-hndl_return:
-	pthread_mutex_lock_unlock(&readproc_mutex, UNLOCK,
-			"Failed to release readproc lock");
-	VEOS_TRACE("Exiting");
-	return retval;
-}
 
 void veos_zombie_cleanup_thread()
 {
@@ -1387,9 +1359,15 @@ void veos_zombie_cleanup_thread()
 		list_for_each_safe(p, n, &ve_init_task.tasks) {
 			tmp = list_entry(p, struct ve_task_struct, tasks);
 			if (!(tmp->rpm_preserve_task == 1
-					&& tmp->ve_task_state == ZOMBIE))
+					&& tmp->ve_task_state == ZOMBIE &&
+					tmp->zombie_partial_cleanup == CLEANUP_DONE &&
+					tmp->zombie_deleting == 0))
 				continue;
+			if (tmp->ref_count != 0){
+				continue;
+			}
 			if (check_for_zombie_deletion(tmp)) {
+				tmp->zombie_deleting = DELETING_CLEANUP;
 				tmp->rpm_preserve_task = 0;
 				tmp->ve_task_state = EXIT_DEAD;
 				pthread_rwlock_lock_unlock(&init_task_lock, UNLOCK,

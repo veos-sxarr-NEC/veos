@@ -47,6 +47,24 @@
 #include "vemmr_mgmt.h"
 
 /**
+ * @brief Wrapper function for the system call that substitute for pthread_sigmask()
+ *
+ * This function changes the signal mask for the calling thread.
+ *
+ * @param how Specifies how the signal mask is changed.
+ *            Only takes SIG_BLOCK or SIG_UNBLOCK, SIG_SETMASK.
+ * @param set Pointer to the set of signals to be modified.
+ * @param oldset Pointer to a location where the previous signal mask will be stored.
+ *               If NULL, the previous signal mask is not saved.
+ * @return On success, returns 0. On error, returns -1 and sets errno.
+ */
+int sub_pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset)
+{
+	return (int)syscall(SYS_rt_sigprocmask, how, (unsigned long)set,
+		(unsigned long)oldset, _NSIG / 8);
+}
+
+/**
  * @brief This function will be invoked to handle the MONC interrupt
  * that occurred on VE core.
  *
@@ -189,7 +207,7 @@ ret_t ve_generic_offload(int syscall_num, char *syscall_name,
 			/* unblock all signals except the one actualy blocked by VE process */
 			PSEUDO_DEBUG("Pre-processing finished, unblock signals");
 			sigfillset(&signal_mask);
-			pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+			sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 			break;
 	}
 
@@ -205,7 +223,7 @@ ret_t ve_generic_offload(int syscall_num, char *syscall_name,
 	{
 		case __NR_fcntl:
 			/* Post-processing of syscall started, blocking signals */
-			pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+			sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 			break;
 	}
 	/* write return value */
@@ -1366,12 +1384,12 @@ ret_t ve_hndl_int_int_p_flock_buf(int syscall_num, char *syscall_name, veos_hand
 	/* unblock all signals except the one actualy blocked by VE process */
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
 	sigfillset(&signal_mask);
-	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 	/* call VH system call */
 	retval = syscall(syscall_num, args[0], args[1],
 			args[2] ? &ve_file_lock : NULL);
 	/* Post-processing of syscall started, blocking signals */
-	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 	if (-1 == retval) {
 		retval = -errno;
 		PSEUDO_ERROR("syscall %s failed %s",

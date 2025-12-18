@@ -415,7 +415,6 @@ int psm_rpm_handle_get_rusage_req(int pid, struct velib_get_rusage_info *ve_ru)
 	int retval = -1;
 	struct ve_rusage ve_r =  { {0} }, ve_r_child = { {0} };
 	struct ve_task_struct *tsk = NULL, *group_leader = NULL;
-	struct ve_task_struct *temp = NULL, *ve_task_list_head = NULL;
 	struct timeval now_time = {0};
 
 	VEOS_TRACE("Entering");
@@ -428,29 +427,50 @@ int psm_rpm_handle_get_rusage_req(int pid, struct velib_get_rusage_info *ve_ru)
 		retval = -ESRCH;
 		goto hndl_return1;
 	}
-	/* The above check is to ensure the task exists in VEOS.
-	 * Release the task reference temporarily and acquire it
-	 * after getting the thread group del_lock. This is required
-	 * to avoid a deadlock scenario between this thread and the
-	 * thread performing same task's zombie partial clean-up.
-	 * The later makes sure no other thread has the task reference
-	 * while performing partial clean-up.
-	 */
-	pthread_mutex_lock_unlock(&tsk->ref_lock, LOCK,
-			"Failed to acquire task reference lock");
-	tsk->ref_count--;
-	VEOS_DEBUG("PID:%d :: ref_count(after decrement):%d :: exiting flag:%d",
-			tsk->pid, tsk->ref_count, tsk->exit_status);
-	if (tsk->ref_count != 0)
-		pthread_cond_signal(&tsk->ref_lock_signal);
-	pthread_mutex_lock_unlock(&tsk->ref_lock, UNLOCK,
-			"Failed to release task reference lock");
-	pthread_mutex_lock_unlock(&(tsk->sighand->del_lock), LOCK,
-				"Failed to acquire thread group delete lock");
-	if (!(tsk = checkpid_in_zombie_list(pid))) {
-		VEOS_ERROR("PID: %d not found.", pid);
-		retval = -ESRCH;
-		goto hndl_return1;
+	if (tsk->group_leader->zombie_partial_cleanup != CLEANUP_DONE){
+		/*
+		 * Since the zombie partial clean-up has not finished yet,
+		 * it is possible that the clean-up is still in progress.
+		 * Wait until the process is completed.
+		 */
+
+		/* The above check is to ensure the task exists in VEOS.
+		 * Release the task reference temporarily and acquire it
+		 * after getting the thread group del_lock. This is required
+		 * to avoid a deadlock scenario between this thread and the
+		 * thread performing same task's zombie partial clean-up.
+		 * The later makes sure no other thread has the task reference
+		 * while performing partial clean-up.
+		 */
+		pthread_mutex_lock_unlock(&tsk->ref_lock, LOCK,
+				"Failed to acquire task reference lock");
+		tsk->ref_count--;
+		VEOS_DEBUG("PID:%d :: ref_count(after decrement):%d :: exiting flag:%d",
+				tsk->pid, tsk->ref_count, tsk->exit_status);
+
+		/* If ref_count is 1, pthread_cond_signal() is called during partial
+		 * clean-up to wake up threads waiting on ref_lock_signal,
+		 * allowing them to proceed with processing.
+		 */
+
+		if (tsk->ref_count == 1)
+			pthread_cond_signal(&tsk->ref_lock_signal);
+		pthread_mutex_lock_unlock(&tsk->ref_lock, UNLOCK,
+				"Failed to release task reference lock");
+
+		/* During partial clean-up, del_lock is held, so the completion of
+		 * partial clean-up is waited for by acquiring del_lock.
+		 */
+
+		pthread_mutex_lock_unlock(&(tsk->sighand->del_lock), LOCK,
+					"Failed to acquire thread group delete lock");
+		if (!(tsk = checkpid_in_zombie_list(pid))) {
+			VEOS_ERROR("PID: %d not found.", pid);
+			retval = -ESRCH;
+			goto hndl_return1;
+		}
+		pthread_mutex_lock_unlock(&(tsk->sighand->del_lock), UNLOCK,
+			"Failed to release thread group delete lock");
 	}
 	retval = psm_handle_get_rusage_request(tsk, RUSAGE_CHILDREN, &ve_r_child);
 	if (-1 == retval) {
@@ -489,51 +509,29 @@ int psm_rpm_handle_get_rusage_req(int pid, struct velib_get_rusage_info *ve_ru)
 
 	group_leader = tsk->group_leader;
 
-	/* Delete this VE process node if it is still on VE core */
-	pthread_rwlock_lock_unlock(&(VE_CORE(0, group_leader->core_id)->ve_core_lock),
-		WRLOCK,
-		"Failed to acquire ve core write lock");
-	if (group_leader->ve_task_state == ZOMBIE)
-		goto skip_delete_from_core;
-	VEOS_DEBUG("PID %d state(%d) is not ZOMBIE, removing it from core list",
-						group_leader->pid, group_leader->ve_task_state);
-	ve_task_list_head = VE_CORE(0, group_leader->core_id)->ve_task_list;
+	/* Clean up the task structure only when it is in the ZOMBIE state,
+	 * the zombie partial clean-up has also been completed,
+	 * and the task is not being deleted elsewhere.
+	 */
 
-	if (group_leader == ve_task_list_head && group_leader->next == group_leader) {
-		/* Current task to be deleted is head of the list */
-		VEOS_DEBUG("PID %d is to be deleted", group_leader->pid);
-		ve_task_list_head = NULL;
-		VE_CORE(0, group_leader->core_id)->ve_task_list = ve_task_list_head;
-		goto skip_delete_from_core;
-	}
-	temp = group_leader->next;
-	while (temp->next != group_leader)
-		temp = temp->next;
-
-	temp->next = group_leader->next;
-	if (group_leader == ve_task_list_head) {
-		ve_task_list_head = temp->next;
-		VE_CORE(0, group_leader->core_id)->ve_task_list = ve_task_list_head;
-		VEOS_DEBUG("Now Head is %p", ve_task_list_head);
-	}
-skip_delete_from_core:
-	pthread_rwlock_lock_unlock(&(VE_CORE(0, group_leader->core_id)->ve_core_lock),
-			UNLOCK,
-			"Failed to release ve core lock");
 	if ((group_leader->pid == tsk->pid) &&
 			(group_leader->ve_task_state == ZOMBIE) &&
+			(group_leader->zombie_partial_cleanup == CLEANUP_DONE) &&
+			(group_leader->zombie_deleting == 0) &&
 			(list_empty(&group_leader->thread_group))) {
+		group_leader->zombie_deleting = DELETING_RUSAGE_RPM;
 		group_leader->ve_task_state = EXIT_DEAD;
 		pthread_mutex_lock_unlock(&group_leader->ref_lock, LOCK,
 				"Failed to acquire task reference lock");
 		VEOS_DEBUG("pid %d ref_count = %d", group_leader->pid,
 						group_leader->ref_count);
 		VEOS_DEBUG("Acquired ref_lock, waiting for conditional signal");
-		if (!(group_leader->ref_count == 1) &&
-			pthread_cond_wait(&group_leader->ref_lock_signal,
+		while (group_leader->ref_count > 1) {
+			if (pthread_cond_wait(&group_leader->ref_lock_signal,
 					&group_leader->ref_lock)) {
-			veos_abort("pthread_cond_wait failed %s",
+				veos_abort("pthread_cond_wait failed %s",
 					strerror(errno));
+			}
 		}
 		pthread_mutex_lock_unlock(&group_leader->ref_lock, UNLOCK,
 				"Failed to release task reference lock");
@@ -548,6 +546,9 @@ skip_delete_from_core:
 
 		retval = 0;
 		goto hndl_return1;
+	}else{
+		VEOS_DEBUG("PID %d state(%d) is not ZOMBIE at VE_GET_RUSAGE req",
+						group_leader->pid, group_leader->ve_task_state);
 	}
 hndl_return:
 	if (tsk)

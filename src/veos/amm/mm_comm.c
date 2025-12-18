@@ -34,7 +34,7 @@
 #include <sys/capability.h>
 
 #include "ve_memory.h"
-#include "ptrace_req.h"
+#include "psm_procinfo.h"
 #include "ve_mem.h"
 #include "veos_handler.h"
 #include "veos.h"

@@ -149,6 +149,18 @@ enum zombie_cleanup_state {
 	CLEANUP_NEEDED,	/*!< ZOMBIE cleanup needed*/
 	CLEANUP_DONE	/*!< ZOMBIE cleanup completed */
 };
+
+/**
+ * @brief function deleting the zombie task
+ */
+enum zombie_deleting_operator {
+	DELETING_NO = 0,	/*!< No one is deleting zombie */
+	DELETING_RUSAGE,		/*!< psm_handle_get_rusage_req */
+	DELETING_RUSAGE_RPM,	/*!< psm_rpm_handle_get_rusage_req */
+	DELETING_CHILDREN,	/*!< psm_traverse_children_for_zombie */
+	DELETING_CLEANUP		/*!< veos_zombie_cleanup_thread */
+};
+
 /**
  * @brief Process sub status of STOP status
  */
@@ -476,6 +488,7 @@ struct ve_task_struct {
 	pthread_mutex_t offset_lock; /*!< VE task Mutex offset lock */
 	pthread_mutex_t ref_lock; /*!< Used in get and put functionality of VE process */
 	int ref_count; /*!< Reference count for get and put VE process */
+	int zombie_deleting;
 	int exit_status; /*!< Flag to check cleanup eligibility of a thread */
 	int exit_code; /*!< Exit code of the terminating process */
 	bool exit_code_set; /*!< flag which denote whether exit code is set from exit_group*/
@@ -526,6 +539,7 @@ struct ve_task_struct {
 	bool vlfa_wait;		/*!< for VE3 hardware issue */
 	cpu_set_t job_scheduler_cpus_allowed;	/* cpu affinity mask as allowed by job scheduler */
 	enum VE_SCHED_STATE ve_sched_state; /* Flag whether it should be removed from scheduling */
+	bool driver_released;		/* Flag indicating whether the VE driver has been released */
 };
 
 
@@ -670,7 +684,7 @@ struct ve_task_struct *alloc_ve_task_struct_node(void);
 struct ve_thread_struct *alloc_ve_thread_struct_node(void);
 void free_ve_thread_struct(struct ve_thread_struct *);
 struct sighand_struct *alloc_ve_sighand_struct_node(void);
-struct ve_task_struct current;
+extern struct ve_task_struct current;
 int update_ve_thread_node(const struct ve_context_info *, struct ve_thread_struct *);
 int psm_handle_start_ve_request(struct veos_thread_arg *, int);
 int psm_handle_block_request(pid_t);
@@ -708,7 +722,6 @@ void veos_dump_acct_info(struct ve_task_struct *);
 void veos_delete_task_from_parent_and_init(struct ve_task_struct *);
 void veos_zombie_cleanup_thread(void);
 void veos_modtmp_cleanup_thread(void);
-bool check_for_zombie_deletion(struct ve_task_struct *);
 void psm_delete_zombie_task(struct ve_task_struct *);
 struct ve_task_struct*  checkpid_in_zombie_list(int pid);
 int psm_change_parent_ve_task_worker(struct ve_task_struct *, struct ve_task_struct *);

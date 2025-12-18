@@ -19,8 +19,11 @@ libvepsm_a_SOURCES = \
 	task_sched.h \
 	ptrace_req.c \
 	ptrace_req.h \
+	libproc_readproc.h \
 	locking_handler.c \
-	locking_handler.h
+	locking_handler.h \
+	psm_procinfo.c \
+	psm_procinfo.h
 
 # libived is used for Dummy AMM
 libvepsm_a_CFLAGS = \

@@ -655,8 +655,10 @@ int init_lhm_shm_area(veos_handle *handle, int *node_id, char *sfile_name)
 		goto hndl_return;
 	}
 
-	strncpy(tmp_sock0, handle->veos_sock_name, NAME_MAX+PATH_MAX);
-	strncpy(tmp_sock1, handle->veos_sock_name, NAME_MAX+PATH_MAX);
+	strncpy(tmp_sock0, handle->veos_sock_name, NAME_MAX+PATH_MAX - 1);
+	tmp_sock0[NAME_MAX + PATH_MAX - 1] = '\0'; //add terminator
+	strncpy(tmp_sock1, handle->veos_sock_name, NAME_MAX+PATH_MAX - 1);
+	tmp_sock1[NAME_MAX + PATH_MAX - 1] = '\0'; //add terminator
 
 	base_name = basename(tmp_sock0);
 	dir_name = dirname(tmp_sock1);

@@ -257,6 +257,5 @@ int get_ve_corefile_fd(int);
 bool is_actually_stopped(pid_t);
 bool should_dump_core(struct ve_task_struct *);
 bool is_dumping_core(struct ve_task_struct *);
-bool is_pseudo_stop(pid_t pid);
 int veos_coredump_helper_launcher(void);
 #endif

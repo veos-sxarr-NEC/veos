@@ -30,11 +30,14 @@
 
 #include <sys/types.h>
 #include <sys/ptrace.h>
-#include <proc/readproc.h>
-
 #include <libved.h>
 
 #include "task_mgmt.h"
+#ifdef USE_OPENPROC
+#include <proc/readproc.h>
+#else
+#include "libproc_readproc.h"
+#endif
 
 #define PTRACE_PRIVATE_DATA     (0x5F0000000000)
 #define SYSCALL_TRACE_OFFSET	(0x8)
@@ -104,5 +107,4 @@ int psm_ptrace_detach(struct ve_task_struct *);
 int psm_ptrace_syscall(struct ve_task_struct *, bool);
 int psm_get_ice_regval(int, uint64_t *);
 int psm_ptrace_setoptions(struct ve_task_struct *, uint64_t);
-int psm_get_ve_proc_info(pid_t, proc_t *);
 #endif

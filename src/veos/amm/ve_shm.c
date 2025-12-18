@@ -1027,7 +1027,8 @@ int rm_or_ls_segment(proc_t *proc_info, bool is_ipcs, struct ve_mapheader *heade
 
 	file_base_name = basename(filename);
 	header->length = summary.used_ids;
-	strncpy(header->filename, file_base_name, S_FILE_LEN);
+	strncpy(header->filename, file_base_name, S_FILE_LEN - 1);
+	header->filename[S_FILE_LEN - 1] = '\0'; //add terminator
 
 	VEOS_DEBUG("HEADER INFO header->filename(%s) header->length(%u)",
 			header->filename, header->length);

@@ -206,4 +206,5 @@ ret_t ve_hndl_p_int_p_int_p_int(int, char *, veos_handle *);
 ret_t ve_hndl_p_char_p_stat_buf(int, char *, veos_handle *);
 ret_t ve_hndl_int_int_p_flock_buf(int, char *, veos_handle *);
 ret_t ve_is_valid_address(veos_handle *, uint64_t);
+int sub_pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset);
 #endif

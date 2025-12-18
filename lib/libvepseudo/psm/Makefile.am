@@ -12,7 +12,9 @@ libpseudopsm_la_SOURCES = \
 	exception.h \
 	ve_signal.h \
 	exception.c \
-	arch_func_ptrs.c
+	arch_func_ptrs.c \
+	pseudo_procinfo.c \
+	pseudo_procinfo.h
 
 libpseudopsm_la_CFLAGS = \
 	-g -Wall -Werror -DDEBUG -D_GNU_SOURCE -std=gnu99 \

@@ -729,7 +729,7 @@ int main(int argc, char *argv[])
 			};
 
 	/* Parse the options */
-	while ((s = getopt_long(argc, argv, "hs:d:i:m:t:T:V:p", long_options,
+	while ((s = getopt_long(argc, argv, "hs:d:i:m:t:T:Vp:", long_options,
 							&index)) != -1) {
 		switch (s) {
 		case 's':

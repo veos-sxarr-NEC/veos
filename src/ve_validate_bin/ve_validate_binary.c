@@ -23,8 +23,8 @@ int ve_validate_gap(Elf_Ehdr *ehdr)
 	int i = 0, ret = 0;
 	Elf_Shdr *shdr = NULL;
 	offset_t diff_offset = 0;
-	Elf64_Addr sh_addr_ax = NULL;
-	Elf64_Addr sh_addr_wa = NULL;
+	Elf64_Addr sh_addr_ax = 0;
+	Elf64_Addr sh_addr_wa = 0;
 
 	shdr = (Elf64_Shdr *)load_elf.start_section;
 	if (!shdr){

@@ -46,11 +46,11 @@
 #define VEOS_VHVE_MAX_THREADS         128
 
 
-int (*veos_pseudo_handler[PSEUDO_VEOS_MAX_MSG_NUM])(struct veos_thread_arg *);
+/* int (*veos_pseudo_handler[PSEUDO_VEOS_MAX_MSG_NUM])(struct veos_thread_arg *); */
 
 int amm_send_mprotect_ack(struct veos_thread_arg *, int64_t);
 
-int (*veos_vhve_handler[VHVE_VEOS_MAX_MSG_NUM])(struct veos_vhve_thread_arg *);
+/* int (*veos_vhve_handler[VHVE_VEOS_MAX_MSG_NUM])(struct veos_vhve_thread_arg *); */
 
 /* AMM <------------> PSEUDO*/
 int amm_handle_process_vm_rw_req(veos_thread_arg_t *);

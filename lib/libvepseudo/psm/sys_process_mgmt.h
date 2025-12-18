@@ -128,6 +128,5 @@ ret_t ve_do_fork(uint64_t *, char *, veos_handle *);
 ret_t ve__do_clone(int, char *, veos_handle *,
 		void (*)(veos_handle *, void *), void *);
 
-int ve_premature_child_exit(pid_t);
 int find_global_array_index(int tid);
 #endif

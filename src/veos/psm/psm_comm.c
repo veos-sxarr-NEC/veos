@@ -884,7 +884,6 @@ int psm_handle_exec_ve_proc_req(struct veos_thread_arg *pti)
 		tsk->atb_dirty = 0;
 		tsk->crd_dirty = 0;
 		tsk->exit_code = 0;
-		tsk->exit_status = 0;
 		tsk->exit_code_set = 0;
 		tsk->block_status = BLOCK_RECVD;
 		pthread_rwlock_lock_unlock(&(tsk->p_ve_core->ve_core_lock), WRLOCK,
@@ -3891,7 +3890,6 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 	int retval = -1;
 	PseudoVeosMessage *rusage_req = NULL;
 	struct ve_task_struct *tsk = NULL, *group_leader = NULL;
-	struct ve_task_struct *temp = NULL, *ve_task_list_head = NULL;
 	struct ve_rusage ve_r = {{0}};
 	struct ve_rusage_info rusage_task = {0};
 	uint64_t max_rss = 0;
@@ -3921,6 +3919,7 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 			retval = -ESRCH;
 			goto send_ack1;
 		}
+		rusage_task.pid = tsk->pid;
 
 		VEOS_DEBUG("Parent(%d) its child(%d) for cleanup %p",
 					parent_pid, tsk->pid, tsk);
@@ -3961,30 +3960,50 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 	group_leader = tsk->group_leader;
 
 	if (rusage_task.cleanup) {
-		/* Release the task reference temporarily and acquire it
-		 * after getting the thread group del_lock. This is required
-		 * to avoid a deadlock scenario between this thread and the
-		 * thread performing same task's zombie partial clean-up.
-		 * The later makes sure no other thread has the task reference
-		 * while performing partial clean-up.
-		 */
-		pthread_mutex_lock_unlock(&tsk->ref_lock, LOCK,
-				"Failed to acquire task reference lock");
-		tsk->ref_count--;
-		VEOS_DEBUG("PID:%d :: ref_count(after decrement):%d :: exiting flag:%d",
-			tsk->pid, tsk->ref_count, tsk->exit_status);
-		if (tsk->ref_count != 0)
-			pthread_cond_signal(&tsk->ref_lock_signal);
-		pthread_mutex_lock_unlock(&tsk->ref_lock, UNLOCK,
-				"Failed to release task reference lock");
-		VEOS_DEBUG("Parent acquiring del_lock for PID %d",
-				group_leader->pid);
-		pthread_mutex_lock_unlock(&(group_leader->sighand->del_lock), LOCK,
-				"Failed to acquire thread group delete lock");
-		tsk = checkpid_in_zombie_list(rusage_task.pid);
-		if (tsk == NULL) {
-			VEOS_DEBUG("Child PID: %d not found.", rusage_task.pid);
-			goto send_ack1;
+		if (tsk->group_leader->zombie_partial_cleanup != CLEANUP_DONE){
+			/*
+			 * Since the zombie partial clean-up has not finished yet,
+			 * it is possible that the clean-up is still in progress.
+			 * Wait until the process is completed.
+			 */
+
+			/* Release the task reference temporarily and acquire it
+			 * after getting the thread group del_lock. This is required
+			 * to avoid a deadlock scenario between this thread and the
+			 * thread performing same task's zombie partial clean-up.
+			 * The later makes sure no other thread has the task reference
+			 * while performing partial clean-up.
+			 */
+			pthread_mutex_lock_unlock(&tsk->ref_lock, LOCK,
+					"Failed to acquire task reference lock");
+			tsk->ref_count--;
+			VEOS_DEBUG("PID:%d :: ref_count(after decrement):%d :: exiting flag:%d",
+				tsk->pid, tsk->ref_count, tsk->exit_status);
+
+			/* If ref_count is 1, pthread_cond_signal() is called during partial
+			 * clean-up to wake up threads waiting on ref_lock_signal,
+			 * allowing them to proceed with processing.
+			 */
+			if (tsk->ref_count == 1)
+				pthread_cond_signal(&tsk->ref_lock_signal);
+			pthread_mutex_lock_unlock(&tsk->ref_lock, UNLOCK,
+					"Failed to release task reference lock");
+			VEOS_DEBUG("Parent acquiring del_lock for PID %d",
+					group_leader->pid);
+
+			/* During partial clean-up, del_lock is held, so the completion of
+			 * partial clean-up is waited for by acquiring del_lock.
+			 */
+
+			pthread_mutex_lock_unlock(&(group_leader->sighand->del_lock), LOCK,
+					"Failed to acquire thread group delete lock");
+			tsk = checkpid_in_zombie_list(rusage_task.pid);
+			if (tsk == NULL) {
+				VEOS_DEBUG("Child PID: %d not found.", rusage_task.pid);
+				goto send_ack1;
+			}
+			pthread_mutex_lock_unlock(&(group_leader->sighand->del_lock), UNLOCK,
+				"Failed to release thread group delete lock");
 		}
 
 		/* populating cexec_time field in parent as it waits for child */
@@ -4004,63 +4023,48 @@ int psm_handle_get_rusage_req(struct veos_thread_arg *pti)
 					group_leader->parent->pid, max_rss);
 		}
 
-		/* Delete this VE process node if it is still on VE core */
-		pthread_rwlock_lock_unlock(&(VE_CORE(0, group_leader->core_id)->ve_core_lock),
-			WRLOCK,
-			"Failed to acquire ve core write lock");
-		if (group_leader->ve_task_state == ZOMBIE)
-			goto skip_delete_from_core;
-		VEOS_DEBUG("PID %d state(%d) is not ZOMBIE, removing it from core list",
-							group_leader->pid, group_leader->ve_task_state);
-		ve_task_list_head = VE_CORE(0, group_leader->core_id)->ve_task_list;
-
-		if (group_leader == ve_task_list_head && group_leader->next == group_leader) {
-			/* Current task to be deleted is head of the list */
-			VEOS_DEBUG("PID %d is to be deleted", group_leader->pid);
-			ve_task_list_head = NULL;
-			VE_CORE(0, group_leader->core_id)->ve_task_list = ve_task_list_head;
-			goto skip_delete_from_core;
-		}
-		temp = group_leader->next;
-		while (temp->next != group_leader)
-			temp = temp->next;
-
-		temp->next = group_leader->next;
-		if (group_leader == ve_task_list_head) {
-			ve_task_list_head = temp->next;
-			VE_CORE(0, group_leader->core_id)->ve_task_list = ve_task_list_head;
-			VEOS_DEBUG("Now Head is %p", ve_task_list_head);
-		}
-skip_delete_from_core:
-		pthread_rwlock_lock_unlock(&(VE_CORE(0, group_leader->core_id)->ve_core_lock),
-				UNLOCK,
-				"Failed to release ve core lock");
+		/* Clean up the task structure only when it is in the ZOMBIE state,
+		 * the zombie partial clean-up has also been completed,
+		 * and the task is not being deleted elsewhere.
+		 */
 		pthread_mutex_lock_unlock(&(group_leader->ve_task_lock), LOCK,
 				"Failed to acquire task lock");
+		if ((group_leader->ve_task_state == ZOMBIE) &&
+			(group_leader->zombie_partial_cleanup == CLEANUP_DONE) &&
+			(group_leader->zombie_deleting == 0)){
 
-		VEOS_DEBUG("Parent %d invoking cleanup of Child: %d",
+			VEOS_DEBUG("Parent %d invoking cleanup of Child: %d",
 				tsk->parent->pid, tsk->pid);
-		group_leader->ve_task_state = EXIT_DEAD;
+			group_leader->zombie_deleting = DELETING_RUSAGE;
 
-		pthread_mutex_lock_unlock(&(group_leader->ve_task_lock), UNLOCK,
+			group_leader->ve_task_state = EXIT_DEAD;
+
+			pthread_mutex_lock_unlock(&(group_leader->ve_task_lock), UNLOCK,
 				"Failed to release task lock");
-		pthread_mutex_lock_unlock(&group_leader->ref_lock, LOCK,
+			pthread_mutex_lock_unlock(&group_leader->ref_lock, LOCK,
 				"Failed to acquire task reference lock");
-		VEOS_DEBUG("pid %d  ref_count = %d",
+			VEOS_DEBUG("pid %d  ref_count = %d",
 				group_leader->pid, group_leader->ref_count);
-		VEOS_DEBUG("Acquired ref_lock, waiting for conditional signal");
-		if (!(group_leader->ref_count == 1) &&
-				pthread_cond_wait(&group_leader->ref_lock_signal,
+			VEOS_DEBUG("Acquired ref_lock, waiting for conditional signal");
+			while (group_leader->ref_count > 1) {
+				if (pthread_cond_wait(&group_leader->ref_lock_signal,
 					&group_leader->ref_lock)) {
-			veos_abort("pthread_cond_wait failed %s",
-					strerror(errno));
-		}
-		pthread_mutex_lock_unlock(&group_leader->ref_lock, UNLOCK,
+					veos_abort("pthread_cond_wait failed %s",
+						strerror(errno));
+				}
+			}
+			pthread_mutex_lock_unlock(&group_leader->ref_lock, UNLOCK,
 				"Failed to release task reference lock");
 
-		psm_delete_zombie_task(group_leader);
-		retval = 0;
-		goto send_ack1;
+			psm_delete_zombie_task(group_leader);
+			retval = 0;
+			goto send_ack1;
+		}else{
+			VEOS_DEBUG("PID %d state(%d) is not ZOMBIE at GET_RUSAGE req",
+							group_leader->pid, group_leader->ve_task_state);
+			pthread_mutex_lock_unlock(&(group_leader->ve_task_lock), UNLOCK,
+				"Failed to release task lock");
+		}
 
 	}
 	retval = 0;

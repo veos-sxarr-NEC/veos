@@ -52,10 +52,6 @@ struct vhve_veos_handle_struct {
 
 typedef struct vhve_veos_handle_struct vhve_veos_handle;
 
-/* list of vhve_veos_handle */
-struct list_head veos_hndl_list;
-/* A lock for veos_hndl_list  */
-pthread_mutex_t vhve_veos_hndl_list_lock;
 
 #define CAT_VHVE_CORE cat_vhve_core
 #define VHVE_ERROR(fmt, ...) \

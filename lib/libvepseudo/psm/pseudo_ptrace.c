@@ -61,7 +61,7 @@ void send_sig_to_itself(int signo, int sicode, void *siaddr)
 
 	/* Get the current signal mask */
 	sigemptyset(&sigset);
-	pthread_sigmask(0, NULL, &sigset);
+	sub_pthread_sigmask(0, NULL, &sigset);
 
 	PSEUDO_INFO("Sending Signal %d to TID: %d", signo, tid);
 	/* Check if SIGTRAP is blocked, then we need to
@@ -72,7 +72,7 @@ void send_sig_to_itself(int signo, int sicode, void *siaddr)
 		sigemptyset(&sigset);
 		PSEUDO_DEBUG("Unblocking SIGTRAP signal");
 		sigaddset(&sigset, SIGTRAP);
-		pthread_sigmask(SIG_UNBLOCK, &sigset, NULL);
+		sub_pthread_sigmask(SIG_UNBLOCK, &sigset, NULL);
 		sig_unblock = true;
 	}
 
@@ -84,7 +84,7 @@ void send_sig_to_itself(int signo, int sicode, void *siaddr)
 	 */
 	if (sig_unblock) {
 		/* Block SIGTRAP signal */
-		pthread_sigmask(SIG_BLOCK, &sigset, NULL);
+		sub_pthread_sigmask(SIG_BLOCK, &sigset, NULL);
 	}
 	if (-1 == retval) {
 		PSEUDO_DEBUG("rt_tgsigqueueinfo syscall failed: %s",

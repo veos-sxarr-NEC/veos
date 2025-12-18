@@ -118,7 +118,8 @@ struct ve_acct_struct {
 	int fd; /*!< File descriptor corresponding to file */
 	struct timeval check_space_time; /* !< To check disk space periodically */
 	pthread_mutex_t ve_acct_lock; /*!< Mutex lock for syncronization */
-} veos_acct;
+};
+extern struct ve_acct_struct veos_acct;
 
 /**
  * @brief These macros define the behaviour of the free space checking thread

@@ -35,9 +35,10 @@ struct proc_cr_page {
 	uint64_t mode_flag;
 	uint64_t cr_page_num;
 };
-
+#ifndef __IVED_IPC_H
 struct RpcCrArg;
 typedef struct _RpcCrArg RpcCrArg;
+#endif
 struct ived_shared_resource_data;
 struct ve_task_struct;
 

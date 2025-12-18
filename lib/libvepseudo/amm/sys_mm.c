@@ -50,7 +50,7 @@
 #include <time.h>
 #include <dirent.h>
 #include <sys/file.h>
-#include <proc/readproc.h>
+#include "pseudo_procinfo.h"
 
 char * const ve_grow_err_str[VE_GROW_NO_ERR] =
 {
@@ -1731,7 +1731,8 @@ static int create_inter_file(struct mod_file_info *info, char **inter_file_path,
 		free(file_path);
 		return ret;
 	}
-	strncpy(fname, info->file_path, PATH_MAX + NAME_MAX);
+	strncpy(fname, info->file_path, PATH_MAX + NAME_MAX - 1);
+	fname[PATH_MAX + NAME_MAX - 1] = '\0'; // Add a null terminator
 	file_name = basename(fname);
 	ret = snprintf(file_path, PATH_MAX + NAME_MAX,
 		"%s/%u/.inter_%d_%ld_%s",
@@ -1898,8 +1899,10 @@ static int get_ve_node_num(veos_handle *hndl)
 		free(tmp_sock_path0);
 		return -1;
 	}
-	strncpy(tmp_sock_path0, hndl->veos_sock_name, NAME_MAX + PATH_MAX);
-	strncpy(tmp_sock_path1, hndl->veos_sock_name, NAME_MAX + PATH_MAX);
+	strncpy(tmp_sock_path0, hndl->veos_sock_name, NAME_MAX + PATH_MAX - 1);
+	tmp_sock_path0[NAME_MAX + PATH_MAX - 1] = '\0'; //add a null terminator
+	strncpy(tmp_sock_path1, hndl->veos_sock_name, NAME_MAX + PATH_MAX - 1);
+	tmp_sock_path1[NAME_MAX + PATH_MAX - 1] = '\0'; //add a null terminator
 	sock_name = basename(tmp_sock_path0);
 	sock_dir_name = dirname(tmp_sock_path1);
 	PSEUDO_TRACE("veos_sock_name:%s", hndl->veos_sock_name);
@@ -1920,39 +1923,6 @@ static int get_ve_node_num(veos_handle *hndl)
 
 	PSEUDO_TRACE("Returned(%d)", c_cnt);
 	return c_cnt;
-}
-
-/* On success return 0, return 1 when pid is not found,
-   on failure return -1 */
-static int get_proc_status(pid_t pid, char *status)
-{
-	PROCTAB* proc = NULL;
-	proc_t *procinfo = NULL;
-	char path[PATH_MAX]="";
-	struct stat st;
-
-	proc = openproc(PROC_FILLSTAT | PROC_PID, &pid);
-	if (proc == NULL) {
-		PSEUDO_DEBUG("failed to open proc interface for pid:%d", pid);
-		snprintf(path, PATH_MAX, "/proc/%d/stat", pid);
-		if (stat(path, &st) != 0) {
-			if (errno == ENOENT) {
-				PSEUDO_DEBUG("PID:%d may be terminated", pid);
-				return 1;
-			}
-		}
-		return -1;
-	}
-	procinfo = readproc(proc, NULL);
-	if (procinfo == NULL) {
-		PSEUDO_DEBUG("failed to read proc info for pid:%d", pid);
-		return -1;
-	}
-	*status = procinfo->state;
-	freeproc(procinfo);
-	closeproc(proc);
-
-	return 0;
 }
 
 /* On success return 0, on failure return -1 */
@@ -5721,7 +5691,7 @@ int search_ve_xtbl_addrtbl(struct ve_xtbl_adr_hdr *adr_hdr, uint64_t mod_vemva, 
 		PSEUDO_ERROR("no ve_xtbl_adr_hdr table, adr_hdr is none, mod_vemva = %#lx", mod_vemva);
 		return -EFAULT;
 	}
-	if (adr_hdr->num <= 0 || adr_hdr->ve_xtbl_addrtbl == NULL) {
+	if (adr_hdr->num <= 0) { // Removed check for ve_xtbl_addrtbl. Since it is declared as an array, NULL check is meaningless.
 		PSEUDO_ERROR("no ve_xtbl_adr table, xtbl_addrtbl is none, mod_vemva = %#lx", mod_vemva);
 		return -EFAULT;
 	}

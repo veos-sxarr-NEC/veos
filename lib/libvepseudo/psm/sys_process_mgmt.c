@@ -37,7 +37,6 @@
 #include "velayout.h"
 #include "loader.h"
 #include "pseudo_ptrace.h"
-#include <proc/readproc.h>
 #include <sys/statvfs.h>
 #include <sys/times.h>
 #include "pseudo_vhshm.h"
@@ -45,9 +44,9 @@
 #include "sys_accelerated_io.h"
 #include "sys_offload.h"
 #include "veshm_defs.h"
+#include "pseudo_procinfo.h"
 
 int tid_counter = -1;
-pthread_mutex_t readproc_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 extern cpu_set_t ve_affinity_mask;
 
@@ -902,62 +901,6 @@ ret_t ve_clone(int syscall_num, char *syscall_name, veos_handle *handle)
 	}
 
 	return retval;
-}
-
-/**
- *  @brief Checks that Process is alive or not by accessing proc interface
- *
- *  @param[in] pid of process whose proc entry is to be read.
- *
- *  @return -1 if task state of process has become ZOMBIE or readproc()
- *  fails for "pid", else 0 is returned if process is alive.
- */
-int ve_premature_child_exit(pid_t pid)
-{
-	PROCTAB *proc;
-	proc_t *proc_info;
-	int ret = -1;
-	int locked;
-
-	locked = pthread_mutex_lock(&readproc_mutex);
-	if (0 != locked) {
-		PSEUDO_DEBUG("Failed to acquire read proc lock: %s",
-				strerror(locked));
-		goto handle_failure;
-	}
-
-	proc = openproc(PROC_FILLSTAT|PROC_PID, &pid);
-	if (NULL == proc) {
-		PSEUDO_DEBUG("Fails to open proc interface for pid: %d", pid);
-		goto handle_error;
-	}
-
-	proc_info = readproc(proc, NULL);
-	if (NULL == proc_info) {
-		PSEUDO_DEBUG("Fail to read proc information for pid: %d", pid);
-		closeproc(proc);
-		goto handle_error;
-	}
-
-	if (proc_info->state == 'Z') {
-		PSEUDO_DEBUG("VH process has become zombie");
-		freeproc(proc_info);
-		closeproc(proc);
-		goto handle_error;
-	}
-	freeproc(proc_info);
-	closeproc(proc);
-	ret = 0;
-handle_error:
-	locked = pthread_mutex_unlock(&readproc_mutex);
-	if (0 != locked) {
-		PSEUDO_DEBUG("Failed to release read proc lock: %s",
-				strerror(locked));
-		ret = -1;
-	}
-
-handle_failure:
-	return ret;
 }
 
 /**
@@ -2023,7 +1966,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 	PSEUDO_DEBUG("Pre-processing finished, unblock signals");
 	sigemptyset(&signal_mask);
 	sigfillset(&signal_mask);
-	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	if (exe_flag) {
 		execve(execve_vh_arg[0], execve_vh_arg, execve_vh_envp);
@@ -2035,7 +1978,7 @@ ret_t ve_execve(int syscall_num, char *syscall_name, veos_handle *handle)
 	fprintf(stderr, "VE process setup failed\n");
 
 	/* Post-processing of syscall started, blocking signals */
-	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 	if (retval) {
 		PSEUDO_ERROR("execve failed %s", strerror(errno));
 		kill_flag = 1;
@@ -2137,13 +2080,13 @@ ret_t ve_wait4(int syscall_num, char *syscall_name, veos_handle *handle)
 
 	sigemptyset(&signal_mask);
 	sigfillset(&signal_mask);
-	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	pid = retval = syscall(syscall_num, wait4_args[0], &status,
 			wait4_args[2], &r);
 
 	/* Post-processing of syscall started, blocking signals */
-	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 
 	PSEUDO_DEBUG("status: %d, exited: %d, exitstatus: %d,"
 			"signaled: %d, termsig: %d",
@@ -3931,7 +3874,7 @@ ret_t ve_futex(int syscall_num, char *syscall_name, veos_handle *handle)
 		goto hndl_return1;
 	}
 
-	retval = pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	retval = sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 	if (retval != 0) {
 		PSEUDO_ERROR("futex() failure: Failed to change the "
 				"signal mask");
@@ -3953,7 +3896,7 @@ ret_t ve_futex(int syscall_num, char *syscall_name, veos_handle *handle)
 	}
 
 	/* Post-processing of syscall started, blocking signals */
-	ret = pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	ret = sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 
 	if (ret != 0) {
 		PSEUDO_DEBUG("Blocked signals for post-processing");
@@ -4722,7 +4665,7 @@ ret_t ve_waitid(int syscall_num, char *syscall_name, veos_handle *handle)
 
 	sigemptyset(&signal_mask);
 	sigfillset(&signal_mask);
-	pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
+	sub_pthread_sigmask(SIG_SETMASK, &ve_proc_sigmask, NULL);
 
 	/* zeroing out the field to distinguish the case of
 	 * WNOHANG with the case without WNOHANG*/
@@ -4731,7 +4674,7 @@ ret_t ve_waitid(int syscall_num, char *syscall_name, veos_handle *handle)
 	pid = retval = syscall(syscall_num, waitid_args[0], waitid_args[1],
 			&ve_infop, waitid_args[3], &r);
 	/* Post-processing of syscall started, blocking signals */
-	pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+	sub_pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
 
 	if (-1 == retval) {
 		retval = -errno;
