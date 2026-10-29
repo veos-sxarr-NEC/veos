@@ -3151,8 +3151,12 @@ err_clean:
 							attri_entry->new_pgno[idx]);
 					pthread_mutex_lock_unlock(&vnode->ve_pages_node_lock,
 						UNLOCK, "Fail to release ve page lock");
-					if (file_desc->in_mem_pages)
+					/* UNDERFLOW CHECK */
+					if (file_desc->in_mem_pages == 0) {
+						VEOS_ERROR("in_mem_pages is already 0 in amm_do_file_back_handling: sum_virt_pages=%lu", file_desc->sum_virt_pages);
+					} else {
 						file_desc->in_mem_pages--;
+					}
 					if(attri_entry->map_desc_pgno > 0){
 						attri_entry->map_desc_pgno[idx] = -1;
 					}
@@ -3596,7 +3600,13 @@ int amm_do_put_page_no_lock(vemaa_t pb, bool is_amm, int pps_to)
 					((struct mmap_desc *)(page->private_data));
 				if (is_ve_page_swappable(pgnum, vnode))
 					mmap_d->ns_pages--;
-				mmap_d->in_mem_pages--;
+				/* UNDERFLOW CHECK */
+				if (mmap_d->in_mem_pages == 0) {
+					VEOS_ERROR("in_mem_pages is already 0 in amm_do_put_page_no_lock: sum_virt_pages=%lu ns_pages=%lu reference_count=%lu",
+						mmap_d->sum_virt_pages, mmap_d->ns_pages, mmap_d->reference_count);
+				} else {
+					mmap_d->in_mem_pages--;
+				}
 				page->private_data = NULL;
 				if (page->swapped_info == NULL) {
 					mmap_d->reference_count--;
@@ -4192,7 +4202,14 @@ static void clear_page_array_entry(struct mapping_desc *map_desc,
 	VEOS_TRACE("iteration starts to find matching VE page");
 	for (i = 0; i <= (off_end-off_start); i++) {
 		if (pgno[i] == pg_num) {
-			map_desc->file_desc->in_mem_pages--;
+			/* UNDERFLOW CHECK */
+			if (map_desc->file_desc->in_mem_pages == 0) {
+				VEOS_ERROR("in_mem_pages is already 0 in clear_page_array_entry: "
+					"sum_virt_pages=%lu",
+					map_desc->file_desc->sum_virt_pages);
+			} else {
+				map_desc->file_desc->in_mem_pages--;
+			}
 			pgno[i] = -1;
 			VEOS_TRACE("fmap(%p) has %ld in memory VE pages",
 				map_desc, map_desc->file_desc->in_mem_pages);
@@ -4421,8 +4438,13 @@ err:
 						pg_no[idx]);
 			pthread_mutex_lock_unlock(&vnode_info->ve_pages_node_lock,
 				UNLOCK, "Fail to release ve page lock");
-			if (file->in_mem_pages)
+			/* UNDERFLOW CHECK */
+			if (file->in_mem_pages == 0) {
+				VEOS_ERROR("in_mem_pages is already 0 in update_mapping_desc: sum_virt_pages=%lu",
+					file->sum_virt_pages);
+			} else {
 				file->in_mem_pages--;
+			}
 			new_pgno[idx] = -1;
 		}
 	}

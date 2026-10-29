@@ -140,8 +140,18 @@ int veos_pidstat_info(pid_t pid, struct velib_pidstat *pidstat)
 	pthread_mutex_lock_unlock(&tsk->p_ve_mm->thread_group_mm_lock, LOCK,
 			"Failed to acquire thread-group-mm-lock");
 	pidstat->vsize = get_vm_size(tsk->p_ve_mm); /*In Bytes*/
-	pidstat->rss = (get_uss(tsk->p_ve_mm, NULL) + get_pss(tsk->p_ve_mm, NULL))/1024;
+	/* Calculate and detect abnormal RSS values */
+	uint64_t uss_val = get_uss(tsk->p_ve_mm, NULL);
+	uint64_t pss_val = get_pss(tsk->p_ve_mm, NULL);
+	pidstat->rss = (uss_val + pss_val) / 1024;
 								/*In KBytes*/
+	/* ABNORMAL CHECK: RSS over limit may indicate underflow. */
+	if (pidstat->rss > MAX_MEM_PER_PROC_KB) {
+		VEOS_ERROR(
+			"ABNORMAL RSS DETECTED for pid=%d: "
+			"rss=%lu KB (> Max Memory per Proc), uss=%lu bytes, pss=%lu bytes",
+			pid, pidstat->rss, uss_val, pss_val);
+	}
 	pidstat->startcode = tsk->p_ve_mm->start_code;
 	pidstat->endcode = tsk->p_ve_mm->end_code;
 	pidstat->rsslim = tsk->sighand->rlim[RLIMIT_RSS].rlim_cur; /*In Bytes*/

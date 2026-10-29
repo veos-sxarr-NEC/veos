@@ -54,4 +54,7 @@ pgno_t pfnum(int64_t, int);
 
 uint64_t pbaddr(pgno_t, int);
 
+#define	MAX_MEM_PER_PROC_KB	(96ULL * 1024 * 1024)
+#define	MAX_MEM_PER_PROC	(MAX_MEM_PER_PROC_KB * 1024)
+
 #endif

@@ -1239,6 +1239,16 @@ uint64_t get_pss(struct ve_mm_struct *mm, uint64_t *ns)
 		pthread_mutex_lock_unlock(&file_desc->f_desc_lock, LOCK,
 			"Failed to acquire file desc lock");
 		if (file_desc->sum_virt_pages != 0) {
+			/* ABNORMAL CHECK: in_mem_pages (RSS over limit may indicate underflow.) */
+			if (file_desc->in_mem_pages > (MAX_MEM_PER_PROC / file_desc->pgsz)) {
+				VEOS_ERROR(
+					"POTENTIAL UNDERFLOW in get_pss (file_backed_mem): "
+					"in_mem_pages=%lu (> Max Memory per Proc / pgsz), "
+					"virt_pages=%lu, sum_virt_pages=%lu, pgsz=%lu",
+					file_desc->in_mem_pages,
+					file_backed_mem->virt_pages, file_desc->sum_virt_pages,
+					file_desc->pgsz);
+			}
 			pss_add += (double)(file_desc->pgsz *
 				file_backed_mem->virt_pages *
 				file_desc->in_mem_pages) /
@@ -1262,6 +1272,16 @@ uint64_t get_pss(struct ve_mm_struct *mm, uint64_t *ns)
 		pthread_mutex_lock_unlock(&mmap_desc->mmap_desc_lock, LOCK,
 			"Failed to acquire mmap desc lock");
 		if (mmap_desc->sum_virt_pages != 0) {
+			/* ABNORMAL CHECK: in_mem_pages (RSS over limit may indicate underflow.) */
+			if (mmap_desc->in_mem_pages > (MAX_MEM_PER_PROC / mmap_desc->pgsz)) {
+				VEOS_ERROR(
+					"POTENTIAL UNDERFLOW in get_pss (mmap_desc): "
+					"in_mem_pages=%lu (> Max Memory per Proc / pgsz), "
+					"virt_page=%lu, sum_virt_pages=%lu, pgsz=%lu",
+					mmap_desc->in_mem_pages,
+					mmap_mem->virt_page, mmap_desc->sum_virt_pages,
+					mmap_desc->pgsz);
+			}
 			pss_add += (double)(mmap_desc->pgsz *
 				mmap_mem->virt_page *
 				mmap_desc->in_mem_pages) /
